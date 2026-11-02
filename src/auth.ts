@@ -72,13 +72,15 @@ export async function signInWithApple(): Promise<Session | null> {
 }
 export async function signOut(): Promise<void> {
   if (!client) return;
-  // Persist the locked state before revocation so an offline logout cannot restore old content.
-  await SecureStore.setItemAsync(signedOutKey, 'yes', { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY });
+  // Attempt both the durable lock and cleanup, including when device storage is unavailable.
+  let lockError = false;
+  try { await SecureStore.setItemAsync(signedOutKey, 'yes', { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }); }
+  catch { lockError = true; }
   let remoteError = false;
   try { const result = await client.auth.signOut({ scope: 'global' }); remoteError = Boolean(result.error); }
   catch { remoteError = true; }
   const local = await client.auth.signOut({ scope: 'local' });
-  if (local.error || remoteError) throw new Error('Sign-out could not be fully confirmed.');
+  if (lockError || local.error || remoteError) throw new Error('Sign-out could not be fully confirmed.');
 }
 export function listenAppState(onForeground: () => void) {
   return AppState.addEventListener('change', state => {
