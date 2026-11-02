@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "DebtFree Native Test",
+    "slug": "debtfree-native-test",
+    "version": "0.1.0",
+    "orientation": "default",
+    "scheme": "com.debtfree.native.test",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.debtfree.native.test",
+      "supportsTablet": true,
+      "usesAppleSignIn": true
+    },
+    "android": {
+      "package": "com.debtfree.native.test"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-apple-authentication",
+      "expo-web-browser"
+    ],
+    "extra": {
+      "environment": "sandbox-only"
+    }
+  }
+}
