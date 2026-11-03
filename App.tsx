@@ -1,63 +1,768 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import * as AppleAuthentication from 'expo-apple-authentication';
+import { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 import type { Session } from '@supabase/supabase-js';
-import { isConfigured, listenAppState, onAuthInvalidated, signInWithApple, signInWithGoogle, signOut, verifiedSession } from './src/auth';
+import {
+  isConfigured,
+  listenAppState,
+  onAuthInvalidated,
+  signInWithApple,
+  signInWithGoogle,
+  signOut,
+  verifiedSession,
+} from './src/auth';
 
-type Screen = 'checking' | 'signedOut' | 'signedIn';
+function TopWaveHeader() {
+  return (
+    <View style={styles.waveContainer} pointerEvents="none">
+      <View style={styles.waveLayerBack} />
+      <View style={styles.waveLayerMid} />
+      <View style={styles.waveLayerFront} />
+    </View>
+  );
+}
+
+function PiggyBankIcon() {
+  return (
+    <View style={styles.piggyWrapper}>
+      <View style={styles.trendContainer}>
+        <View style={styles.trendSegment1} />
+        <View style={styles.trendSegment2} />
+        <View style={styles.trendSegment3} />
+        <View style={styles.trendArrowHeadTop} />
+        <View style={styles.trendArrowHeadRight} />
+      </View>
+      <View style={styles.piggyBody}>
+        <View style={styles.piggyCoinSlot} />
+        <View style={styles.piggyEar} />
+        <View style={styles.piggyEye} />
+        <View style={styles.piggySnout} />
+        <View style={styles.piggyTail} />
+        <View style={styles.piggyLegBack} />
+        <View style={styles.piggyLegFront} />
+      </View>
+    </View>
+  );
+}
+
+function GoogleIcon() {
+  return (
+    <View style={styles.googleIconBox}>
+      <View style={styles.googleRingRed} />
+      <View style={styles.googleRingYellow} />
+      <View style={styles.googleRingGreen} />
+      <View style={styles.googleRingBlue} />
+      <View style={styles.googleInnerCutout} />
+      <View style={styles.googleRightGap} />
+      <View style={styles.googleCrossbar} />
+    </View>
+  );
+}
+
+function AppleIcon() {
+  return (
+    <View style={styles.appleIconBox}>
+      <View style={styles.appleLeaf} />
+      <View style={styles.appleBody}>
+        <View style={styles.appleLobeLeft} />
+        <View style={styles.appleLobeRight} />
+        <View style={styles.appleBiteCutout} />
+        <View style={styles.appleBottomIndent} />
+      </View>
+    </View>
+  );
+}
+
 export default function App() {
-  const [screen, setScreen] = useState<Screen>('checking');
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [appleAvailable, setAppleAvailable] = useState(false);
-  const generation = useRef(0);
-  const busyRef = useRef(false);
-  const mounted = useRef(true);
-  const validate = useCallback(async () => {
-    const request = ++generation.current;
-    setScreen('checking');
-    try {
-      const session = await verifiedSession();
-      if (mounted.current && request === generation.current) setScreen(session ? 'signedIn' : 'signedOut');
-    } catch {
-      if (mounted.current && request === generation.current) { setError('Unable to verify your session. Please sign in again.'); setScreen('signedOut'); }
-    }
-  }, []);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
   useEffect(() => {
-    mounted.current = true;
-    Promise.resolve().then(() => { if (mounted.current) void validate(); });
-    const requests = generation;
-    if (Platform.OS === 'ios') void AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
-    const sub = listenAppState(() => { if (!busyRef.current) void validate(); });
-    const unsubscribe = onAuthInvalidated(() => { if (!busyRef.current && mounted.current) { generation.current++; setScreen('signedOut'); } });
-    return () => { mounted.current = false; requests.current++; sub.remove(); unsubscribe(); };
-  }, [validate]);
-  const login = async (action: () => Promise<Session | null>) => {
-    if (busy) return;
-    const request = ++generation.current; busyRef.current = true; setBusy(true); setError('');
+    let active = true;
+    const recheck = async () => {
+      try {
+        const nextSession = await verifiedSession();
+        if (active) setSession(nextSession);
+      } catch {
+        if (active) setSession(null);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    recheck();
+    const appStateSubscription = listenAppState(recheck);
+    const authSubscription = onAuthInvalidated(() => {
+      if (active) setSession(null);
+    });
+
+    return () => {
+      active = false;
+      appStateSubscription.remove();
+      authSubscription();
+    };
+  }, []);
+
+  const handleAuthAction = async (action: () => Promise<Session | null | void>) => {
     try {
-      const result = await action();
-      if (mounted.current && request === generation.current) setScreen(result ? 'signedIn' : 'signedOut');
+      setBusy(true);
+      setError('');
+      const nextSession = await action();
+      if (nextSession !== undefined) setSession(nextSession);
     } catch (err) {
-      if (mounted.current && request === generation.current) { setScreen('signedOut'); setError(err instanceof Error ? err.message : 'Sign-in failed. Please try again.'); }
-    } finally { if (mounted.current && request === generation.current) { busyRef.current = false; setBusy(false); } }
+      setError(err instanceof Error ? err.message : 'An error occurred.');
+    } finally {
+      setBusy(false);
+    }
   };
-  const logout = async () => {
-    if (busy) return;
-    const request = ++generation.current; busyRef.current = true; setScreen('signedOut'); setBusy(true); setError('');
-    try { await signOut(); } catch { if (mounted.current && request === generation.current) setError('Sign-out could not be fully confirmed. Please reconnect and try again.'); }
-    finally { if (mounted.current && request === generation.current) { busyRef.current = false; setBusy(false); } }
+
+  const handleEmailLogin = () => {
+    if (!email.trim() || !password) {
+      setError('Please enter your email and password, or sign in with Google or Apple below.');
+      return;
+    }
+    setError('Please use Google or Apple sign-in below to access your approved household account.');
   };
-  return <SafeAreaProvider><SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-    <View style={styles.brand}><View style={styles.mark}><Text style={styles.markText}>D</Text></View><Text style={styles.brandName}>DebtFree</Text></View>
-    {screen === 'checking' ? <View style={styles.card} accessibilityLabel="Checking your session"><ActivityIndicator size="large" color="#295e9b"/><Text style={styles.muted}>Checking your session…</Text></View> : screen === 'signedIn' ?
-      <View style={styles.card}><Text style={styles.eyebrow}>SIGNED IN</Text><Text style={styles.title}>Welcome to DebtFree</Text><Text style={styles.description}>Your account is ready. More of your DebtFree experience is coming soon.</Text><Pressable accessibilityRole="button" disabled={busy} onPress={() => void logout()} style={styles.button}><Text style={styles.buttonText}>Sign out</Text></Pressable></View> :
-      <View style={styles.card}><Text style={styles.eyebrow}>YOUR NEXT CHAPTER</Text><Text style={styles.title}>Your household, together.</Text><Text style={styles.description}>Keep your goals in sight, one step at a time.</Text>
-        {!isConfigured() && <Text style={styles.notice} accessibilityRole="alert">Test sign-in is not configured yet.</Text>}
-        {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
-        <Pressable accessibilityRole="button" accessibilityLabel="Sign in with Google" disabled={busy || !isConfigured()} onPress={() => void login(signInWithGoogle)} style={[styles.button, (busy || !isConfigured()) && styles.disabled]}>{busy ? <ActivityIndicator color="#fff"/> : <Text style={styles.buttonText}>Continue with Google</Text>}</Pressable>
-        {appleAvailable && isConfigured() && <AppleAuthentication.AppleAuthenticationButton buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN} buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK} cornerRadius={14} style={styles.apple} onPress={() => { if (!busy && isConfigured()) void login(signInWithApple); }}/>}<Text style={styles.footnote}>Your information stays yours.</Text></View>}
-  </ScrollView></SafeAreaView></SafeAreaProvider>;
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <StatusBar style="dark" />
+        <ActivityIndicator size="large" color="#088395" />
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <StatusBar style="dark" />
+      <TopWaveHeader />
+      <KeyboardAvoidingView
+        style={styles.keyboardView}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.brandRow}>
+            <Text style={styles.brandDebt}>Debt</Text>
+            <Text style={styles.brandFree}>Free</Text>
+            <PiggyBankIcon />
+          </View>
+
+          {!isConfigured() ? (
+            <View style={styles.noticeBox}>
+              <Text style={styles.subtitle}>{"Glad you're back"}</Text>
+              <Text style={styles.notice}>
+                A separate test sign-in service has not been configured yet.
+              </Text>
+            </View>
+          ) : session ? (
+            <View style={styles.signedInBox}>
+              <Text style={styles.subtitle}>Welcome</Text>
+              <Text style={styles.body}>{session.user.email ?? 'Signed in'}</Text>
+              <Pressable
+                disabled={busy}
+                style={[styles.loginButton, styles.signOutButton, busy && styles.disabledButton]}
+                onPress={() => handleAuthAction(signOut)}
+              >
+                <Text style={styles.loginButtonText}>Sign Out</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.formContainer}>
+              <Text style={styles.subtitle}>{"Glad you're back"}</Text>
+
+              <TextInput
+                value={email}
+                onChangeText={setEmail}
+                placeholder="Email"
+                placeholderTextColor="#7A869A"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!busy}
+                style={styles.input}
+              />
+
+              <TextInput
+                value={password}
+                onChangeText={setPassword}
+                placeholder="Password"
+                placeholderTextColor="#7A869A"
+                secureTextEntry
+                autoCapitalize="none"
+                editable={!busy}
+                style={[styles.input, styles.passwordInput]}
+              />
+
+              <Pressable
+                disabled={busy}
+                style={styles.forgotPasswordButton}
+                onPress={() =>
+                  setError('Password reset uses your connected Google or Apple account.')
+                }
+              >
+                <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+              </Pressable>
+
+              <Pressable
+                disabled={busy}
+                style={[styles.loginButton, busy && styles.disabledButton]}
+                onPress={handleEmailLogin}
+              >
+                <Text style={styles.loginButtonText}>Login</Text>
+              </Pressable>
+
+              <View style={styles.dividerRow}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>Or Sign in With</Text>
+                <View style={styles.dividerLine} />
+              </View>
+
+              <View style={styles.socialRow}>
+                <Pressable
+                  disabled={busy}
+                  accessibilityLabel="Continue with Google"
+                  style={[styles.socialCircleButton, busy && styles.disabledButton]}
+                  onPress={() => handleAuthAction(signInWithGoogle)}
+                >
+                  <GoogleIcon />
+                </Pressable>
+
+                <Pressable
+                  disabled={busy}
+                  accessibilityLabel="Continue with Apple"
+                  style={[styles.socialCircleButton, busy && styles.disabledButton]}
+                  onPress={() => handleAuthAction(signInWithApple)}
+                >
+                  <AppleIcon />
+                </Pressable>
+              </View>
+
+              <View style={styles.footerRow}>
+                <Text style={styles.footerPrompt}>{"Don't have an account? "}</Text>
+                <Pressable
+                  disabled={busy}
+                  onPress={() => handleAuthAction(signInWithGoogle)}
+                >
+                  <Text style={styles.footerSignUp}>Sign up</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
 }
-const styles = StyleSheet.create({safe:{flex:1,backgroundColor:'#e4ebf3'},container:{flexGrow:1,justifyContent:'center',padding:24},brand:{alignItems:'center',marginBottom:32},mark:{height:58,width:58,borderRadius:18,alignItems:'center',justifyContent:'center',backgroundColor:'#295e9b'},markText:{color:'white',fontWeight:'800',fontSize:32},brandName:{color:'#182c4a',fontWeight:'800',fontSize:25,marginTop:10},card:{backgroundColor:'#f5f8fc',padding:24,borderRadius:24,gap:16,shadowColor:'#17243a',shadowOpacity:.09,shadowRadius:20,elevation:3},eyebrow:{fontSize:11,letterSpacing:1.4,fontWeight:'700',color:'#295e9b'},title:{fontSize:29,lineHeight:36,fontWeight:'800',color:'#101b31'},description:{fontSize:16,lineHeight:24,color:'#475062'},muted:{color:'#475062',textAlign:'center'},button:{minHeight:54,borderRadius:14,alignItems:'center',justifyContent:'center',paddingHorizontal:16,backgroundColor:'#295e9b'},buttonText:{color:'white',fontSize:16,fontWeight:'700'},disabled:{opacity:.5},apple:{height:54,width:'100%'},notice:{backgroundColor:'#e1e9f2',color:'#182c4a',padding:12,borderRadius:10},error:{color:'#a41d3e',fontSize:14},footnote:{color:'#475062',textAlign:'center',fontSize:13}});
+
+const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  container: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  keyboardView: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingHorizontal: 32,
+    paddingTop: 120,
+    paddingBottom: 36,
+    justifyContent: 'space-between',
+  },
+  waveContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 150,
+    overflow: 'hidden',
+  },
+  waveLayerBack: {
+    position: 'absolute',
+    top: -65,
+    left: -40,
+    right: -40,
+    height: 155,
+    backgroundColor: '#CBECE8',
+    transform: [{ rotate: '-6deg' }],
+  },
+  waveLayerMid: {
+    position: 'absolute',
+    top: -55,
+    left: -30,
+    right: -50,
+    height: 140,
+    backgroundColor: '#B5E2DF',
+    opacity: 0.65,
+    transform: [{ rotate: '7deg' }],
+  },
+  waveLayerFront: {
+    position: 'absolute',
+    top: -75,
+    left: 40,
+    right: -60,
+    height: 135,
+    backgroundColor: '#DFF5F2',
+    opacity: 0.8,
+    transform: [{ rotate: '-11deg' }],
+  },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+  },
+  brandDebt: {
+    fontSize: 42,
+    fontWeight: '800',
+    color: '#0D253F',
+    letterSpacing: -0.8,
+  },
+  brandFree: {
+    fontSize: 42,
+    fontWeight: '800',
+    color: '#22C5B8',
+    letterSpacing: -0.8,
+  },
+  piggyWrapper: {
+    width: 44,
+    height: 48,
+    marginLeft: 8,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  trendContainer: {
+    position: 'absolute',
+    top: 2,
+    left: 6,
+    width: 32,
+    height: 18,
+  },
+  trendSegment1: {
+    position: 'absolute',
+    bottom: 2,
+    left: 2,
+    width: 11,
+    height: 2.5,
+    backgroundColor: '#0D253F',
+    borderRadius: 2,
+    transform: [{ rotate: '-35deg' }],
+  },
+  trendSegment2: {
+    position: 'absolute',
+    bottom: 5,
+    left: 10,
+    width: 9,
+    height: 2.5,
+    backgroundColor: '#0D253F',
+    borderRadius: 2,
+    transform: [{ rotate: '20deg' }],
+  },
+  trendSegment3: {
+    position: 'absolute',
+    bottom: 8,
+    left: 16,
+    width: 13,
+    height: 2.5,
+    backgroundColor: '#0D253F',
+    borderRadius: 2,
+    transform: [{ rotate: '-40deg' }],
+  },
+  trendArrowHeadTop: {
+    position: 'absolute',
+    top: 2,
+    right: 3,
+    width: 8,
+    height: 2.5,
+    backgroundColor: '#0D253F',
+    borderRadius: 1.5,
+  },
+  trendArrowHeadRight: {
+    position: 'absolute',
+    top: 2,
+    right: 3,
+    width: 2.5,
+    height: 8,
+    backgroundColor: '#0D253F',
+    borderRadius: 1.5,
+  },
+  piggyBody: {
+    width: 34,
+    height: 25,
+    borderRadius: 13,
+    backgroundColor: '#22C5B8',
+    position: 'relative',
+    marginBottom: 4,
+  },
+  piggyCoinSlot: {
+    position: 'absolute',
+    top: 3,
+    left: 11,
+    width: 9,
+    height: 2.5,
+    borderRadius: 1.5,
+    backgroundColor: '#0D253F',
+  },
+  piggyEar: {
+    position: 'absolute',
+    top: -4,
+    right: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 3,
+    backgroundColor: '#22C5B8',
+    transform: [{ rotate: '25deg' }],
+  },
+  piggyEye: {
+    position: 'absolute',
+    top: 8,
+    right: 6,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: '#0D253F',
+  },
+  piggySnout: {
+    position: 'absolute',
+    top: 9,
+    right: -4,
+    width: 6,
+    height: 9,
+    borderRadius: 3,
+    backgroundColor: '#22C5B8',
+  },
+  piggyTail: {
+    position: 'absolute',
+    top: 8,
+    left: -4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    borderWidth: 2,
+    borderColor: '#22C5B8',
+  },
+  piggyLegBack: {
+    position: 'absolute',
+    bottom: -4,
+    left: 7,
+    width: 5,
+    height: 6,
+    borderRadius: 2,
+    backgroundColor: '#22C5B8',
+  },
+  piggyLegFront: {
+    position: 'absolute',
+    bottom: -4,
+    right: 8,
+    width: 5,
+    height: 6,
+    borderRadius: 2,
+    backgroundColor: '#22C5B8',
+  },
+  formContainer: {
+    width: '100%',
+    marginTop: 8,
+  },
+  subtitle: {
+    fontSize: 22,
+    fontWeight: '600',
+    color: '#0D253F',
+    textAlign: 'center',
+    marginBottom: 32,
+  },
+  input: {
+    width: '100%',
+    height: 54,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderRadius: 999,
+    paddingHorizontal: 22,
+    fontSize: 16,
+    color: '#0F172A',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+  passwordInput: {
+    marginTop: 18,
+  },
+  forgotPasswordButton: {
+    alignSelf: 'flex-end',
+    marginTop: 12,
+    marginBottom: 22,
+    paddingVertical: 2,
+  },
+  forgotPasswordText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#088395',
+  },
+  loginButton: {
+    width: '100%',
+    height: 56,
+    borderRadius: 999,
+    backgroundColor: '#088395',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#088395',
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 4,
+  },
+  loginButtonText: {
+    color: '#FFFFFF',
+    fontSize: 19,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 30,
+    marginBottom: 24,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E2E8F0',
+  },
+  dividerText: {
+    marginHorizontal: 14,
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#1E293B',
+  },
+  socialRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 24,
+  },
+  socialCircleButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  googleIconBox: {
+    width: 24,
+    height: 24,
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  googleRingRed: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 4.5,
+    borderColor: 'transparent',
+    borderTopColor: '#EA4335',
+    transform: [{ rotate: '-15deg' }],
+  },
+  googleRingYellow: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 4.5,
+    borderColor: 'transparent',
+    borderLeftColor: '#FBBC05',
+    transform: [{ rotate: '-15deg' }],
+  },
+  googleRingGreen: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 4.5,
+    borderColor: 'transparent',
+    borderBottomColor: '#34A853',
+    transform: [{ rotate: '-15deg' }],
+  },
+  googleRingBlue: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 4.5,
+    borderColor: 'transparent',
+    borderRightColor: '#4285F4',
+    transform: [{ rotate: '25deg' }],
+  },
+  googleInnerCutout: {
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
+    backgroundColor: '#FFFFFF',
+  },
+  googleRightGap: {
+    position: 'absolute',
+    top: 4,
+    right: 0,
+    width: 6,
+    height: 7,
+    backgroundColor: '#FFFFFF',
+  },
+  googleCrossbar: {
+    position: 'absolute',
+    right: 1,
+    top: 10,
+    width: 11,
+    height: 4.2,
+    backgroundColor: '#4285F4',
+    borderTopRightRadius: 2,
+    borderBottomRightRadius: 2,
+  },
+  appleIconBox: {
+    width: 24,
+    height: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  appleLeaf: {
+    width: 6,
+    height: 7,
+    backgroundColor: '#000000',
+    borderTopLeftRadius: 6,
+    borderBottomRightRadius: 6,
+    marginBottom: 1,
+    marginLeft: 3,
+    transform: [{ rotate: '15deg' }],
+  },
+  appleBody: {
+    width: 20,
+    height: 17,
+    position: 'relative',
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  appleLobeLeft: {
+    width: 12,
+    height: 17,
+    backgroundColor: '#000000',
+    borderTopLeftRadius: 9,
+    borderTopRightRadius: 6,
+    borderBottomLeftRadius: 8,
+    borderBottomRightRadius: 5,
+    marginRight: -3,
+  },
+  appleLobeRight: {
+    width: 12,
+    height: 17,
+    backgroundColor: '#000000',
+    borderTopLeftRadius: 6,
+    borderTopRightRadius: 9,
+    borderBottomLeftRadius: 5,
+    borderBottomRightRadius: 8,
+  },
+  appleBiteCutout: {
+    position: 'absolute',
+    right: -3,
+    top: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#FFFFFF',
+  },
+  appleBottomIndent: {
+    position: 'absolute',
+    bottom: -2,
+    width: 4,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: '#FFFFFF',
+  },
+  footerRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 42,
+  },
+  footerPrompt: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#1E293B',
+  },
+  footerSignUp: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#088395',
+  },
+  noticeBox: {
+    alignItems: 'center',
+    marginTop: 16,
+  },
+  notice: {
+    fontSize: 15,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  signedInBox: {
+    alignItems: 'center',
+    gap: 16,
+    marginTop: 16,
+  },
+  body: {
+    fontSize: 15,
+    color: '#475569',
+    marginBottom: 8,
+  },
+  signOutButton: {
+    backgroundColor: '#EF4444',
+    shadowColor: '#EF4444',
+  },
+  disabledButton: {
+    opacity: 0.6,
+  },
+  error: {
+    color: '#DC2626',
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 16,
+  },
+});
