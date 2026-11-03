@@ -35,4 +35,4 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-# DFN-002 correction checkpoint: build the revised sign-in screen.
+# DFN-002 correction checkpoint: build the lint-verified revised sign-in screen.
