@@ -103,7 +103,8 @@ function SignInScreen() {
 
   useEffect(() => {
     mounted.current = true;
-    void validate();
+    Promise.resolve().then(() => { if (mounted.current) void validate(); });
+    const requests = generation;
     if (Platform.OS === 'ios' && process.env.EXPO_PUBLIC_APPLE_SIGN_IN_ENABLED === 'true') {
       void AppleAuthentication.isAvailableAsync().then(available => {
         if (mounted.current) setAppleAvailable(available);
@@ -118,7 +119,7 @@ function SignInScreen() {
         setScreen('signedOut');
       }
     });
-    return () => { mounted.current = false; ++generation.current; subscription.remove(); unsubscribe(); };
+    return () => { mounted.current = false; ++requests.current; subscription.remove(); unsubscribe(); };
   }, [validate]);
 
   const login = async (action: () => Promise<Session | null>) => {
