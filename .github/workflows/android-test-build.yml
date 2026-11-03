@@ -2,7 +2,7 @@ name: Android private test build
 on:
   push:
     branches: [codex/dfn-002-native-auth]
-    paths: ['.github/workflows/android-test-build.yml']
+    paths: ['.github/workflows/android-test-build.yml', 'app.json']
 permissions:
   contents: read
 jobs:

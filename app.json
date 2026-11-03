@@ -7,12 +7,12 @@
     "scheme": "com.debtfree.native.test",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "com.debtfree.native.test",
+      "bundleIdentifier": "com.debtfree.nativetest",
       "supportsTablet": true,
       "usesAppleSignIn": true
     },
     "android": {
-      "package": "com.debtfree.native.test"
+      "package": "com.debtfree.nativetest"
     },
     "plugins": [
       "expo-secure-store",
