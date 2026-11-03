@@ -34,3 +34,5 @@ jobs:
           path: android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 7
+
+# DFN-002 correction checkpoint: build the revised sign-in screen.
