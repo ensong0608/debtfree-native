@@ -1,17 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import type { Session } from '@supabase/supabase-js';
 import {
   isConfigured,
@@ -70,213 +69,139 @@ function GoogleIcon() {
   );
 }
 
-function AppleIcon() {
-  return (
-    <View style={styles.appleIconBox}>
-      <View style={styles.appleLeaf} />
-      <View style={styles.appleBody}>
-        <View style={styles.appleLobeLeft} />
-        <View style={styles.appleLobeRight} />
-        <View style={styles.appleBiteCutout} />
-        <View style={styles.appleBottomIndent} />
-      </View>
-    </View>
-  );
-}
+type Screen = 'checking' | 'signedOut' | 'signedIn';
 
-export default function App() {
+function SignInScreen() {
+  const [screen, setScreen] = useState<Screen>('checking');
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [appleAvailable, setAppleAvailable] = useState(false);
+  const generation = useRef(0);
+  const busyRef = useRef(false);
+  const invalidatedWhileBusy = useRef(false);
+  const mounted = useRef(false);
 
-  useEffect(() => {
-    let active = true;
-    const recheck = async () => {
-      try {
-        const nextSession = await verifiedSession();
-        if (active) setSession(nextSession);
-      } catch {
-        if (active) setSession(null);
-      } finally {
-        if (active) setLoading(false);
+  const validate = useCallback(async () => {
+    const request = ++generation.current;
+    setSession(null);
+    setScreen('checking');
+    try {
+      const next = await verifiedSession();
+      if (mounted.current && request === generation.current) {
+        setSession(next);
+        setScreen(next ? 'signedIn' : 'signedOut');
       }
-    };
-
-    recheck();
-    const appStateSubscription = listenAppState(recheck);
-    const authSubscription = onAuthInvalidated(() => {
-      if (active) setSession(null);
-    });
-
-    return () => {
-      active = false;
-      appStateSubscription.remove();
-      authSubscription();
-    };
+    } catch {
+      if (mounted.current && request === generation.current) {
+        setSession(null);
+        setScreen('signedOut');
+        setError('Unable to verify your session. Please sign in again.');
+      }
+    }
   }, []);
 
-  const handleAuthAction = async (action: () => Promise<Session | null | void>) => {
+  useEffect(() => {
+    mounted.current = true;
+    void validate();
+    if (Platform.OS === 'ios' && process.env.EXPO_PUBLIC_APPLE_SIGN_IN_ENABLED === 'true') {
+      void AppleAuthentication.isAvailableAsync().then(available => {
+        if (mounted.current) setAppleAvailable(available);
+      }).catch(() => { if (mounted.current) setAppleAvailable(false); });
+    }
+    const subscription = listenAppState(() => { if (!busyRef.current) void validate(); });
+    const unsubscribe = onAuthInvalidated(() => {
+      if (busyRef.current) { invalidatedWhileBusy.current = true; return; }
+      if (mounted.current) {
+        ++generation.current;
+        setSession(null);
+        setScreen('signedOut');
+      }
+    });
+    return () => { mounted.current = false; ++generation.current; subscription.remove(); unsubscribe(); };
+  }, [validate]);
+
+  const login = async (action: () => Promise<Session | null>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    invalidatedWhileBusy.current = false;
+    const request = ++generation.current;
+    setBusy(true);
+    setError('');
     try {
-      setBusy(true);
-      setError('');
-      const nextSession = await action();
-      if (nextSession !== undefined) setSession(nextSession);
+      let next = await action();
+      if (invalidatedWhileBusy.current && next) next = await verifiedSession();
+      if (mounted.current && request === generation.current) {
+        setSession(next);
+        setScreen(next ? 'signedIn' : 'signedOut');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred.');
+      if (mounted.current && request === generation.current) {
+        setSession(null);
+        setScreen('signedOut');
+        setError(err instanceof Error ? err.message : 'Sign-in failed. Please try again.');
+      }
     } finally {
-      setBusy(false);
+      if (mounted.current && request === generation.current) { busyRef.current = false; setBusy(false); }
     }
   };
-
-  const handleEmailLogin = () => {
-    if (!email.trim() || !password) {
-      setError('Please enter your email and password, or sign in with Google or Apple below.');
-      return;
-    }
-    setError('Please use Google or Apple sign-in below to access your approved household account.');
+  const logout = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    const request = ++generation.current;
+    setSession(null);
+    setScreen('signedOut');
+    setBusy(true);
+    setError('');
+    try { await signOut(); }
+    catch { if (mounted.current && request === generation.current) setError('Sign-out could not be fully confirmed. Please reconnect and try again.'); }
+    finally { if (mounted.current && request === generation.current) { busyRef.current = false; setBusy(false); } }
   };
-
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <StatusBar style="dark" />
-        <ActivityIndicator size="large" color="#088395" />
-      </SafeAreaView>
-    );
-  }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.root}>
       <StatusBar style="dark" />
       <TopWaveHeader />
-      <KeyboardAvoidingView
-        style={styles.keyboardView}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.brandRow}>
-            <Text style={styles.brandDebt}>Debt</Text>
-            <Text style={styles.brandFree}>Free</Text>
-            <PiggyBankIcon />
+      <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          <View style={styles.brandRow} accessibilityLabel="DebtFree">
+            <Text style={styles.brandDebt}>Debt</Text><Text style={styles.brandFree}>Free</Text><PiggyBankIcon />
           </View>
-
-          {!isConfigured() ? (
-            <View style={styles.noticeBox}>
-              <Text style={styles.subtitle}>{"Glad you're back"}</Text>
-              <Text style={styles.notice}>
-                A separate test sign-in service has not been configured yet.
-              </Text>
+          {screen === 'checking' ? (
+            <View style={styles.formContainer} accessibilityLabel="Checking your session">
+              <ActivityIndicator size="large" color="#088395" />
             </View>
-          ) : session ? (
+          ) : screen === 'signedIn' ? (
             <View style={styles.signedInBox}>
               <Text style={styles.subtitle}>Welcome</Text>
-              <Text style={styles.body}>{session.user.email ?? 'Signed in'}</Text>
-              <Pressable
-                disabled={busy}
-                style={[styles.loginButton, styles.signOutButton, busy && styles.disabledButton]}
-                onPress={() => handleAuthAction(signOut)}
-              >
+              <Text style={styles.body}>{session?.user.email ?? 'Signed in'}</Text>
+              <Pressable accessibilityRole="button" disabled={busy} style={[styles.loginButton, styles.signOutButton, busy && styles.disabledButton]} onPress={() => void logout()}>
                 <Text style={styles.loginButtonText}>Sign Out</Text>
               </Pressable>
             </View>
           ) : (
             <View style={styles.formContainer}>
               <Text style={styles.subtitle}>{"Glad you're back"}</Text>
-
-              <TextInput
-                value={email}
-                onChangeText={setEmail}
-                placeholder="Email"
-                placeholderTextColor="#7A869A"
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!busy}
-                style={styles.input}
-              />
-
-              <TextInput
-                value={password}
-                onChangeText={setPassword}
-                placeholder="Password"
-                placeholderTextColor="#7A869A"
-                secureTextEntry
-                autoCapitalize="none"
-                editable={!busy}
-                style={[styles.input, styles.passwordInput]}
-              />
-
-              <Pressable
-                disabled={busy}
-                style={styles.forgotPasswordButton}
-                onPress={() =>
-                  setError('Password reset uses your connected Google or Apple account.')
-                }
-              >
-                <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+              {!isConfigured() && <Text style={styles.notice} accessibilityRole="alert">A separate test sign-in service has not been configured yet.</Text>}
+              <Pressable accessibilityRole="button" accessibilityLabel="Continue with Google" accessibilityState={{ disabled: busy || !isConfigured(), busy }} disabled={busy || !isConfigured()} style={[styles.googleButton, (busy || !isConfigured()) && styles.disabledButton]} onPress={() => void login(signInWithGoogle)}>
+                {busy ? <ActivityIndicator color="#088395" /> : <><GoogleIcon /><Text style={styles.googleButtonText}>Continue with Google</Text></>}
               </Pressable>
-
-              <Pressable
-                disabled={busy}
-                style={[styles.loginButton, busy && styles.disabledButton]}
-                onPress={handleEmailLogin}
-              >
-                <Text style={styles.loginButtonText}>Login</Text>
-              </Pressable>
-
-              <View style={styles.dividerRow}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>Or Sign in With</Text>
-                <View style={styles.dividerLine} />
-              </View>
-
-              <View style={styles.socialRow}>
-                <Pressable
-                  disabled={busy}
-                  accessibilityLabel="Continue with Google"
-                  style={[styles.socialCircleButton, busy && styles.disabledButton]}
-                  onPress={() => handleAuthAction(signInWithGoogle)}
-                >
-                  <GoogleIcon />
-                </Pressable>
-
-                <Pressable
-                  disabled={busy}
-                  accessibilityLabel="Continue with Apple"
-                  style={[styles.socialCircleButton, busy && styles.disabledButton]}
-                  onPress={() => handleAuthAction(signInWithApple)}
-                >
-                  <AppleIcon />
-                </Pressable>
-              </View>
-
-              <View style={styles.footerRow}>
-                <Text style={styles.footerPrompt}>{"Don't have an account? "}</Text>
-                <Pressable
-                  disabled={busy}
-                  onPress={() => handleAuthAction(signInWithGoogle)}
-                >
-                  <Text style={styles.footerSignUp}>Sign up</Text>
-                </Pressable>
-              </View>
+              {appleAvailable && isConfigured() && <AppleAuthentication.AppleAuthenticationButton buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN} buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK} cornerRadius={28} style={styles.appleButton} onPress={() => { if (!busyRef.current) void login(signInWithApple); }} />}
             </View>
           )}
-
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
         </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </View>
   );
 }
 
+export default function App() {
+  return <SafeAreaProvider><SignInScreen /></SafeAreaProvider>;
+}
+
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#FFFFFF' },
   loadingContainer: {
     flex: 1,
     backgroundColor: '#FFFFFF',
@@ -285,17 +210,18 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'transparent',
   },
   keyboardView: {
     flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
-    paddingHorizontal: 32,
-    paddingTop: 120,
-    paddingBottom: 36,
-    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingTop: 110,
+    paddingBottom: 32,
+    justifyContent: 'center',
+    gap: 48,
   },
   waveContainer: {
     position: 'absolute',
@@ -585,6 +511,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 3,
   },
+  googleButton: {
+    minHeight: 56, width: '100%', borderRadius: 999, borderWidth: 1, borderColor: '#CBD5E1',
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 12, backgroundColor: '#FFFFFF',
+  },
+  googleButtonText: { color: '#0D253F', fontSize: 16, fontWeight: '700' },
+  appleButton: { width: '100%', height: 56, marginTop: 16 },
   googleIconBox: {
     width: 24,
     height: 24,
