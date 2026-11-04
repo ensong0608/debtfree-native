@@ -1,0 +1,104 @@
+{
+  "capturedDate": "2026-11-04",
+  "source": "https://debtfree-dashboard.ensong0608.workers.dev/",
+  "browser": "Brave, existing signed-in session",
+  "format": "Original window screenshots, browser chrome included; viewport captures, not full-page exports",
+  "captures": [
+    {
+      "file": "01-home-01-overview.jpg",
+      "description": "Home: greeting, debt-free estimate, debt summary and payoff strategy",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "01-home-02-recent-activity.jpg",
+      "description": "Home lower section: strategy and recent activity",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "02-debt-01-cards-and-loans.jpg",
+      "description": "Debt: Cards & Loans filter, total, search, sort, account cards and add control",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "02-debt-02-home-and-auto.jpg",
+      "description": "Debt: Home & Auto accounts",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "03-transactions-01-history.jpg",
+      "description": "Transactions History: period/account filters, summaries, activity list",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "03-transactions-02-scheduled-empty.jpg",
+      "description": "Transactions Scheduled empty state",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "04-budget-01-overview.jpg",
+      "description": "Budget: income, allocation, remaining and category summary",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "04-budget-02-upcoming-bills.jpg",
+      "description": "Budget Upcoming: bill names, due dates, amounts and Pay Now controls (not activated)",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "04-budget-03-payoff-strategy.jpg",
+      "description": "Budget Strategy: extra payment, Avalanche/Snowball choices and payoff priority (settings not changed)",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "05-progress-01-current-month.jpg",
+      "description": "Progress Overview: debt reduction and current-month progress against plan",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "05-progress-02-current-activity.jpg",
+      "description": "Progress Overview scrolled to recorded payments, fees, and activity by account",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "05-progress-03-previous-month.jpg",
+      "description": "Progress Overview: Previous month comparison",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "05-progress-04-lifetime.jpg",
+      "description": "Progress Overview: Lifetime statistics",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "05-progress-05-utilization.jpg",
+      "description": "Progress Utilization: credit summary, utilization ring and cards to review",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "05-progress-06-milestones.jpg",
+      "description": "Progress Milestones: completed/in-progress counts, next unlock and achievement cards",
+      "width": 503,
+      "height": 906
+    },
+    {
+      "file": "05-progress-07-milestone-cards.jpg",
+      "description": "Progress Milestones lower section: completed achievement cards",
+      "width": 503,
+      "height": 906
+    }
+  ]
+}
