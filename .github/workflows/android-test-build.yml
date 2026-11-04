@@ -1,0 +1,38 @@
+name: Android private test build
+on:
+  push:
+    branches: [codex/dfn-002-native-auth]
+    paths: ['.github/workflows/android-test-build.yml', 'app.json']
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      EXPO_PUBLIC_SANDBOX_SUPABASE_URL: https://bitepxsdujceoszbldhd.supabase.co
+      EXPO_PUBLIC_SANDBOX_PROJECT_REF: bitepxsdujceoszbldhd
+      EXPO_PUBLIC_SANDBOX_SUPABASE_PUBLISHABLE_KEY: sb_publishable_iMQloEyhziuIM1mn_O1xwQ_YDWHhZKY
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: npm ci
+      - run: npx expo prebuild --platform android --no-install
+      - name: Build private test APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DebtFree-Native-Android-Test-APK
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+# DFN-002 correction checkpoint: build the lint-verified revised sign-in screen.
