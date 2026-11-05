@@ -3,7 +3,7 @@ import { Pressable, Text, TextInput, View } from 'react-native';
 import { AppIcon, type AppIconName } from '../components/AppIcon';
 import { Bar, Card, FinancialScreen, ui } from '../components/FinancialScreen';
 import {
-  calculateTotalMonthlyIncome,
+  calculateTotalMonthlyIncome, activeDebts, acceptMoneyEdit, validateExtraPaymentInput, formatEditableMoney,
   formatCurrency,
   normalizeMonthlyIncome,
   PAY_FREQUENCY_OPTIONS,
@@ -25,6 +25,7 @@ export function BudgetScreen({
   data,
   plan,
   currencySymbol,
+  currencyCode,
   onEditIncome,
   onStrategy,
   onExtra,
@@ -35,6 +36,7 @@ export function BudgetScreen({
   data: UserOnboardingData;
   plan: PayoffPlanResult;
   currencySymbol: string;
+  currencyCode: string;
   onEditIncome: () => void;
   onStrategy: (strategy: PayoffStrategy) => void;
   onExtra: (amount: number) => void;
@@ -44,7 +46,7 @@ export function BudgetScreen({
 }) {
   const [tab, setTab] = useState(initialSection);
   const [offset, setOffset] = useState(0);
-  const [extra, setExtra] = useState(String(data.extraMonthlyPayment));
+  const [extra, setExtra] = useState(formatEditableMoney(data.extraMonthlyPayment, currencyCode));
   const [error, setError] = useState('');
   const [showExpenseNotice, setShowExpenseNotice] = useState(false);
 
@@ -61,6 +63,7 @@ export function BudgetScreen({
     data.primaryIncomeAmount,
     data.primaryPayFrequency,
     data.additionalIncomes,
+    currencyCode,
   );
   const month = new Date();
   month.setDate(1);
@@ -179,7 +182,7 @@ export function BudgetScreen({
                   </Text>
                 </View>
                 <Text style={ui.value}>
-                  {formatCurrency(normalizeMonthlyIncome(i.amount, i.frequency), currencySymbol)}
+                  {formatCurrency(normalizeMonthlyIncome(i.amount, i.frequency, currencyCode), currencySymbol)}
                   /mo
                 </Text>
               </View>
@@ -223,7 +226,7 @@ export function BudgetScreen({
             Full dated bill schedules are unavailable. Any items below are manual due-day reminders
             from your debt accounts, not verified bills.
           </Text>
-          {data.debts.filter(d => d.dueDay).length > 0 ? (
+          {activeDebts(data.debts).filter(d => d.dueDay).length > 0 ? (
             data.debts
               .filter(d => d.dueDay)
               .map(d => (
@@ -271,7 +274,7 @@ export function BudgetScreen({
                 accessibilityLabel="Extra monthly payment"
                 keyboardType="decimal-pad"
                 value={extra}
-                onChangeText={setExtra}
+                onChangeText={text => setExtra(prev => acceptMoneyEdit(prev, text, currencyCode))}
                 style={ui.input}
               />
               <Pressable
@@ -279,13 +282,10 @@ export function BudgetScreen({
                 accessibilityLabel="Save extra monthly payment"
                 style={ui.button}
                 onPress={() => {
-                  const n = Number(extra);
-                  if (!extra.trim() || !Number.isFinite(n) || n < 0) {
-                    setError('Enter a valid non-negative amount.');
-                    return;
-                  }
+                  const validation = validateExtraPaymentInput(extra, currencyCode);
+                  if (!validation.valid) { setError(validation.error); return; }
                   setError('');
-                  onExtra(n);
+                  onExtra(validation.extraMonthlyPayment);
                 }}
               >
                 <Text style={ui.buttonText}>Save</Text>

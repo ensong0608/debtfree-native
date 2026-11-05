@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { AppIcon } from './AppIcon';
-import { formatCurrency, type DebtItem } from '../onboarding-domain';
+import { formatCurrency, categoryDebts, type DebtItem } from '../onboarding-domain';
 
 export function FinancialScreen({
   title,
@@ -154,17 +154,8 @@ export function Gauge({ label = '—' }: { label?: string }) {
   );
 }
 
-export const categories = ['Cards & Loans', 'Home & Auto', 'All Debts'] as const;
-
-export function categoryDebts(debts: DebtItem[], category: string) {
-  return debts.filter(
-    d =>
-      category === 'All Debts' ||
-      (category === 'Home & Auto'
-        ? d.category === 'Mortgage' || d.category === 'Auto loan'
-        : d.category !== 'Mortgage' && d.category !== 'Auto loan'),
-  );
-}
+export const categories = ['Cards & Loans', 'Auto', 'All Debts'] as const;
+export { categoryDebts };
 
 export function snapshot(debts: DebtItem[]) {
   const balance = debts.reduce((s, d) => s + d.balance, 0);

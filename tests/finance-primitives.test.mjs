@@ -1,0 +1,54 @@
+﻿import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { CURRENCIES, getCurrency } = require('../src/finance/currencies.ts');
+const { parseMoney, makeMoney, addMoney, classifyMoneyEdit, divideHalfAwayFromZero, multiplyMoneyRatio, parseApr } = require('../src/finance/money.ts');
+const { parseDateOnly: date, monthlyPaymentDate, monthPeriod, householdDate, instantInPeriod } = require('../src/finance/calendar.ts');
+
+test('S7: exact money, bounds, currencies and signed rational rounding', () => {
+  assert.deepEqual(CURRENCIES.slice(0, 9).map(c => c.code), ['USD','EUR','GBP','CAD','AUD','JPY','CHF','CNY','INR']);
+  assert.equal(CURRENCIES.length, 165);
+  assert.deepEqual(['USD','JPY','KWD','CLF'].map(c => getCurrency(c).scale), [2,0,3,4]);
+  assert.throws(() => getCurrency('XXX'));
+  for (const [text, currency, expected] of [['0.01','USD',1],['12.34','USD',1234],['123','JPY',123],['1.234','KWD',1234],['1.2345','CLF',12345]]) assert.equal(parseMoney(text, currency).minorUnits, expected);
+  assert.equal(parseMoney('-0.01','USD',true).minorUnits, -1);
+  assert.equal(parseMoney('90000000000.00','USD').minorUnits, 9000000000000);
+  for (const text of ['12.345','1e2',' 1','1.','+1','-1','$1','1,000','', 'NaN']) assert.throws(() => parseMoney(text,'USD'));
+  assert.throws(() => parseMoney('1.0','JPY'));
+  assert.throws(() => parseMoney('1\n','USD'));
+  assert.equal(classifyMoneyEdit('1\n','USD'), 'invalid');
+  assert.throws(() => parseMoney('90000000000.01','USD'));
+  assert.throws(() => addMoney(makeMoney('USD',9000000000000), makeMoney('USD',1)));
+  assert.throws(() => addMoney(makeMoney('USD',1),makeMoney('CAD',1)));
+  assert.throws(() => makeMoney('USD', NaN));
+  assert.equal(divideHalfAwayFromZero(BigInt(1), BigInt(2)), BigInt(1));
+  assert.equal(divideHalfAwayFromZero(BigInt(-1), BigInt(2)), BigInt(-1));
+  assert.equal(multiplyMoneyRatio(makeMoney('USD', 1), BigInt(100), BigInt(1)).minorUnits, 100);
+  assert.throws(() => divideHalfAwayFromZero(BigInt(1), BigInt(0)));
+});
+test('literal edits remain distinct from committed money and APR is exact', () => {
+  const sequence = ['4','42','425','425.','425.2','425.25'];
+  assert.deepEqual(sequence.map(t => classifyMoneyEdit(t,'USD')), ['complete','complete','complete','incomplete','complete','complete']);
+  assert.equal(parseMoney(sequence[5], 'USD').minorUnits, 42525);
+  for (const text of ['425.2.5','425.255','-1']) assert.equal(classifyMoneyEdit(text,'USD'), 'invalid');
+  assert.equal(classifyMoneyEdit('', 'USD'), 'incomplete');
+  assert.equal(parseApr('12.345'),12345); assert.equal(parseApr('100.000'),100000);
+  for (const text of ['100.001','-1','1.0001','1.','1e2','', '1\n']) assert.throws(() => parseApr(text));
+});
+test('S8: requested day, valid dates, zone and half-open local months', () => {
+  assert.deepEqual([0,1,2,3].map(i => monthlyPaymentDate(date('2024-01-31'),31,i)), ['2024-01-31','2024-02-29','2024-03-31','2024-04-30']);
+  assert.deepEqual([0,1,2,3].map(i => monthlyPaymentDate(date('2024-12-31'),31,i)), ['2024-12-31','2025-01-31','2025-02-28','2025-03-31']);
+  for (const invalid of ['2025-02-29','1900-02-29','2024-04-31','0000-01-01','2024-1-01', '2024-01-01\n']) assert.throws(() => date(invalid));
+  assert.equal(date('2000-02-29'), '2000-02-29');
+  assert.throws(() => monthlyPaymentDate(date('9999-12-31'),31,1));
+  const feb = monthPeriod(date('2025-02-15')), march = monthPeriod(date('2025-03-15'));
+  const before = new Date('2025-03-01T07:30:00Z'), boundary = new Date('2025-03-01T08:00:00Z');
+  assert.equal(householdDate(before,'America/Los_Angeles'),'2025-02-28');
+  assert.equal(instantInPeriod(before,'America/Los_Angeles',feb),true);
+  assert.equal(instantInPeriod(boundary,'America/Los_Angeles',feb),false);
+  assert.equal(instantInPeriod(boundary,'America/Los_Angeles',march),true);
+  assert.equal(householdDate(new Date('2025-03-09T09:59:00Z'),'America/Los_Angeles'),'2025-03-09');
+  assert.equal(householdDate(new Date('2025-03-09T10:01:00Z'),'America/Los_Angeles'),'2025-03-09');
+  assert.throws(() => householdDate(before,'Not/AZone')); assert.throws(() => householdDate(new Date(NaN),'UTC'));
+});

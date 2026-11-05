@@ -93,3 +93,8 @@ Run `npm run android` again after changing native dependencies, config plugins, 
 On a 16 GB machine, avoid running other heavy processes during the native build. Setting `GRADLE_OPTS=-Dorg.gradle.workers.max=2` limits Gradle parallelism.
 
 On this workstation, the generated `android/app/build.gradle` places CMake intermediates in `~/.dfn-cxx/app` and passes `-DCMAKE_OBJECT_PATH_MAX=240` to avoid Windows path limits under OneDrive. These local settings are in the ignored native directory; regenerating it with `expo prebuild --clean` removes them.
+
+
+### T-023 currency precision and migration handoff
+
+Debt writes use currency-scale canonical decimal strings, and reload rejects nonzero precision beyond the selected currency scale while accepting PostgreSQL padding. Currency remains in onboarding metadata; changing it is blocked while monetary records exist. No exchange conversion is performed. The forward migration `supabase/migrations/20261105065959_debt_currency_precision.sql` was reviewed and applied only to the designated sandbox (`bitepxsdujceoszbldhd`); its local version matches remote migration history. It widens existing debt monetary columns and adds the two nullable optional columns when absent without changing existing ownership or RLS policies. Synthetic values against the actual table type verified currency precision; no user rows were accessed. Four focused test files pass 15 tests and TypeScript passes. Native runtime/layout and authenticated end-to-end save/reload remain unverified. Do not apply the older household migration as part of this precision fix. Any future rollback must preserve new fractional digits rather than narrowing back to two decimals.

@@ -16,6 +16,7 @@ import * as Crypto from 'expo-crypto';
 import type { Session } from '@supabase/supabase-js';
 import {
   AI_REFERRAL_SOURCE,
+  CURRENCY_OPTIONS, resolveCurrencyOption, activeDebts, acceptMoneyEdit, acceptAprEdit, formatEditableMoney,
   COUNTRY_OPTIONS,
   DEBT_CATEGORIES,
   PAY_FREQUENCY_OPTIONS,
@@ -51,6 +52,7 @@ import {
   saveUserOnboardingData,
   upsertUserDebt,
 } from './onboarding-storage';
+import { assertCurrencyChangeAllowed } from './debt-storage-domain';
 import { AppIcon } from './components/AppIcon';
 import { Bar, Card, SnapshotCard, ui } from './components/FinancialScreen';
 import { FiveTabShell } from './FiveTabShell';
@@ -201,12 +203,14 @@ export function DebtFreeFlow({
 
   // Step 4 Country picker toggle
   const [showCountryPicker, setShowCountryPicker] = useState(false);
+  const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
+  const [currencySearch, setCurrencySearch] = useState('');
 
   // Onboarding Step 1 (Income) local text state
   const [incomeInput, setIncomeInput] = useState(() =>
     onboardingData && onboardingData.primaryIncomeAmount > 0
-      ? onboardingData.primaryIncomeAmount.toFixed(2)
-      : '5200.00',
+      ? formatEditableMoney(onboardingData.primaryIncomeAmount, resolveCurrencyOption(onboardingData).code)
+      : '5200',
   );
   const [showAddIncomeForm, setShowAddIncomeForm] = useState(false);
   const [extraIncomeName, setExtraIncomeName] = useState('');
@@ -227,7 +231,7 @@ export function DebtFreeFlow({
 
   // Onboarding Step 4 (Payoff strategy) extra monthly payment input
   const [extraPaymentInput, setExtraPaymentInput] = useState(() =>
-    onboardingData ? onboardingData.extraMonthlyPayment.toFixed(2) : '150.00',
+    onboardingData ? formatEditableMoney(onboardingData.extraMonthlyPayment, resolveCurrencyOption(onboardingData).code) : '150',
   );
 
   const countryInfo = useMemo(() => {
@@ -235,17 +239,19 @@ export function DebtFreeFlow({
     return COUNTRY_OPTIONS.find(c => c.code === code) ?? COUNTRY_OPTIONS[0];
   }, [onboardingData?.countryCode]);
 
-  const currencySymbol = countryInfo.symbol;
+  const currency = resolveCurrencyOption(onboardingData);
+  const currencySymbol = currency.symbol;
+  const currencyCode = currency.code;
 
   const payoffPlan = useMemo(() => {
     if (!onboardingData) return null;
-    const parsedExtra = parseMoneyInput(extraPaymentInput);
+    const parsedExtra = parseMoneyInput(extraPaymentInput, currencyCode);
     const effectiveExtra =
       stage === 'onboard_4' && parsedExtra !== null
         ? parsedExtra
         : onboardingData.extraMonthlyPayment;
-    return calculatePayoffPlan(onboardingData.debts, onboardingData.strategy, effectiveExtra);
-  }, [onboardingData, extraPaymentInput, stage]);
+    return calculatePayoffPlan(onboardingData.debts, onboardingData.strategy, effectiveExtra, new Date(), currencyCode);
+  }, [onboardingData, extraPaymentInput, stage, currencyCode]);
 
   const clearErrors = () => {
     setLocalError('');
@@ -311,12 +317,12 @@ export function DebtFreeFlow({
     setEditingDebtId(item.id);
     setDebtCategory(item.category);
     setDebtName(item.name);
-    setDebtBalance(item.balance.toFixed(2));
-    setDebtOriginalBalance(item.originalBalance !== null ? item.originalBalance.toFixed(2) : '');
+    setDebtBalance(formatEditableMoney(item.balance, currencyCode));
+    setDebtOriginalBalance(item.originalBalance !== null ? formatEditableMoney(item.originalBalance, currencyCode) : '');
     setDebtApr(String(item.apr));
-    setDebtMinimum(item.minimumPayment.toFixed(2));
+    setDebtMinimum(formatEditableMoney(item.minimumPayment, currencyCode));
     setDebtDueDay(item.dueDay !== null ? String(item.dueDay) : '');
-    setDebtCreditLimit(item.creditLimit !== null ? item.creditLimit.toFixed(2) : '');
+    setDebtCreditLimit(item.creditLimit !== null ? formatEditableMoney(item.creditLimit, currencyCode) : '');
     setShowDebtForm(true);
   };
 
@@ -332,7 +338,7 @@ export function DebtFreeFlow({
       minimumPaymentRaw: debtMinimum,
       dueDayRaw: debtDueDay,
       creditLimitRaw: debtCreditLimit,
-    });
+    }, currencyCode);
     if (!validation.valid) {
       setLocalError(validation.error);
       return;
@@ -497,7 +503,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 02: SIGN-UP STEP 1 OF 4 â€” CREATE ACCOUNT / SIGN IN (signup_02.png)
+  // SCREEN 02: SIGN-UP STEP 1 OF 4 — CREATE ACCOUNT / SIGN IN (signup_02.png)
   // ============================================================================
   if (stage === 'signup_1') {
     const googleDisabled = authBusy || !configured;
@@ -549,7 +555,7 @@ export function DebtFreeFlow({
               authBusy
                 ? 'Signing in with Google'
                 : isSignedIn
-                  ? 'Connected with Google â€” tap to switch account'
+                  ? 'Connected with Google — tap to switch account'
                   : 'Continue with Google'
             }
             accessibilityState={{ disabled: googleDisabled, busy: authBusy }}
@@ -671,13 +677,13 @@ export function DebtFreeFlow({
     return (
       <SafeAreaView style={[styles.root, styles.centered]} edges={['top', 'bottom', 'left', 'right']}>
         <ActivityIndicator size="large" color="#58CBD0" />
-        <Text style={[styles.helpText, { marginTop: 12 }]}>Loading your account setupâ€¦</Text>
+        <Text style={[styles.helpText, { marginTop: 12 }]}>Loading your account setup…</Text>
       </SafeAreaView>
     );
   }
 
   // ============================================================================
-  // SCREEN 03: SIGN-UP STEP 2 OF 4 â€” YOUR GOALS (signup_03.png)
+  // SCREEN 03: SIGN-UP STEP 2 OF 4 — YOUR GOALS (signup_03.png)
   // ============================================================================
   if (stage === 'signup_2') {
     const toggleGoal = (goal: string) => {
@@ -715,7 +721,7 @@ export function DebtFreeFlow({
               What brings you to DebtFree?
             </Text>
             <Text style={styles.introSubtitle}>
-              Choose what matters most. Weâ€™ll use it to tailor your experience.
+              Choose what matters most. We’ll use it to tailor your experience.
             </Text>
           </View>
 
@@ -759,7 +765,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 04: SIGN-UP STEP 3 OF 4 â€” HOW YOU FOUND US (signup_04.png)
+  // SCREEN 04: SIGN-UP STEP 3 OF 4 — HOW YOU FOUND US (signup_04.png)
   // ============================================================================
   if (stage === 'signup_3') {
     const isAiSelected = onboardingData.referralSource === AI_REFERRAL_SOURCE;
@@ -878,7 +884,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 05: SIGN-UP STEP 4 OF 4 â€” ABOUT YOU (signup_05.png)
+  // SCREEN 05: SIGN-UP STEP 4 OF 4 — ABOUT YOU (signup_05.png)
   // ============================================================================
   if (stage === 'signup_4') {
     const handleStartOnboarding = () => {
@@ -893,6 +899,7 @@ export function DebtFreeFlow({
       void persistAndMove(
         {
           countryCode: onboardingData.countryCode,
+          currencyCode,
           managesWithPartner: onboardingData.managesWithPartner,
           worksWithProfessional: onboardingData.worksWithProfessional,
           signupCompleted: true,
@@ -943,10 +950,25 @@ export function DebtFreeFlow({
                     onUpdateOnboardingData({
                       ...onboardingData,
                       countryCode: opt.code as CountryCode,
+                      currencyCode: onboardingData.currencyCode ?? (onboardingData.debts.length || onboardingData.primaryIncomeAmount || onboardingData.additionalIncomes.length || onboardingData.extraMonthlyPayment ? currencyCode : opt.currency),
                     });
                     setShowCountryPicker(false);
                   }}
                 />
+              ))}
+            </View>
+          ) : null}
+
+          <Text style={styles.fieldLabel}>Currency</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Choose currency" style={styles.countrySelector} onPress={() => setShowCurrencyPicker(prev => !prev)}>
+            <Text style={styles.choiceText}>{currency.code} ({currency.symbol})</Text>
+            <AppIcon name="chevronDown" size={16} color="#AAAAAA" />
+          </Pressable>
+          {showCurrencyPicker ? (
+            <View style={styles.countryDropdown}>
+              <TextInput accessibilityLabel="Search currencies" style={styles.textInputField} value={currencySearch} onChangeText={setCurrencySearch} placeholder="Search currency code" placeholderTextColor="#6E7571" />
+              {CURRENCY_OPTIONS.filter(opt => (opt.code + ' ' + opt.label + ' ' + opt.symbol).toLowerCase().includes(currencySearch.toLowerCase())).map(opt => (
+                <ChoiceButton key={opt.code} label={opt.code + ' (' + opt.symbol + ')'} selected={currencyCode === opt.code} onPress={() => { try { assertCurrencyChangeAllowed(onboardingData, opt.code); onUpdateOnboardingData({ ...onboardingData, currencyCode: opt.code }); setLocalError(''); setShowCurrencyPicker(false); setCurrencySearch(''); } catch (error) { setLocalError(error instanceof Error ? error.message : 'Cannot change currency.'); } }} />
               ))}
             </View>
           ) : null}
@@ -999,7 +1021,7 @@ export function DebtFreeFlow({
 
           <View style={[styles.calloutTeal, { marginTop: 28 }]}>
             <Text style={styles.calloutTealText}>
-              Next, weâ€™ll personalize your debt payoff plan in five short steps.
+              Next, we’ll personalize your debt payoff plan in five short steps.
             </Text>
           </View>
 
@@ -1030,18 +1052,20 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 06: ONBOARDING SETUP 1 OF 5 â€” INCOME (onboard_01.png)
+  // SCREEN 06: ONBOARDING SETUP 1 OF 5 — INCOME (onboard_01.png)
   // ============================================================================
   if (stage === 'onboard_1') {
-    const parsedPrimary = parseMoneyInput(incomeInput) ?? 0;
+    const parsedPrimary = parseMoneyInput(incomeInput, currencyCode) ?? 0;
     const primaryMonthly = normalizeMonthlyIncome(
       parsedPrimary,
       onboardingData.primaryPayFrequency,
+      currencyCode,
     );
     const totalMonthlyIncome = calculateTotalMonthlyIncome(
       parsedPrimary,
       onboardingData.primaryPayFrequency,
       onboardingData.additionalIncomes,
+      currencyCode,
     );
 
     const handleAddExtraIncome = () => {
@@ -1051,7 +1075,7 @@ export function DebtFreeFlow({
         setLocalError('Enter a name for the additional income source (for example, Partner income).');
         return;
       }
-      const parsedAmt = parseMoneyInput(extraIncomeAmount);
+      const parsedAmt = parseMoneyInput(extraIncomeAmount, currencyCode);
       if (parsedAmt === null || parsedAmt <= 0) {
         setLocalError('Enter an income amount greater than $0.');
         return;
@@ -1061,7 +1085,7 @@ export function DebtFreeFlow({
         name: nameTrimmed,
         amount: parsedAmt,
         frequency: extraIncomeFreq,
-        monthlyAmount: normalizeMonthlyIncome(parsedAmt, extraIncomeFreq),
+        monthlyAmount: normalizeMonthlyIncome(parsedAmt, extraIncomeFreq, currencyCode),
       };
       onUpdateOnboardingData({
         ...onboardingData,
@@ -1082,7 +1106,7 @@ export function DebtFreeFlow({
     };
 
     const handleContinueIncome = () => {
-      const check = validateIncomeStep(incomeInput, onboardingData.additionalIncomes);
+      const check = validateIncomeStep(incomeInput, onboardingData.additionalIncomes, currencyCode);
       if (!check.valid) {
         setLocalError(check.error);
         return;
@@ -1090,6 +1114,7 @@ export function DebtFreeFlow({
       const monthly = normalizeMonthlyIncome(
         check.primaryAmount,
         onboardingData.primaryPayFrequency,
+        currencyCode,
       );
       void persistAndMove(
         {
@@ -1120,7 +1145,7 @@ export function DebtFreeFlow({
           <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
             <View style={styles.introBox}>
               <Text style={styles.introTitle} accessibilityRole="header">
-                Letâ€™s start with your income
+                Let’s start with your income
               </Text>
               <Text style={styles.introSubtitle}>
                 What is your monthly take-home income, after taxes?
@@ -1137,20 +1162,20 @@ export function DebtFreeFlow({
                 value={incomeInput}
                 onChangeText={text => {
                   clearErrors();
-                  setIncomeInput(text);
+                  setIncomeInput(prev => acceptMoneyEdit(prev, text, currencyCode));
                 }}
                 placeholder="5,200.00"
                 placeholderTextColor="#6E7571"
               />
-              <Text style={styles.fieldMutedUnit}>{countryInfo.currency}</Text>
+              <Text style={styles.fieldMutedUnit}>{currencyCode}</Text>
             </View>
             <Text style={styles.helpText}>
               {onboardingData.primaryPayFrequency === 'monthly'
-                ? `Monthly equivalent: ${formatCurrency(primaryMonthly, currencySymbol)}`
-                : `${formatCurrency(parsedPrimary, currencySymbol)} (${
+                ? `Monthly equivalent: ${formatCurrency(primaryMonthly, currencyCode)}`
+                : `${formatCurrency(parsedPrimary, currencyCode)} (${
                     PAY_FREQUENCY_OPTIONS.find(o => o.value === onboardingData.primaryPayFrequency)
                       ?.label ?? ''
-                  }) = ${formatCurrency(primaryMonthly, currencySymbol)} / month`}
+                  }) = ${formatCurrency(primaryMonthly, currencyCode)} / month`}
             </Text>
 
             <Text style={styles.fieldLabel}>How often are you paid?</Text>
@@ -1195,12 +1220,12 @@ export function DebtFreeFlow({
                 <View style={styles.flex1}>
                   <Text style={styles.addedItemTitle}>{source.name}</Text>
                   <Text style={styles.addedItemSub}>
-                    {`${formatCurrency(source.amount, currencySymbol)} (${
+                    {`${formatCurrency(source.amount, currencyCode)} (${
                       PAY_FREQUENCY_OPTIONS.find(f => f.value === source.frequency)?.label ??
                       source.frequency
-                    }) â†’ ${formatCurrency(
-                      normalizeMonthlyIncome(source.amount, source.frequency),
-                      currencySymbol,
+                    }) → ${formatCurrency(
+                      normalizeMonthlyIncome(source.amount, source.frequency, currencyCode),
+                      currencyCode,
                     )}/mo`}
                   </Text>
                 </View>
@@ -1232,7 +1257,7 @@ export function DebtFreeFlow({
                   style={styles.textInputField}
                   keyboardType="decimal-pad"
                   value={extraIncomeAmount}
-                  onChangeText={setExtraIncomeAmount}
+                  onChangeText={text => setExtraIncomeAmount(prev => acceptMoneyEdit(prev, text, currencyCode))}
                   placeholder="1500.00"
                   placeholderTextColor="#6E7571"
                 />
@@ -1299,7 +1324,7 @@ export function DebtFreeFlow({
               <View style={styles.summaryRowBox}>
                 <Text style={styles.summaryRowLabel}>Total monthly household income</Text>
                 <Text style={styles.summaryRowValue}>
-                  {formatCurrency(totalMonthlyIncome, currencySymbol)}
+                  {formatCurrency(totalMonthlyIncome, currencyCode)}
                 </Text>
               </View>
             ) : null}
@@ -1339,7 +1364,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 07: ONBOARDING SETUP 2 OF 5 â€” CHOOSE PREMIUM (onboard_02.png)
+  // SCREEN 07: ONBOARDING SETUP 2 OF 5 — CHOOSE PREMIUM (onboard_02.png)
   // ============================================================================
   if (stage === 'onboard_2') {
     const selectPlan = (plan: PremiumPlanChoice) => {
@@ -1365,7 +1390,7 @@ export function DebtFreeFlow({
         <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
           <View style={[styles.introBox, styles.introCompact]}>
             <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">
-              Choose how youâ€™d like to track
+              Choose how you’d like to track
             </Text>
             <Text style={styles.introSubtitle}>
               Start with manual tracking or add optional bank account syncing.
@@ -1451,7 +1476,7 @@ export function DebtFreeFlow({
               <Text style={styles.calloutOrangeTitle}>Sandbox preview note</Text>
               <Text style={styles.calloutOrangeText}>
                 Live store billing and bank-sync aggregation are not enabled in this test build. No
-                charge or bank connection will occur now â€” your preference is saved and you can
+                charge or bank connection will occur now — your preference is saved and you can
                 continue setting up your debts manually.
               </Text>
             </View>
@@ -1481,7 +1506,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 08: ONBOARDING SETUP 3 OF 5 â€” ADD YOUR DEBTS (onboard_03.png)
+  // SCREEN 08: ONBOARDING SETUP 3 OF 5 — ADD YOUR DEBTS (onboard_03.png)
   // ============================================================================
   if (stage === 'onboard_3') {
     const mortgageDebt = onboardingData.debts.find(d => d.category === 'Mortgage');
@@ -1489,14 +1514,6 @@ export function DebtFreeFlow({
     const otherDebts = onboardingData.debts.filter(
       d => d.category !== 'Mortgage' && d.category !== 'Auto loan',
     );
-
-    const handleHomeStatus = (status: HomeOwnershipStatus) => {
-      clearErrors();
-      onUpdateOnboardingData({ ...onboardingData, homeStatus: status });
-      if (status === 'Own' && !mortgageDebt) {
-        openNewDebtEditor('Mortgage');
-      }
-    };
 
     const handleVehicleStatus = (status: VehicleOwnershipStatus) => {
       clearErrors();
@@ -1544,25 +1561,11 @@ export function DebtFreeFlow({
           <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
             <View style={[styles.introBox, styles.introCompact]}>
               <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">
-                Letâ€™s add your debts
+                Let’s add your debts
               </Text>
               <Text style={styles.introSubtitle}>
-                Tell us what you own or pay for. Weâ€™ll only add a debt when a balance is owed.
+                Tell us what you own or pay for. We’ll only add a debt when a balance is owed.
               </Text>
-            </View>
-
-            <Text style={styles.splitLabel}>Your home</Text>
-            <View style={styles.splitGrid3}>
-              {(['Own', 'Rent', 'Other'] as HomeOwnershipStatus[]).map(status => (
-                <ChoiceButton
-                  key={status}
-                  label={status}
-                  compact
-                  flex
-                  selected={onboardingData.homeStatus === status}
-                  onPress={() => handleHomeStatus(status)}
-                />
-              ))}
             </View>
 
             <Text style={styles.splitLabel}>Your vehicle</Text>
@@ -1581,49 +1584,10 @@ export function DebtFreeFlow({
 
             <Text style={styles.sectionTitle}>Accounts to add</Text>
 
-            {/* Mortgage Row */}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Mortgage â€” Home loan details"
-              style={[
-                styles.twoRowCard,
-                (onboardingData.homeStatus === 'Own' || Boolean(mortgageDebt)) &&
-                  styles.twoRowCardSelected,
-              ]}
-              onPress={() => openNewDebtEditor('Mortgage')}
-            >
-              <View style={styles.twoRowLeft}>
-                <View style={styles.iconCircle}>
-                  <AppIcon name="homeLoan" size={18} color="#91DED7" />
-                </View>
-                <View style={styles.flex1}>
-                  <Text style={styles.twoRowTitle}>Mortgage</Text>
-                  <Text style={styles.twoRowSub}>
-                    {mortgageDebt
-                      ? `${mortgageDebt.name} Â· ${formatCurrency(mortgageDebt.balance, currencySymbol)} Â· ${mortgageDebt.apr}% APR`
-                      : 'Home loan details'}
-                  </Text>
-                </View>
-              </View>
-              <View
-                style={[
-                  styles.selectCircle,
-                  (onboardingData.homeStatus === 'Own' || Boolean(mortgageDebt)) &&
-                    styles.selectCircleSelected,
-                ]}
-              >
-                <AppIcon
-                  name={Boolean(mortgageDebt) || onboardingData.homeStatus === 'Own' ? 'check' : 'plus'}
-                  size={11}
-                  color="#FFFFFF"
-                />
-              </View>
-            </Pressable>
-
             {/* Auto Loan Row */}
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Auto loan â€” Balance, APR and payment"
+              accessibilityLabel="Auto loan — Balance, APR and payment"
               style={[
                 styles.twoRowCard,
                 (onboardingData.vehicleStatus === 'Finance' || Boolean(autoLoanDebt)) &&
@@ -1639,7 +1603,7 @@ export function DebtFreeFlow({
                   <Text style={styles.twoRowTitle}>Auto loan</Text>
                   <Text style={styles.twoRowSub}>
                     {autoLoanDebt
-                      ? `${autoLoanDebt.name} Â· ${formatCurrency(autoLoanDebt.balance, currencySymbol)} Â· ${autoLoanDebt.apr}% APR`
+                      ? `${autoLoanDebt.name} Â· ${formatCurrency(autoLoanDebt.balance, currencyCode)} Â· ${autoLoanDebt.apr}% APR`
                       : 'Balance, APR & payment'}
                   </Text>
                 </View>
@@ -1662,7 +1626,7 @@ export function DebtFreeFlow({
             {/* Credit cards & other loans Row */}
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Credit cards and other loans â€” Add each account"
+              accessibilityLabel="Credit cards and other loans — Add each account"
               style={[
                 styles.twoRowCard,
                 otherDebts.length > 0 && styles.twoRowCardSelected,
@@ -1716,7 +1680,7 @@ export function DebtFreeFlow({
                   style={styles.textInputField}
                   value={debtName}
                   onChangeText={setDebtName}
-                  placeholder="e.g., Chase Freedom, Auto Loan, Mortgage"
+                  placeholder="e.g., Chase Freedom, Auto Loan"
                   placeholderTextColor="#6E7571"
                 />
 
@@ -1728,7 +1692,7 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtBalance}
-                      onChangeText={setDebtBalance}
+                      onChangeText={text => setDebtBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="4200.00"
                       placeholderTextColor="#6E7571"
                     />
@@ -1740,7 +1704,7 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtApr}
-                      onChangeText={setDebtApr}
+                      onChangeText={text => setDebtApr(prev => acceptAprEdit(prev, text))}
                       placeholder="19.99"
                       placeholderTextColor="#6E7571"
                     />
@@ -1755,13 +1719,13 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtMinimum}
-                      onChangeText={setDebtMinimum}
+                      onChangeText={text => setDebtMinimum(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="125.00"
                       placeholderTextColor="#6E7571"
                     />
                   </View>
                   <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>Due day (1â€“31, optional)</Text>
+                    <Text style={styles.fieldLabelSmall}>Due day (1–31, optional)</Text>
                     <TextInput
                       accessibilityLabel="Due day of month"
                       style={styles.textInputField}
@@ -1782,7 +1746,7 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtCreditLimit}
-                      onChangeText={setDebtCreditLimit}
+                      onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="10000.00"
                       placeholderTextColor="#6E7571"
                     />
@@ -1797,7 +1761,7 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtOriginalBalance}
-                      onChangeText={setDebtOriginalBalance}
+                      onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="25000.00"
                       placeholderTextColor="#6E7571"
                     />
@@ -1835,19 +1799,19 @@ export function DebtFreeFlow({
             ) : null}
 
             {/* Added Debts List */}
-            {onboardingData.debts.length > 0 ? (
+            {activeDebts(onboardingData.debts).length > 0 ? (
               <View style={{ marginTop: 10 }}>
                 <Text style={styles.sectionTitle}>
-                  Added accounts ({onboardingData.debts.length})
+                  Added accounts ({activeDebts(onboardingData.debts).length})
                 </Text>
-                {onboardingData.debts.map(item => (
+                {activeDebts(onboardingData.debts).map(item => (
                   <View key={item.id} style={styles.addedItemCard}>
                     <View style={styles.flex1}>
                       <Text style={styles.addedItemTitle}>
                         {`${item.name} Â· ${item.category}`}
                       </Text>
                       <Text style={styles.addedItemSub}>
-                        {`${formatCurrency(item.balance, currencySymbol)} balance Â· ${item.apr}% APR Â· ${formatCurrency(item.minimumPayment, currencySymbol)}/mo min${
+                        {`${formatCurrency(item.balance, currencyCode)} balance Â· ${item.apr}% APR Â· ${formatCurrency(item.minimumPayment, currencyCode)}/mo min${
                           item.dueDay ? ` Â· Due day ${item.dueDay}` : ''
                         }`}
                       </Text>
@@ -1905,7 +1869,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 09: ONBOARDING SETUP 4 OF 5 â€” PAYOFF STRATEGY (onboard_04.png)
+  // SCREEN 09: ONBOARDING SETUP 4 OF 5 — PAYOFF STRATEGY (onboard_04.png)
   // ============================================================================
   if (stage === 'onboard_4') {
     const selectStrategy = (strategy: PayoffStrategy) => {
@@ -1914,7 +1878,7 @@ export function DebtFreeFlow({
     };
 
     const handleContinueStrategy = () => {
-      const check = validateExtraPaymentInput(extraPaymentInput);
+      const check = validateExtraPaymentInput(extraPaymentInput, currencyCode);
       if (!check.valid) {
         setLocalError(check.error);
         return;
@@ -1957,7 +1921,7 @@ export function DebtFreeFlow({
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ selected: onboardingData.strategy === 'snowball' }}
-              accessibilityLabel="Debt Snowball â€” Pay off the smallest balance first"
+              accessibilityLabel="Debt Snowball — Pay off the smallest balance first"
               style={[
                 styles.twoRowCard,
                 { padding: 14 },
@@ -1990,7 +1954,7 @@ export function DebtFreeFlow({
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ selected: onboardingData.strategy === 'avalanche' }}
-              accessibilityLabel="Debt Avalanche â€” Target the highest interest rate"
+              accessibilityLabel="Debt Avalanche — Target the highest interest rate"
               style={[
                 styles.twoRowCard,
                 { padding: 14 },
@@ -2031,7 +1995,7 @@ export function DebtFreeFlow({
                 value={extraPaymentInput}
                 onChangeText={text => {
                   clearErrors();
-                  setExtraPaymentInput(text);
+                  setExtraPaymentInput(prev => acceptMoneyEdit(prev, text, currencyCode));
                 }}
                 placeholder="150.00"
                 placeholderTextColor="#6E7571"
@@ -2039,7 +2003,7 @@ export function DebtFreeFlow({
               <Text style={styles.fieldMutedUnit}>/ month</Text>
             </View>
             <Text style={styles.helpText}>
-              Enter $0 if you donâ€™t plan to make extra payments.
+              Enter $0 if you don’t plan to make extra payments.
             </Text>
 
             {payoffPlan && payoffPlan.payoffOrder.length > 0 ? (
@@ -2052,13 +2016,13 @@ export function DebtFreeFlow({
                 <Text style={styles.strategyPreviewLine}>
                   {`First target: ${payoffPlan.firstTarget?.name ?? 'None'} (${formatCurrency(
                     payoffPlan.firstTarget?.firstMonthPayment ?? 0,
-                    currencySymbol,
+                    currencyCode,
                   )}/mo)`}
                 </Text>
                 <Text style={styles.strategyPreviewLine}>
                   {`Total monthly plan: ${formatCurrency(
                     payoffPlan.monthlyTotalPayment,
-                    currencySymbol,
+                    currencyCode,
                   )} Â· Debt-free: ${payoffPlan.debtFreeDateLabel}${
                     payoffPlan.monthsToPayoff !== null
                       ? ` (${payoffPlan.monthsToPayoff} mo)`
@@ -2070,8 +2034,8 @@ export function DebtFreeFlow({
 
             <View style={[styles.calloutTeal, { marginTop: 18 }]}>
               <Text style={styles.calloutTealText}>
-                Weâ€™ll use your debts and extra payment estimate to prepare a payoff plan. This
-                wonâ€™t schedule or send payments.
+                We’ll use your debts and extra payment estimate to prepare a payoff plan. This
+                won’t schedule or send payments.
               </Text>
             </View>
 
@@ -2103,7 +2067,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 10: ONBOARDING SETUP 5 OF 5 â€” NOTIFICATIONS (onboard_05.png)
+  // SCREEN 10: ONBOARDING SETUP 5 OF 5 — NOTIFICATIONS (onboard_05.png)
   // ============================================================================
   if (stage === 'onboard_5') {
     const prefs = onboardingData.notifications;
@@ -2222,7 +2186,7 @@ export function DebtFreeFlow({
 
           <View style={[styles.calloutTeal, { marginTop: 24 }]}>
             <Text style={styles.calloutTealText}>
-              Weâ€™ll ask your device for notification permission only after you choose to enable
+              We’ll ask your device for notification permission only after you choose to enable
               alerts.
             </Text>
           </View>
@@ -2348,7 +2312,7 @@ export function DebtFreeFlow({
                   style={styles.textInputField}
                   keyboardType="decimal-pad"
                   value={debtBalance}
-                  onChangeText={setDebtBalance}
+                  onChangeText={text => setDebtBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
                   placeholder="3500.00"
                   placeholderTextColor="#6E7571"
                 />
@@ -2360,7 +2324,7 @@ export function DebtFreeFlow({
                   style={styles.textInputField}
                   keyboardType="decimal-pad"
                   value={debtApr}
-                  onChangeText={setDebtApr}
+                  onChangeText={text => setDebtApr(prev => acceptAprEdit(prev, text))}
                   placeholder="21.99"
                   placeholderTextColor="#6E7571"
                 />
@@ -2374,13 +2338,13 @@ export function DebtFreeFlow({
                   style={styles.textInputField}
                   keyboardType="decimal-pad"
                   value={debtMinimum}
-                  onChangeText={setDebtMinimum}
+                  onChangeText={text => setDebtMinimum(prev => acceptMoneyEdit(prev, text, currencyCode))}
                   placeholder="95.00"
                   placeholderTextColor="#6E7571"
                 />
               </View>
               <View style={styles.flex1}>
-                <Text style={styles.fieldLabelSmall}>Due day (1â€“31)</Text>
+                <Text style={styles.fieldLabelSmall}>Due day (1–31)</Text>
                 <TextInput
                   accessibilityLabel="Due day"
                   style={styles.textInputField}
@@ -2393,8 +2357,8 @@ export function DebtFreeFlow({
               </View>
             </View>
             <View style={styles.choiceGrid2}>
-              <View style={styles.flex1}><Text style={styles.fieldLabelSmall}>Original balance (optional)</Text><TextInput accessibilityLabel="Original balance" style={styles.textInputField} keyboardType="decimal-pad" value={debtOriginalBalance} onChangeText={setDebtOriginalBalance} placeholder="Optional" placeholderTextColor="#6E7571" /></View>
-              <View style={styles.flex1}><Text style={styles.fieldLabelSmall}>Credit limit (optional)</Text><TextInput accessibilityLabel="Credit limit" style={styles.textInputField} keyboardType="decimal-pad" value={debtCreditLimit} onChangeText={setDebtCreditLimit} placeholder="Optional" placeholderTextColor="#6E7571" /></View>
+              <View style={styles.flex1}><Text style={styles.fieldLabelSmall}>Original balance (optional)</Text><TextInput accessibilityLabel="Original balance" style={styles.textInputField} keyboardType="decimal-pad" value={debtOriginalBalance} onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))} placeholder="Optional" placeholderTextColor="#6E7571" /></View>
+              <View style={styles.flex1}><Text style={styles.fieldLabelSmall}>Credit limit (optional)</Text><TextInput accessibilityLabel="Credit limit" style={styles.textInputField} keyboardType="decimal-pad" value={debtCreditLimit} onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))} placeholder="Optional" placeholderTextColor="#6E7571" /></View>
             </View>            {!!localError ? (
               <Text style={styles.errorText} accessibilityRole="alert">
                 {localError}
@@ -2428,10 +2392,10 @@ export function DebtFreeFlow({
 
   return (
     <FiveTabShell key={session?.user.id ?? onboardingData.userId}
-      debt={<DebtScreen debts={onboardingData.debts} plan={plan} currencySymbol={currencySymbol} editor={debtEditor} error={localError} onAdd={() => openNewDebtEditor('Credit card')} onEdit={openEditDebtEditor} onRemove={item => { void handleDeleteDebt(item.id); }} onSettings={editSetup} />}
-      transactions={<TransactionsScreen debts={onboardingData.debts} onSettings={editSetup} />}
-      budget={section => <BudgetScreen key={section} initialSection={section} data={onboardingData} plan={plan} currencySymbol={currencySymbol} onEditIncome={editSetup} onSettings={editSetup} onStrategy={value => { void handleToggleHomeStrategy(value); }} onExtra={value => { void handleSaveExtra(value); }} error={localError} />}
-      progress={<ProgressScreen debts={onboardingData.debts} currencySymbol={currencySymbol} onSettings={editSetup} />}
+      debt={<DebtScreen debts={activeDebts(onboardingData.debts)} plan={plan} currencySymbol={currencyCode} editor={debtEditor} error={localError} onAdd={() => openNewDebtEditor('Credit card')} onEdit={openEditDebtEditor} onRemove={item => { void handleDeleteDebt(item.id); }} onSettings={editSetup} />}
+      transactions={<TransactionsScreen debts={activeDebts(onboardingData.debts)} onSettings={editSetup} />}
+      budget={section => <BudgetScreen key={section} initialSection={section} data={{ ...onboardingData, debts: activeDebts(onboardingData.debts) }} plan={plan} currencySymbol={currencyCode} currencyCode={currencyCode} onEditIncome={editSetup} onSettings={editSetup} onStrategy={value => { void handleToggleHomeStrategy(value); }} onExtra={value => { void handleSaveExtra(value); }} error={localError} />}
+      progress={<ProgressScreen debts={activeDebts(onboardingData.debts)} currencySymbol={currencyCode} onSettings={editSetup} />}
       home={navigate => (
     <View style={styles.root}>
       <View style={styles.homeHeader}>
@@ -2492,7 +2456,7 @@ export function DebtFreeFlow({
           <Bar percent={plan.progressPercent} />
           <Text style={ui.small}>Balance snapshot · Keep building your freedom.</Text>
         </Card>
-        <SnapshotCard debts={onboardingData.debts} currencySymbol={currencySymbol} />
+        <SnapshotCard debts={activeDebts(onboardingData.debts)} currencySymbol={currencyCode} />
         <Card>
           <View style={[ui.row, { justifyContent: 'space-between' }]}>
             <Text style={ui.heading}>Payoff strategy</Text>
@@ -2562,7 +2526,7 @@ export function DebtFreeFlow({
                 <View style={{ flex: 1 }}>
                   <Text style={ui.heading}>{item.name}</Text>
                   <Text style={ui.small}>
-                    {`${item.apr}% APR · ${formatCurrency(item.firstMonthPayment, currencySymbol)}/mo`}
+                    {`${item.apr}% APR · ${formatCurrency(item.firstMonthPayment, currencyCode)}/mo`}
                   </Text>
                 </View>
                 <View style={{ alignItems: 'flex-end', gap: 6 }}>

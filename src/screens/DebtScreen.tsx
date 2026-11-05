@@ -4,7 +4,7 @@ import { Bar, Card, categoryDebts, FinancialScreen, snapshot, ui } from '../comp
 import { AppIcon } from '../components/AppIcon';
 import { formatCurrency, type DebtItem, type PayoffPlanResult } from '../onboarding-domain';
 
-const filters = ['Cards & Loans', 'Home & Auto', 'All Debts'] as const;
+const filters = ['Cards & Loans', 'Auto', 'All Debts'] as const;
 const sorts = ['Name', 'Balance', 'APR', 'Payoff'] as const;
 
 export function DebtScreen({

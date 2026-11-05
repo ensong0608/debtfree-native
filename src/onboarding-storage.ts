@@ -6,11 +6,13 @@ import { getSupabaseClient } from './auth';
 import { createChunkedStorage, type KeyValueStore } from './secure-chunks';
 import {
   createDefaultOnboardingData,
-  roundCents,
+  resolveCurrencyOption,
   type DebtCategory,
   type DebtItem,
   type UserOnboardingData,
 } from './onboarding-domain';
+
+import { assertCurrencyChangeAllowed, canonicalDebtAmount, canonicalOptionalDebtAmount, decodeDebtAmount, validateStoredAmounts } from './debt-storage-domain';
 
 const secureOptions = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
 
@@ -35,6 +37,8 @@ type SupabaseDebtRow = {
   balance: number | string;
   apr: number | string;
   minimum_payment: number | string;
+  original_balance: number | string | null;
+  credit_limit: number | string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -52,24 +56,25 @@ function inferCategoryFromName(name: string): DebtCategory {
 function mergeDebtsWithDatabaseRows(
   metaDebts: DebtItem[],
   dbRows: SupabaseDebtRow[],
+  currency: string,
 ): DebtItem[] {
   if (dbRows.length === 0) return metaDebts;
   const metaById = new Map<string, DebtItem>(metaDebts.map(d => [d.id, d]));
   const merged: DebtItem[] = dbRows.map(row => {
     const existing = metaById.get(row.id);
-    const balance = roundCents(Number(row.balance) || 0);
+    const balance = decodeDebtAmount(row.balance, currency);
     const apr = Number(row.apr) || 0;
-    const minimumPayment = roundCents(Number(row.minimum_payment) || 0);
+    const minimumPayment = decodeDebtAmount(row.minimum_payment, currency);
     return {
       id: row.id,
       name: row.name,
       category: existing?.category ?? inferCategoryFromName(row.name),
       balance,
-      originalBalance: existing?.originalBalance ?? balance,
+      originalBalance: row.original_balance == null ? (existing?.originalBalance ?? null) : decodeDebtAmount(row.original_balance, currency),
       apr,
       minimumPayment,
       dueDay: existing?.dueDay ?? null,
-      creditLimit: existing?.creditLimit ?? null,
+      creditLimit: row.credit_limit == null ? (existing?.creditLimit ?? null) : decodeDebtAmount(row.credit_limit, currency),
       createdAt: row.created_at ?? existing?.createdAt ?? new Date().toISOString(),
       updatedAt: row.updated_at ?? existing?.updatedAt ?? new Date().toISOString(),
     };
@@ -120,24 +125,24 @@ export async function loadUserOnboardingData(session: Session): Promise<UserOnbo
   }
 
   // Fetch authoritative rows from `public.debts` in sandbox Supabase
+  let fetchedRows: SupabaseDebtRow[] = [];
   try {
     const supabase = getSupabaseClient();
     const { data: rows, error } = await supabase
       .from('debts')
-      .select('id, user_id, name, balance, apr, minimum_payment, created_at, updated_at')
+      .select('id, user_id, name, balance, apr, minimum_payment, original_balance, credit_limit, created_at, updated_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: true });
 
-    if (!error && Array.isArray(rows) && rows.length > 0) {
-      base = {
-        ...base,
-        debts: mergeDebtsWithDatabaseRows(base.debts ?? [], rows as SupabaseDebtRow[]),
-      };
-    }
+    if (!error && Array.isArray(rows)) fetchedRows = rows as SupabaseDebtRow[];
   } catch {
     // Offline or transient network error; retain base.debts from local/metadata
   }
+  if (fetchedRows.length > 0) {
+    base = { ...base, debts: mergeDebtsWithDatabaseRows(base.debts ?? [], fetchedRows, resolveCurrencyOption(base).code) };
+  }
 
+  validateStoredAmounts(base);
   try {
     await chunkedStore.setItem(localStateKey(userId), JSON.stringify(base));
   } catch {
@@ -147,12 +152,22 @@ export async function loadUserOnboardingData(session: Session): Promise<UserOnbo
   return base;
 }
 
+async function assertStoredCurrencyUnchanged(data: UserOnboardingData): Promise<void> {
+  const previousRaw = await chunkedStore.getItem(localStateKey(data.userId));
+  if (previousRaw) {
+    const previous = JSON.parse(previousRaw) as UserOnboardingData;
+    if (previous.userId === data.userId && previous.version === 1) assertCurrencyChangeAllowed(previous, resolveCurrencyOption(data).code);
+  }
+}
+
 /**
  * Save updated onboarding state to both local SecureStore and Supabase Auth user_metadata.
  */
 export async function saveUserOnboardingData(
   data: UserOnboardingData,
 ): Promise<UserOnboardingData> {
+  await assertStoredCurrencyUnchanged(data);
+  validateStoredAmounts(data);
   const stamped: UserOnboardingData = {
     ...data,
     updatedAt: new Date().toISOString(),
@@ -182,21 +197,23 @@ export async function upsertUserDebt(
   current: UserOnboardingData,
   debtInput: Omit<DebtItem, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
 ): Promise<UserOnboardingData> {
+  await assertStoredCurrencyUnchanged(current);
   const now = new Date().toISOString();
   const debtId = debtInput.id ?? Crypto.randomUUID();
   const existing = current.debts.find(d => d.id === debtId);
 
+  const currency = resolveCurrencyOption(current).code;
   const debtItem: DebtItem = {
     id: debtId,
     name: debtInput.name.trim(),
     category: debtInput.category,
-    balance: roundCents(debtInput.balance),
+    balance: decodeDebtAmount(debtInput.balance, currency),
     originalBalance:
-      debtInput.originalBalance !== null ? roundCents(debtInput.originalBalance) : null,
+      debtInput.originalBalance !== null ? decodeDebtAmount(debtInput.originalBalance, currency) : null,
     apr: debtInput.apr,
-    minimumPayment: roundCents(debtInput.minimumPayment),
+    minimumPayment: decodeDebtAmount(debtInput.minimumPayment, currency),
     dueDay: debtInput.dueDay,
-    creditLimit: debtInput.creditLimit !== null ? roundCents(debtInput.creditLimit) : null,
+    creditLimit: debtInput.creditLimit !== null ? decodeDebtAmount(debtInput.creditLimit, currency) : null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -207,9 +224,11 @@ export async function upsertUserDebt(
       id: debtItem.id,
       user_id: current.userId,
       name: debtItem.name,
-      balance: debtItem.balance,
+      balance: canonicalDebtAmount(debtItem.balance, currency),
       apr: debtItem.apr,
-      minimum_payment: debtItem.minimumPayment,
+      minimum_payment: canonicalDebtAmount(debtItem.minimumPayment, currency),
+      original_balance: canonicalOptionalDebtAmount(debtItem.originalBalance, currency),
+      credit_limit: canonicalOptionalDebtAmount(debtItem.creditLimit, currency),
       updated_at: now,
     },
     { onConflict: 'id' },

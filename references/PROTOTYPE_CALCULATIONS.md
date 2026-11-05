@@ -1,5 +1,7 @@
 # Prototype Reference & Calculation Mechanics (`debtfree-dashboard`)
 
+> **Reference only; not a native financial specification.** The user clarified this on 2026-11-04. Descriptions and recommendations below have not all been independently validated. In particular, a $25/1% card minimum is not a universal rule, precision is not uniformly integer based, and snapshots cannot establish payment history. Read [the native financial implementation plan](../NATIVE_FINANCIAL_PLAN.md) for qualifications, decision gates and proposed acceptance criteria before reusing any formula.
+
 This document is the architectural reference for how the web prototype at [github.com/ensong0608/debtfree-dashboard](https://github.com/ensong0608/debtfree-dashboard) operates, performs its calculations, manages data, and links transactions, debt accounts, budgets, and progress tracking.
 
 Agents working on `debtfree-native` should consult this guide when porting features or aligning calculation logic.
