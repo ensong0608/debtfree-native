@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -16,6 +16,7 @@ import * as Crypto from 'expo-crypto';
 import type { Session } from '@supabase/supabase-js';
 import {
   AI_REFERRAL_SOURCE,
+  CURRENCY_OPTIONS, resolveCurrencyOption, activeDebts, acceptMoneyEdit, acceptAprEdit, formatEditableMoney,
   COUNTRY_OPTIONS,
   DEBT_CATEGORIES,
   PAY_FREQUENCY_OPTIONS,
@@ -38,7 +39,6 @@ import {
   type DebtCategory,
   type DebtItem,
   type FlowStage,
-  type HomeOwnershipStatus,
   type PayFrequency,
   type PayoffStrategy,
   type PremiumPlanChoice,
@@ -51,13 +51,25 @@ import {
   saveUserOnboardingData,
   upsertUserDebt,
 } from './onboarding-storage';
+import { assertCurrencyChangeAllowed } from './debt-storage-domain';
 import { AppIcon } from './components/AppIcon';
-import { Bar, Card, SnapshotCard, ui } from './components/FinancialScreen';
-import { FiveTabShell } from './FiveTabShell';
-import { DebtScreen } from './screens/DebtScreen';
-import { TransactionsScreen } from './screens/TransactionsScreen';
-import { BudgetScreen } from './screens/BudgetScreen';
-import { ProgressScreen } from './screens/ProgressScreen';
+import { SelectDropdown, type DropdownOption } from './components/SelectDropdown';
+import { HomeScreen } from './screens/HomeScreen';
+import {
+  executeAddTransaction,
+  executeUpdateTransaction,
+  executeDeleteTransaction,
+  executeReconcileDebt,
+  executeRecordBillPayment,
+  executeAddRecurringBill,
+} from './finance/finance-commands';
+import { type LedgerTransaction, type ReconciliationAnchor } from './finance/ledger';
+import { type RecurringBill } from './finance/recurring-bills';
+import { makeMoney } from './finance/money';
+import { parseDateOnly, type DateOnly } from './finance/calendar';
+import {
+  loadFinanceRecords,
+} from './finance-storage';
 
 type Props = {
   session: Session | null;
@@ -68,6 +80,7 @@ type Props = {
   onGoogleSignIn: () => Promise<Session | null>;
   onAppleSignIn: () => Promise<Session | null>;
   onSignOut: () => Promise<void>;
+  onTestUserSignIn?: () => void;
   appleAvailable: boolean;
   configured: boolean;
   configProblem: string | null;
@@ -177,6 +190,13 @@ function ChoiceButton({
   );
 }
 
+const DEBT_CATEGORY_DROPDOWN_OPTIONS: readonly DropdownOption<DebtCategory>[] = DEBT_CATEGORIES.map(cat => ({
+  value: cat,
+  label: cat,
+  icon: cat === 'Credit card' ? 'creditCard' : (cat === 'Auto loan' ? 'auto' : undefined),
+  subtitle: cat === 'Credit card' ? 'Revolving card balance' : (cat === 'Auto loan' ? 'Vehicle loan' : 'Fixed installment loan'),
+}));
+
 export function DebtFreeFlow({
   session,
   onboardingData,
@@ -186,6 +206,7 @@ export function DebtFreeFlow({
   onGoogleSignIn,
   onAppleSignIn,
   onSignOut,
+  onTestUserSignIn,
   appleAvailable,
   configured,
   configProblem,
@@ -201,12 +222,14 @@ export function DebtFreeFlow({
 
   // Step 4 Country picker toggle
   const [showCountryPicker, setShowCountryPicker] = useState(false);
+  const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
+  const [currencySearch, setCurrencySearch] = useState('');
 
   // Onboarding Step 1 (Income) local text state
   const [incomeInput, setIncomeInput] = useState(() =>
     onboardingData && onboardingData.primaryIncomeAmount > 0
-      ? onboardingData.primaryIncomeAmount.toFixed(2)
-      : '5200.00',
+      ? formatEditableMoney(onboardingData.primaryIncomeAmount, resolveCurrencyOption(onboardingData).code)
+      : '5200',
   );
   const [showAddIncomeForm, setShowAddIncomeForm] = useState(false);
   const [extraIncomeName, setExtraIncomeName] = useState('');
@@ -215,6 +238,8 @@ export function DebtFreeFlow({
 
   // Onboarding Step 3 / Home (Add/Edit Debt) form state
   const [editingDebtId, setEditingDebtId] = useState<string | null>(null);
+  // Keep a new debt's identity stable across failed/uncertain saves and retries.
+  const draftDebtIdRef = useRef<string | null>(null);
   const [showDebtForm, setShowDebtForm] = useState(false);
   const [debtCategory, setDebtCategory] = useState<DebtCategory>('Credit card');
   const [debtName, setDebtName] = useState('');
@@ -227,7 +252,7 @@ export function DebtFreeFlow({
 
   // Onboarding Step 4 (Payoff strategy) extra monthly payment input
   const [extraPaymentInput, setExtraPaymentInput] = useState(() =>
-    onboardingData ? onboardingData.extraMonthlyPayment.toFixed(2) : '150.00',
+    onboardingData ? formatEditableMoney(onboardingData.extraMonthlyPayment, resolveCurrencyOption(onboardingData).code) : '150',
   );
 
   const countryInfo = useMemo(() => {
@@ -235,17 +260,254 @@ export function DebtFreeFlow({
     return COUNTRY_OPTIONS.find(c => c.code === code) ?? COUNTRY_OPTIONS[0];
   }, [onboardingData?.countryCode]);
 
-  const currencySymbol = countryInfo.symbol;
+  const currency = resolveCurrencyOption(onboardingData);
+  const currencySymbol = currency.symbol;
+  const currencyCode = currency.code;
+
+  // Transactions, Recurring Bills, and Reconciliation State (T-024, T-025, T-026)
+  const [transactions, setTransactions] = useState<LedgerTransaction[]>(() => {
+    const firstDebt = onboardingData?.debts.find(d => d.category === 'Credit card') ?? onboardingData?.debts[0];
+    const initial: LedgerTransaction[] = [];
+    if (firstDebt) {
+      initial.push({
+        id: 'tx-init-1',
+        accountId: firstDebt.id,
+        date: parseDateOnly('2026-11-01'),
+        amount: makeMoney(currencyCode, 20000),
+        category: 'payment',
+        payee: 'Monthly Card Payment',
+        memo: 'Payment from checking account',
+        source: 'manual',
+        reconciled: true,
+        createdAt: '2026-11-01T12:00:00.000Z',
+        deletedAt: null,
+      });
+      initial.push({
+        id: 'tx-init-3',
+        accountId: firstDebt.id,
+        date: parseDateOnly('2026-11-04'),
+        amount: makeMoney(currencyCode, 2199),
+        category: 'subscription',
+        payee: 'Streaming Subscription',
+        memo: 'Auto-charged to credit card (+debt)',
+        source: 'recurring_bill',
+        reconciled: false,
+        createdAt: '2026-11-04T08:00:00.000Z',
+        deletedAt: null,
+      });
+    }
+    initial.push({
+      id: 'tx-init-2',
+      accountId: null,
+      date: parseDateOnly('2026-11-02'),
+      amount: makeMoney(currencyCode, 6500),
+      category: 'debit_bill',
+      payee: 'Home Internet (Fiber)',
+      memo: 'Paid via checking debit ($0 debt impact)',
+      source: 'recurring_bill',
+      reconciled: false,
+      createdAt: '2026-11-02T09:00:00.000Z',
+      deletedAt: null,
+    });
+    return initial;
+  });
+
+  const [recurringBills, setRecurringBills] = useState<RecurringBill[]>(() => {
+    const firstDebt = onboardingData?.debts.find(d => d.category === 'Credit card') ?? onboardingData?.debts[0];
+    const bills: RecurringBill[] = [
+      {
+        id: 'rb-util-1',
+        name: 'Electric & Gas Utility',
+        category: 'utilities',
+        amount: makeMoney(currencyCode, 14250),
+        dueDay: 14,
+        paymentMethod: 'debit',
+        autoPost: true,
+        active: true,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'rb-util-2',
+        name: 'Home Internet',
+        category: 'utilities',
+        amount: makeMoney(currencyCode, 6500),
+        dueDay: 2,
+        paymentMethod: 'debit',
+        autoPost: true,
+        active: true,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ];
+    if (firstDebt) {
+      bills.push({
+        id: 'rb-sub-1',
+        name: 'Streaming Subscription',
+        category: 'subscription',
+        amount: makeMoney(currencyCode, 2199),
+        dueDay: 4,
+        paymentMethod: 'credit',
+        creditAccountId: firstDebt.id,
+        autoPost: true,
+        active: true,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
+    }
+    return bills;
+  });
+
+  const [reconciliationAnchors, setReconciliationAnchors] = useState<ReconciliationAnchor[]>([]);
+  const [verifiedFinanceScope, setVerifiedFinanceScope] = useState('');
+  const financeRecordsVerified = verifiedFinanceScope === `${session?.user?.id ?? 'offline'}:${onboardingData?.userId ?? 'none'}:${currencyCode}`;
+
+  // Load finance records from remote/cache on session/user ready
+  useEffect(() => {
+    if (!onboardingData?.userId) return;
+    let isCancelled = false;
+    loadFinanceRecords({
+      session,
+      userId: onboardingData.userId,
+      currency: currencyCode,
+    }).then(records => {
+      if (isCancelled) return;
+      if (records.syncStatus === 'synced') {
+        setVerifiedFinanceScope(`${session?.user?.id ?? 'offline'}:${onboardingData.userId}:${currencyCode}`);
+        setTransactions(records.transactions);
+        setRecurringBills(records.recurringBills);
+        setReconciliationAnchors(records.reconciliationAnchors);
+      }
+    }).catch(() => {
+      // Fallback keeps state
+    });
+    return () => { isCancelled = true; };
+  }, [session, onboardingData?.userId, currencyCode]);
+
+  const handleAddRecurringBill = async (bill: RecurringBill) => {
+    if (!onboardingData) return;
+    try {
+      const res = await executeAddRecurringBill({
+        session,
+        userId: onboardingData.userId,
+        bill,
+        currentBills: recurringBills,
+      });
+      setRecurringBills(res.bills);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Unable to add recurring bill.');
+    }
+  };
+
+  const handleAddTransaction = async (tx: LedgerTransaction) => {
+    if (!onboardingData) return;
+    try {
+      const res = await executeAddTransaction({
+        session,
+        onboardingData,
+        transaction: tx,
+        currentTransactions: transactions,
+        currencyCode,
+      });
+      setTransactions(res.transactions);
+      if (res.updatedOnboardingData) {
+        onUpdateOnboardingData(res.updatedOnboardingData);
+      }
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Unable to record transaction.');
+    }
+  };
+
+  const handleUpdateTransaction = async (tx: LedgerTransaction) => {
+    if (!onboardingData) return;
+    try {
+      const res = await executeUpdateTransaction({
+        session,
+        onboardingData,
+        transaction: tx,
+        currentTransactions: transactions,
+        currencyCode,
+      });
+      setTransactions(res.transactions);
+      if (res.updatedOnboardingData) {
+        onUpdateOnboardingData(res.updatedOnboardingData);
+      }
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Unable to update transaction.');
+    }
+  };
+
+  const handleDeleteTransaction = async (txId: string) => {
+    if (!onboardingData) return;
+    try {
+      const res = await executeDeleteTransaction({
+        session,
+        onboardingData,
+        transactionId: txId,
+        currentTransactions: transactions,
+        currencyCode,
+      });
+      setTransactions(res.transactions);
+      if (res.updatedOnboardingData) {
+        onUpdateOnboardingData(res.updatedOnboardingData);
+      }
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Unable to delete transaction.');
+    }
+  };
+
+  const handleRecordBillPayment = async (bill: RecurringBill, dueCycle: DateOnly) => {
+    if (!onboardingData) return;
+    try {
+      const res = await executeRecordBillPayment({
+        session,
+        onboardingData,
+        bill,
+        dueCycle,
+        currencyCode,
+        currentTransactions: transactions,
+      });
+      setTransactions(res.transactions);
+      if (res.updatedOnboardingData) {
+        onUpdateOnboardingData(res.updatedOnboardingData);
+      }
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Unable to record bill payment.');
+    }
+  };
+
+  const handleReconcileDebt = async (
+    item: DebtItem,
+    verifiedBalance: number,
+    reason: 'interest_adjustment' | 'balance_adjustment' | 'credit_adjustment',
+  ) => {
+    if (!onboardingData) return;
+    try {
+      const res = await executeReconcileDebt({
+        session,
+        onboardingData,
+        item,
+        verifiedBalance,
+        reason,
+        currencyCode,
+        currencySymbol,
+        currentTransactions: transactions,
+        currentAnchors: reconciliationAnchors,
+      });
+      setTransactions(res.transactions);
+      setReconciliationAnchors(res.reconciliationAnchors);
+      onUpdateOnboardingData(res.updatedOnboardingData);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Unable to reconcile debt.');
+    }
+  };
 
   const payoffPlan = useMemo(() => {
     if (!onboardingData) return null;
-    const parsedExtra = parseMoneyInput(extraPaymentInput);
+    const parsedExtra = parseMoneyInput(extraPaymentInput, currencyCode);
     const effectiveExtra =
       stage === 'onboard_4' && parsedExtra !== null
         ? parsedExtra
         : onboardingData.extraMonthlyPayment;
-    return calculatePayoffPlan(onboardingData.debts, onboardingData.strategy, effectiveExtra);
-  }, [onboardingData, extraPaymentInput, stage]);
+    return calculatePayoffPlan(onboardingData.debts, onboardingData.strategy, effectiveExtra, new Date(), currencyCode);
+  }, [onboardingData, extraPaymentInput, stage, currencyCode]);
 
   const clearErrors = () => {
     setLocalError('');
@@ -289,6 +551,7 @@ export function DebtFreeFlow({
     }
 
     setEditingDebtId(null);
+    draftDebtIdRef.current = Crypto.randomUUID();
     setDebtCategory(category);
     setDebtName(
       category === 'Mortgage'
@@ -309,14 +572,15 @@ export function DebtFreeFlow({
   const openEditDebtEditor = (item: DebtItem) => {
     clearErrors();
     setEditingDebtId(item.id);
+    draftDebtIdRef.current = null;
     setDebtCategory(item.category);
     setDebtName(item.name);
-    setDebtBalance(item.balance.toFixed(2));
-    setDebtOriginalBalance(item.originalBalance !== null ? item.originalBalance.toFixed(2) : '');
+    setDebtBalance(formatEditableMoney(item.balance, currencyCode));
+    setDebtOriginalBalance(item.originalBalance !== null ? formatEditableMoney(item.originalBalance, currencyCode) : '');
     setDebtApr(String(item.apr));
-    setDebtMinimum(item.minimumPayment.toFixed(2));
+    setDebtMinimum(formatEditableMoney(item.minimumPayment, currencyCode));
     setDebtDueDay(item.dueDay !== null ? String(item.dueDay) : '');
-    setDebtCreditLimit(item.creditLimit !== null ? item.creditLimit.toFixed(2) : '');
+    setDebtCreditLimit(item.creditLimit !== null ? formatEditableMoney(item.creditLimit, currencyCode) : '');
     setShowDebtForm(true);
   };
 
@@ -332,7 +596,7 @@ export function DebtFreeFlow({
       minimumPaymentRaw: debtMinimum,
       dueDayRaw: debtDueDay,
       creditLimitRaw: debtCreditLimit,
-    });
+    }, currencyCode);
     if (!validation.valid) {
       setLocalError(validation.error);
       return;
@@ -355,12 +619,13 @@ export function DebtFreeFlow({
     setSaving(true);
     try {
       const updated = await upsertUserDebt(onboardingData, {
-        id: editingDebtId ?? undefined,
+        id: editingDebtId ?? (draftDebtIdRef.current ??= Crypto.randomUUID()),
         ...validation.debt,
       });
       onUpdateOnboardingData(updated);
       setShowDebtForm(false);
       setEditingDebtId(null);
+      draftDebtIdRef.current = null;
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Unable to save debt account.');
     } finally {
@@ -472,6 +737,19 @@ export function DebtFreeFlow({
               <Text style={styles.primaryButtonText}>Get started</Text>
             </Pressable>
 
+            {onTestUserSignIn ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Preview app with sample debts"
+                style={[styles.primaryButton, { backgroundColor: '#1E2C28', borderColor: '#81DFD2', borderWidth: 1, marginTop: 10 }]}
+                onPress={onTestUserSignIn}
+              >
+                <Text style={[styles.primaryButtonText, { color: '#81DFD2' }]}>
+                  Preview with sample debts (Skip Sign-in)
+                </Text>
+              </Pressable>
+            ) : null}
+
             <View style={styles.footerInlineRow}>
               <Text style={styles.footerNoteText}>Already have an account? </Text>
               <Pressable
@@ -497,7 +775,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 02: SIGN-UP STEP 1 OF 4 â€” CREATE ACCOUNT / SIGN IN (signup_02.png)
+  // SCREEN 02: SIGN-UP STEP 1 OF 4 — CREATE ACCOUNT / SIGN IN (signup_02.png)
   // ============================================================================
   if (stage === 'signup_1') {
     const googleDisabled = authBusy || !configured;
@@ -549,7 +827,7 @@ export function DebtFreeFlow({
               authBusy
                 ? 'Signing in with Google'
                 : isSignedIn
-                  ? 'Connected with Google â€” tap to switch account'
+                  ? 'Connected with Google — tap to switch account'
                   : 'Continue with Google'
             }
             accessibilityState={{ disabled: googleDisabled, busy: authBusy }}
@@ -595,6 +873,20 @@ export function DebtFreeFlow({
               <Text style={styles.providerButtonText}>Continue with Apple</Text>
             </View>
           )}
+
+          {onTestUserSignIn ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Preview app with sample debts"
+              style={[styles.providerButton, { backgroundColor: '#1E2C28', borderColor: '#81DFD2', borderWidth: 1, marginTop: 12 }]}
+              onPress={onTestUserSignIn}
+            >
+              <AppIcon name="brandRise" size={16} color="#81DFD2" />
+              <Text style={[styles.providerButtonText, { color: '#81DFD2', fontWeight: 'bold' }]}>
+                Preview with Sample Debts (Skip Auth)
+              </Text>
+            </Pressable>
+          ) : null}
 
           <Text style={[styles.helpText, styles.textCenter]}>
             Apple sign-in appears only on supported devices.
@@ -671,13 +963,13 @@ export function DebtFreeFlow({
     return (
       <SafeAreaView style={[styles.root, styles.centered]} edges={['top', 'bottom', 'left', 'right']}>
         <ActivityIndicator size="large" color="#58CBD0" />
-        <Text style={[styles.helpText, { marginTop: 12 }]}>Loading your account setupâ€¦</Text>
+        <Text style={[styles.helpText, { marginTop: 12 }]}>Loading your account setup…</Text>
       </SafeAreaView>
     );
   }
 
   // ============================================================================
-  // SCREEN 03: SIGN-UP STEP 2 OF 4 â€” YOUR GOALS (signup_03.png)
+  // SCREEN 03: SIGN-UP STEP 2 OF 4 — YOUR GOALS (signup_03.png)
   // ============================================================================
   if (stage === 'signup_2') {
     const toggleGoal = (goal: string) => {
@@ -715,7 +1007,7 @@ export function DebtFreeFlow({
               What brings you to DebtFree?
             </Text>
             <Text style={styles.introSubtitle}>
-              Choose what matters most. Weâ€™ll use it to tailor your experience.
+              Choose what matters most. We’ll use it to tailor your experience.
             </Text>
           </View>
 
@@ -759,7 +1051,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 04: SIGN-UP STEP 3 OF 4 â€” HOW YOU FOUND US (signup_04.png)
+  // SCREEN 04: SIGN-UP STEP 3 OF 4 — HOW YOU FOUND US (signup_04.png)
   // ============================================================================
   if (stage === 'signup_3') {
     const isAiSelected = onboardingData.referralSource === AI_REFERRAL_SOURCE;
@@ -878,7 +1170,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 05: SIGN-UP STEP 4 OF 4 â€” ABOUT YOU (signup_05.png)
+  // SCREEN 05: SIGN-UP STEP 4 OF 4 — ABOUT YOU (signup_05.png)
   // ============================================================================
   if (stage === 'signup_4') {
     const handleStartOnboarding = () => {
@@ -893,6 +1185,7 @@ export function DebtFreeFlow({
       void persistAndMove(
         {
           countryCode: onboardingData.countryCode,
+          currencyCode,
           managesWithPartner: onboardingData.managesWithPartner,
           worksWithProfessional: onboardingData.worksWithProfessional,
           signupCompleted: true,
@@ -943,10 +1236,25 @@ export function DebtFreeFlow({
                     onUpdateOnboardingData({
                       ...onboardingData,
                       countryCode: opt.code as CountryCode,
+                      currencyCode: onboardingData.currencyCode ?? (onboardingData.debts.length || onboardingData.primaryIncomeAmount || onboardingData.additionalIncomes.length || onboardingData.extraMonthlyPayment ? currencyCode : opt.currency),
                     });
                     setShowCountryPicker(false);
                   }}
                 />
+              ))}
+            </View>
+          ) : null}
+
+          <Text style={styles.fieldLabel}>Currency</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Choose currency" style={styles.countrySelector} onPress={() => setShowCurrencyPicker(prev => !prev)}>
+            <Text style={styles.choiceText}>{currency.code} ({currency.symbol})</Text>
+            <AppIcon name="chevronDown" size={16} color="#AAAAAA" />
+          </Pressable>
+          {showCurrencyPicker ? (
+            <View style={styles.countryDropdown}>
+              <TextInput accessibilityLabel="Search currencies" style={styles.textInputField} value={currencySearch} onChangeText={setCurrencySearch} placeholder="Search currency code" placeholderTextColor="#6E7571" />
+              {CURRENCY_OPTIONS.filter(opt => (opt.code + ' ' + opt.label + ' ' + opt.symbol).toLowerCase().includes(currencySearch.toLowerCase())).map(opt => (
+                <ChoiceButton key={opt.code} label={opt.code + ' (' + opt.symbol + ')'} selected={currencyCode === opt.code} onPress={() => { try { assertCurrencyChangeAllowed(onboardingData, opt.code, { transactions, recurringBills, reconciliationAnchors, complete: financeRecordsVerified }); onUpdateOnboardingData({ ...onboardingData, currencyCode: opt.code }); setLocalError(''); setShowCurrencyPicker(false); setCurrencySearch(''); } catch (error) { setLocalError(error instanceof Error ? error.message : 'Cannot change currency.'); } }} />
               ))}
             </View>
           ) : null}
@@ -999,7 +1307,7 @@ export function DebtFreeFlow({
 
           <View style={[styles.calloutTeal, { marginTop: 28 }]}>
             <Text style={styles.calloutTealText}>
-              Next, weâ€™ll personalize your debt payoff plan in five short steps.
+              Next, we’ll personalize your debt payoff plan in five short steps.
             </Text>
           </View>
 
@@ -1030,18 +1338,20 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 06: ONBOARDING SETUP 1 OF 5 â€” INCOME (onboard_01.png)
+  // SCREEN 06: ONBOARDING SETUP 1 OF 5 — INCOME (onboard_01.png)
   // ============================================================================
   if (stage === 'onboard_1') {
-    const parsedPrimary = parseMoneyInput(incomeInput) ?? 0;
+    const parsedPrimary = parseMoneyInput(incomeInput, currencyCode) ?? 0;
     const primaryMonthly = normalizeMonthlyIncome(
       parsedPrimary,
       onboardingData.primaryPayFrequency,
+      currencyCode,
     );
     const totalMonthlyIncome = calculateTotalMonthlyIncome(
       parsedPrimary,
       onboardingData.primaryPayFrequency,
       onboardingData.additionalIncomes,
+      currencyCode,
     );
 
     const handleAddExtraIncome = () => {
@@ -1051,7 +1361,7 @@ export function DebtFreeFlow({
         setLocalError('Enter a name for the additional income source (for example, Partner income).');
         return;
       }
-      const parsedAmt = parseMoneyInput(extraIncomeAmount);
+      const parsedAmt = parseMoneyInput(extraIncomeAmount, currencyCode);
       if (parsedAmt === null || parsedAmt <= 0) {
         setLocalError('Enter an income amount greater than $0.');
         return;
@@ -1061,7 +1371,7 @@ export function DebtFreeFlow({
         name: nameTrimmed,
         amount: parsedAmt,
         frequency: extraIncomeFreq,
-        monthlyAmount: normalizeMonthlyIncome(parsedAmt, extraIncomeFreq),
+        monthlyAmount: normalizeMonthlyIncome(parsedAmt, extraIncomeFreq, currencyCode),
       };
       onUpdateOnboardingData({
         ...onboardingData,
@@ -1082,7 +1392,7 @@ export function DebtFreeFlow({
     };
 
     const handleContinueIncome = () => {
-      const check = validateIncomeStep(incomeInput, onboardingData.additionalIncomes);
+      const check = validateIncomeStep(incomeInput, onboardingData.additionalIncomes, currencyCode);
       if (!check.valid) {
         setLocalError(check.error);
         return;
@@ -1090,6 +1400,7 @@ export function DebtFreeFlow({
       const monthly = normalizeMonthlyIncome(
         check.primaryAmount,
         onboardingData.primaryPayFrequency,
+        currencyCode,
       );
       void persistAndMove(
         {
@@ -1120,7 +1431,7 @@ export function DebtFreeFlow({
           <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
             <View style={styles.introBox}>
               <Text style={styles.introTitle} accessibilityRole="header">
-                Letâ€™s start with your income
+                Let’s start with your income
               </Text>
               <Text style={styles.introSubtitle}>
                 What is your monthly take-home income, after taxes?
@@ -1137,20 +1448,20 @@ export function DebtFreeFlow({
                 value={incomeInput}
                 onChangeText={text => {
                   clearErrors();
-                  setIncomeInput(text);
+                  setIncomeInput(prev => acceptMoneyEdit(prev, text, currencyCode));
                 }}
                 placeholder="5,200.00"
                 placeholderTextColor="#6E7571"
               />
-              <Text style={styles.fieldMutedUnit}>{countryInfo.currency}</Text>
+              <Text style={styles.fieldMutedUnit}>{currencyCode}</Text>
             </View>
             <Text style={styles.helpText}>
               {onboardingData.primaryPayFrequency === 'monthly'
-                ? `Monthly equivalent: ${formatCurrency(primaryMonthly, currencySymbol)}`
-                : `${formatCurrency(parsedPrimary, currencySymbol)} (${
+                ? `Monthly equivalent: ${formatCurrency(primaryMonthly, currencyCode)}`
+                : `${formatCurrency(parsedPrimary, currencyCode)} (${
                     PAY_FREQUENCY_OPTIONS.find(o => o.value === onboardingData.primaryPayFrequency)
                       ?.label ?? ''
-                  }) = ${formatCurrency(primaryMonthly, currencySymbol)} / month`}
+                  }) = ${formatCurrency(primaryMonthly, currencyCode)} / month`}
             </Text>
 
             <Text style={styles.fieldLabel}>How often are you paid?</Text>
@@ -1195,12 +1506,12 @@ export function DebtFreeFlow({
                 <View style={styles.flex1}>
                   <Text style={styles.addedItemTitle}>{source.name}</Text>
                   <Text style={styles.addedItemSub}>
-                    {`${formatCurrency(source.amount, currencySymbol)} (${
+                    {`${formatCurrency(source.amount, currencyCode)} (${
                       PAY_FREQUENCY_OPTIONS.find(f => f.value === source.frequency)?.label ??
                       source.frequency
-                    }) â†’ ${formatCurrency(
-                      normalizeMonthlyIncome(source.amount, source.frequency),
-                      currencySymbol,
+                    }) → ${formatCurrency(
+                      normalizeMonthlyIncome(source.amount, source.frequency, currencyCode),
+                      currencyCode,
                     )}/mo`}
                   </Text>
                 </View>
@@ -1232,7 +1543,7 @@ export function DebtFreeFlow({
                   style={styles.textInputField}
                   keyboardType="decimal-pad"
                   value={extraIncomeAmount}
-                  onChangeText={setExtraIncomeAmount}
+                  onChangeText={text => setExtraIncomeAmount(prev => acceptMoneyEdit(prev, text, currencyCode))}
                   placeholder="1500.00"
                   placeholderTextColor="#6E7571"
                 />
@@ -1299,7 +1610,7 @@ export function DebtFreeFlow({
               <View style={styles.summaryRowBox}>
                 <Text style={styles.summaryRowLabel}>Total monthly household income</Text>
                 <Text style={styles.summaryRowValue}>
-                  {formatCurrency(totalMonthlyIncome, currencySymbol)}
+                  {formatCurrency(totalMonthlyIncome, currencyCode)}
                 </Text>
               </View>
             ) : null}
@@ -1339,7 +1650,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 07: ONBOARDING SETUP 2 OF 5 â€” CHOOSE PREMIUM (onboard_02.png)
+  // SCREEN 07: ONBOARDING SETUP 2 OF 5 — CHOOSE PREMIUM (onboard_02.png)
   // ============================================================================
   if (stage === 'onboard_2') {
     const selectPlan = (plan: PremiumPlanChoice) => {
@@ -1365,7 +1676,7 @@ export function DebtFreeFlow({
         <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
           <View style={[styles.introBox, styles.introCompact]}>
             <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">
-              Choose how youâ€™d like to track
+              Choose how you’d like to track
             </Text>
             <Text style={styles.introSubtitle}>
               Start with manual tracking or add optional bank account syncing.
@@ -1451,7 +1762,7 @@ export function DebtFreeFlow({
               <Text style={styles.calloutOrangeTitle}>Sandbox preview note</Text>
               <Text style={styles.calloutOrangeText}>
                 Live store billing and bank-sync aggregation are not enabled in this test build. No
-                charge or bank connection will occur now â€” your preference is saved and you can
+                charge or bank connection will occur now — your preference is saved and you can
                 continue setting up your debts manually.
               </Text>
             </View>
@@ -1481,22 +1792,13 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 08: ONBOARDING SETUP 3 OF 5 â€” ADD YOUR DEBTS (onboard_03.png)
+  // SCREEN 08: ONBOARDING SETUP 3 OF 5 — ADD YOUR DEBTS (onboard_03.png)
   // ============================================================================
   if (stage === 'onboard_3') {
-    const mortgageDebt = onboardingData.debts.find(d => d.category === 'Mortgage');
     const autoLoanDebt = onboardingData.debts.find(d => d.category === 'Auto loan');
     const otherDebts = onboardingData.debts.filter(
       d => d.category !== 'Mortgage' && d.category !== 'Auto loan',
     );
-
-    const handleHomeStatus = (status: HomeOwnershipStatus) => {
-      clearErrors();
-      onUpdateOnboardingData({ ...onboardingData, homeStatus: status });
-      if (status === 'Own' && !mortgageDebt) {
-        openNewDebtEditor('Mortgage');
-      }
-    };
 
     const handleVehicleStatus = (status: VehicleOwnershipStatus) => {
       clearErrors();
@@ -1544,25 +1846,11 @@ export function DebtFreeFlow({
           <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
             <View style={[styles.introBox, styles.introCompact]}>
               <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">
-                Letâ€™s add your debts
+                Let’s add your debts
               </Text>
               <Text style={styles.introSubtitle}>
-                Tell us what you own or pay for. Weâ€™ll only add a debt when a balance is owed.
+                Tell us what you own or pay for. We’ll only add a debt when a balance is owed.
               </Text>
-            </View>
-
-            <Text style={styles.splitLabel}>Your home</Text>
-            <View style={styles.splitGrid3}>
-              {(['Own', 'Rent', 'Other'] as HomeOwnershipStatus[]).map(status => (
-                <ChoiceButton
-                  key={status}
-                  label={status}
-                  compact
-                  flex
-                  selected={onboardingData.homeStatus === status}
-                  onPress={() => handleHomeStatus(status)}
-                />
-              ))}
             </View>
 
             <Text style={styles.splitLabel}>Your vehicle</Text>
@@ -1581,49 +1869,10 @@ export function DebtFreeFlow({
 
             <Text style={styles.sectionTitle}>Accounts to add</Text>
 
-            {/* Mortgage Row */}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Mortgage â€” Home loan details"
-              style={[
-                styles.twoRowCard,
-                (onboardingData.homeStatus === 'Own' || Boolean(mortgageDebt)) &&
-                  styles.twoRowCardSelected,
-              ]}
-              onPress={() => openNewDebtEditor('Mortgage')}
-            >
-              <View style={styles.twoRowLeft}>
-                <View style={styles.iconCircle}>
-                  <AppIcon name="homeLoan" size={18} color="#91DED7" />
-                </View>
-                <View style={styles.flex1}>
-                  <Text style={styles.twoRowTitle}>Mortgage</Text>
-                  <Text style={styles.twoRowSub}>
-                    {mortgageDebt
-                      ? `${mortgageDebt.name} Â· ${formatCurrency(mortgageDebt.balance, currencySymbol)} Â· ${mortgageDebt.apr}% APR`
-                      : 'Home loan details'}
-                  </Text>
-                </View>
-              </View>
-              <View
-                style={[
-                  styles.selectCircle,
-                  (onboardingData.homeStatus === 'Own' || Boolean(mortgageDebt)) &&
-                    styles.selectCircleSelected,
-                ]}
-              >
-                <AppIcon
-                  name={Boolean(mortgageDebt) || onboardingData.homeStatus === 'Own' ? 'check' : 'plus'}
-                  size={11}
-                  color="#FFFFFF"
-                />
-              </View>
-            </Pressable>
-
             {/* Auto Loan Row */}
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Auto loan â€” Balance, APR and payment"
+              accessibilityLabel="Auto loan — Balance, APR and payment"
               style={[
                 styles.twoRowCard,
                 (onboardingData.vehicleStatus === 'Finance' || Boolean(autoLoanDebt)) &&
@@ -1639,7 +1888,7 @@ export function DebtFreeFlow({
                   <Text style={styles.twoRowTitle}>Auto loan</Text>
                   <Text style={styles.twoRowSub}>
                     {autoLoanDebt
-                      ? `${autoLoanDebt.name} Â· ${formatCurrency(autoLoanDebt.balance, currencySymbol)} Â· ${autoLoanDebt.apr}% APR`
+                      ? `${autoLoanDebt.name} Â· ${formatCurrency(autoLoanDebt.balance, currencyCode)} Â· ${autoLoanDebt.apr}% APR`
                       : 'Balance, APR & payment'}
                   </Text>
                 </View>
@@ -1662,7 +1911,7 @@ export function DebtFreeFlow({
             {/* Credit cards & other loans Row */}
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Credit cards and other loans â€” Add each account"
+              accessibilityLabel="Credit cards and other loans — Add each account"
               style={[
                 styles.twoRowCard,
                 otherDebts.length > 0 && styles.twoRowCardSelected,
@@ -1692,23 +1941,13 @@ export function DebtFreeFlow({
                   {editingDebtId ? 'Edit debt account' : `Add ${debtCategory}`}
                 </Text>
 
-                <Text style={styles.fieldLabelSmall}>Account category</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.categoryPillsRow}
-                >
-                  {DEBT_CATEGORIES.map(cat => (
-                    <ChoiceButton
-                      key={cat}
-                      label={cat}
-                      compact
-                      pill
-                      selected={debtCategory === cat}
-                      onPress={() => setDebtCategory(cat)}
-                    />
-                  ))}
-                </ScrollView>
+                <SelectDropdown
+                  label="Account category"
+                  sheetTitle="Select Debt Category"
+                  value={debtCategory}
+                  options={DEBT_CATEGORY_DROPDOWN_OPTIONS}
+                  onSelect={setDebtCategory}
+                />
 
                 <Text style={styles.fieldLabelSmall}>Debt name</Text>
                 <TextInput
@@ -1716,7 +1955,7 @@ export function DebtFreeFlow({
                   style={styles.textInputField}
                   value={debtName}
                   onChangeText={setDebtName}
-                  placeholder="e.g., Chase Freedom, Auto Loan, Mortgage"
+                  placeholder="e.g., Chase Freedom, Auto Loan"
                   placeholderTextColor="#6E7571"
                 />
 
@@ -1726,9 +1965,9 @@ export function DebtFreeFlow({
                     <TextInput
                       accessibilityLabel="Current balance"
                       style={styles.textInputField}
-                      keyboardType="decimal-pad"
+                      keyboardType={Platform.OS === "ios" ? "numbers-and-punctuation" : "numeric"}
                       value={debtBalance}
-                      onChangeText={setDebtBalance}
+                      onChangeText={text => setDebtBalance(prev => acceptMoneyEdit(prev, text, currencyCode, true))}
                       placeholder="4200.00"
                       placeholderTextColor="#6E7571"
                     />
@@ -1740,7 +1979,7 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtApr}
-                      onChangeText={setDebtApr}
+                      onChangeText={text => setDebtApr(prev => acceptAprEdit(prev, text))}
                       placeholder="19.99"
                       placeholderTextColor="#6E7571"
                     />
@@ -1755,13 +1994,13 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtMinimum}
-                      onChangeText={setDebtMinimum}
+                      onChangeText={text => setDebtMinimum(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="125.00"
                       placeholderTextColor="#6E7571"
                     />
                   </View>
                   <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>Due day (1â€“31, optional)</Text>
+                    <Text style={styles.fieldLabelSmall}>Due day (1–31, optional)</Text>
                     <TextInput
                       accessibilityLabel="Due day of month"
                       style={styles.textInputField}
@@ -1782,7 +2021,7 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtCreditLimit}
-                      onChangeText={setDebtCreditLimit}
+                      onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="10000.00"
                       placeholderTextColor="#6E7571"
                     />
@@ -1797,7 +2036,7 @@ export function DebtFreeFlow({
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtOriginalBalance}
-                      onChangeText={setDebtOriginalBalance}
+                      onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="25000.00"
                       placeholderTextColor="#6E7571"
                     />
@@ -1835,19 +2074,19 @@ export function DebtFreeFlow({
             ) : null}
 
             {/* Added Debts List */}
-            {onboardingData.debts.length > 0 ? (
+            {activeDebts(onboardingData.debts).length > 0 ? (
               <View style={{ marginTop: 10 }}>
                 <Text style={styles.sectionTitle}>
-                  Added accounts ({onboardingData.debts.length})
+                  Added accounts ({activeDebts(onboardingData.debts).length})
                 </Text>
-                {onboardingData.debts.map(item => (
+                {activeDebts(onboardingData.debts).map(item => (
                   <View key={item.id} style={styles.addedItemCard}>
                     <View style={styles.flex1}>
                       <Text style={styles.addedItemTitle}>
                         {`${item.name} Â· ${item.category}`}
                       </Text>
                       <Text style={styles.addedItemSub}>
-                        {`${formatCurrency(item.balance, currencySymbol)} balance Â· ${item.apr}% APR Â· ${formatCurrency(item.minimumPayment, currencySymbol)}/mo min${
+                        {`${formatCurrency(item.balance, currencyCode)} balance Â· ${item.apr}% APR Â· ${formatCurrency(item.minimumPayment, currencyCode)}/mo min${
                           item.dueDay ? ` Â· Due day ${item.dueDay}` : ''
                         }`}
                       </Text>
@@ -1905,7 +2144,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 09: ONBOARDING SETUP 4 OF 5 â€” PAYOFF STRATEGY (onboard_04.png)
+  // SCREEN 09: ONBOARDING SETUP 4 OF 5 — PAYOFF STRATEGY (onboard_04.png)
   // ============================================================================
   if (stage === 'onboard_4') {
     const selectStrategy = (strategy: PayoffStrategy) => {
@@ -1914,7 +2153,7 @@ export function DebtFreeFlow({
     };
 
     const handleContinueStrategy = () => {
-      const check = validateExtraPaymentInput(extraPaymentInput);
+      const check = validateExtraPaymentInput(extraPaymentInput, currencyCode);
       if (!check.valid) {
         setLocalError(check.error);
         return;
@@ -1957,7 +2196,7 @@ export function DebtFreeFlow({
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ selected: onboardingData.strategy === 'snowball' }}
-              accessibilityLabel="Debt Snowball â€” Pay off the smallest balance first"
+              accessibilityLabel="Debt Snowball — Pay off the smallest balance first"
               style={[
                 styles.twoRowCard,
                 { padding: 14 },
@@ -1990,7 +2229,7 @@ export function DebtFreeFlow({
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ selected: onboardingData.strategy === 'avalanche' }}
-              accessibilityLabel="Debt Avalanche â€” Target the highest interest rate"
+              accessibilityLabel="Debt Avalanche — Target the highest interest rate"
               style={[
                 styles.twoRowCard,
                 { padding: 14 },
@@ -2031,7 +2270,7 @@ export function DebtFreeFlow({
                 value={extraPaymentInput}
                 onChangeText={text => {
                   clearErrors();
-                  setExtraPaymentInput(text);
+                  setExtraPaymentInput(prev => acceptMoneyEdit(prev, text, currencyCode));
                 }}
                 placeholder="150.00"
                 placeholderTextColor="#6E7571"
@@ -2039,7 +2278,7 @@ export function DebtFreeFlow({
               <Text style={styles.fieldMutedUnit}>/ month</Text>
             </View>
             <Text style={styles.helpText}>
-              Enter $0 if you donâ€™t plan to make extra payments.
+              Enter $0 if you don’t plan to make extra payments.
             </Text>
 
             {payoffPlan && payoffPlan.payoffOrder.length > 0 ? (
@@ -2052,14 +2291,14 @@ export function DebtFreeFlow({
                 <Text style={styles.strategyPreviewLine}>
                   {`First target: ${payoffPlan.firstTarget?.name ?? 'None'} (${formatCurrency(
                     payoffPlan.firstTarget?.firstMonthPayment ?? 0,
-                    currencySymbol,
+                    currencyCode,
                   )}/mo)`}
                 </Text>
                 <Text style={styles.strategyPreviewLine}>
                   {`Total monthly plan: ${formatCurrency(
                     payoffPlan.monthlyTotalPayment,
-                    currencySymbol,
-                  )} Â· Debt-free: ${payoffPlan.debtFreeDateLabel}${
+                    currencyCode,
+                  )} Â· Tracked-account forecast: ${payoffPlan.debtFreeDateLabel}${
                     payoffPlan.monthsToPayoff !== null
                       ? ` (${payoffPlan.monthsToPayoff} mo)`
                       : ''
@@ -2070,8 +2309,8 @@ export function DebtFreeFlow({
 
             <View style={[styles.calloutTeal, { marginTop: 18 }]}>
               <Text style={styles.calloutTealText}>
-                Weâ€™ll use your debts and extra payment estimate to prepare a payoff plan. This
-                wonâ€™t schedule or send payments.
+                We’ll use your debts and extra payment estimate to prepare a payoff plan. This
+                won’t schedule or send payments.
               </Text>
             </View>
 
@@ -2103,7 +2342,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 10: ONBOARDING SETUP 5 OF 5 â€” NOTIFICATIONS (onboard_05.png)
+  // SCREEN 10: ONBOARDING SETUP 5 OF 5 — NOTIFICATIONS (onboard_05.png)
   // ============================================================================
   if (stage === 'onboard_5') {
     const prefs = onboardingData.notifications;
@@ -2222,7 +2461,7 @@ export function DebtFreeFlow({
 
           <View style={[styles.calloutTeal, { marginTop: 24 }]}>
             <Text style={styles.calloutTealText}>
-              Weâ€™ll ask your device for notification permission only after you choose to enable
+              We’ll ask your device for notification permission only after you choose to enable
               alerts.
             </Text>
           </View>
@@ -2268,363 +2507,26 @@ export function DebtFreeFlow({
   // ============================================================================
   // SCREEN 11: HOME DASHBOARD (stage === 'home')
   // ============================================================================
-  const plan =
-    payoffPlan ??
-    calculatePayoffPlan(
-      onboardingData.debts,
-      onboardingData.strategy,
-      onboardingData.extraMonthlyPayment,
-    );
-
-  const handleToggleHomeStrategy = async (nextStrategy: PayoffStrategy) => {
-    if (savingRef.current || onboardingData.strategy === nextStrategy) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      const updated = await saveUserOnboardingData({
-        ...onboardingData,
-        strategy: nextStrategy,
-      });
-      onUpdateOnboardingData(updated);
-    } catch (err) {
-      setLocalError(err instanceof Error ? err.message : 'Unable to update your strategy.');
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
-
-  const handleSaveExtra = async (amount: number) => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    setSaving(true);
-    setLocalError('');
-    try {
-      const updated = await saveUserOnboardingData({ ...onboardingData, extraMonthlyPayment: amount });
-      onUpdateOnboardingData(updated);
-    } catch (err) {
-      setLocalError(err instanceof Error ? err.message : 'Unable to update extra payment.');
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
-  const editSetup = () => { clearErrors(); onChangeStage('onboard_1'); };
-  const debtEditor = showDebtForm ? (
-          <View style={styles.inlineEditorCard}>
-            <Text style={styles.inlineEditorTitle}>
-              {editingDebtId ? 'Edit debt account' : `Add ${debtCategory}`}
-            </Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.categoryPillsRow}
-            >
-              {DEBT_CATEGORIES.map(cat => (
-                <ChoiceButton
-                  key={cat}
-                  label={cat}
-                  compact
-                  pill
-                  selected={debtCategory === cat}
-                  onPress={() => setDebtCategory(cat)}
-                />
-              ))}
-            </ScrollView>
-            <Text style={styles.fieldLabelSmall}>Debt name</Text>
-            <TextInput
-              accessibilityLabel="Debt name"
-              style={styles.textInputField}
-              value={debtName}
-              onChangeText={setDebtName}
-              placeholder="e.g., Chase Sapphire"
-              placeholderTextColor="#6E7571"
-            />
-            <View style={styles.choiceGrid2}>
-              <View style={styles.flex1}>
-                <Text style={styles.fieldLabelSmall}>Current balance ({currencySymbol})</Text>
-                <TextInput
-                  accessibilityLabel="Current balance"
-                  style={styles.textInputField}
-                  keyboardType="decimal-pad"
-                  value={debtBalance}
-                  onChangeText={setDebtBalance}
-                  placeholder="3500.00"
-                  placeholderTextColor="#6E7571"
-                />
-              </View>
-              <View style={styles.flex1}>
-                <Text style={styles.fieldLabelSmall}>APR (%)</Text>
-                <TextInput
-                  accessibilityLabel="APR percentage"
-                  style={styles.textInputField}
-                  keyboardType="decimal-pad"
-                  value={debtApr}
-                  onChangeText={setDebtApr}
-                  placeholder="21.99"
-                  placeholderTextColor="#6E7571"
-                />
-              </View>
-            </View>
-            <View style={styles.choiceGrid2}>
-              <View style={styles.flex1}>
-                <Text style={styles.fieldLabelSmall}>Minimum payment ({currencySymbol}/mo)</Text>
-                <TextInput
-                  accessibilityLabel="Minimum monthly payment"
-                  style={styles.textInputField}
-                  keyboardType="decimal-pad"
-                  value={debtMinimum}
-                  onChangeText={setDebtMinimum}
-                  placeholder="95.00"
-                  placeholderTextColor="#6E7571"
-                />
-              </View>
-              <View style={styles.flex1}>
-                <Text style={styles.fieldLabelSmall}>Due day (1â€“31)</Text>
-                <TextInput
-                  accessibilityLabel="Due day"
-                  style={styles.textInputField}
-                  keyboardType="number-pad"
-                  value={debtDueDay}
-                  onChangeText={setDebtDueDay}
-                  placeholder="15"
-                  placeholderTextColor="#6E7571"
-                />
-              </View>
-            </View>
-            <View style={styles.choiceGrid2}>
-              <View style={styles.flex1}><Text style={styles.fieldLabelSmall}>Original balance (optional)</Text><TextInput accessibilityLabel="Original balance" style={styles.textInputField} keyboardType="decimal-pad" value={debtOriginalBalance} onChangeText={setDebtOriginalBalance} placeholder="Optional" placeholderTextColor="#6E7571" /></View>
-              <View style={styles.flex1}><Text style={styles.fieldLabelSmall}>Credit limit (optional)</Text><TextInput accessibilityLabel="Credit limit" style={styles.textInputField} keyboardType="decimal-pad" value={debtCreditLimit} onChangeText={setDebtCreditLimit} placeholder="Optional" placeholderTextColor="#6E7571" /></View>
-            </View>            {!!localError ? (
-              <Text style={styles.errorText} accessibilityRole="alert">
-                {localError}
-              </Text>
-            ) : null}
-            <View style={[styles.choiceGrid2, { marginTop: 12 }]}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Cancel debt form"
-                style={styles.subtleActionBtn}
-                onPress={() => {
-                  clearErrors();
-                  setShowDebtForm(false);
-                  setEditingDebtId(null);
-                }}
-              >
-                <Text style={styles.subtleActionBtnText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Save debt account"
-                disabled={saving}
-                style={[styles.saveInlineBtn, saving && styles.disabledButton]}
-                onPress={() => void handleSaveDebt()}
-              >
-                <Text style={styles.saveInlineBtnText}>Save debt</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : null;
-
   return (
-    <FiveTabShell key={session?.user.id ?? onboardingData.userId}
-      debt={<DebtScreen debts={onboardingData.debts} plan={plan} currencySymbol={currencySymbol} editor={debtEditor} error={localError} onAdd={() => openNewDebtEditor('Credit card')} onEdit={openEditDebtEditor} onRemove={item => { void handleDeleteDebt(item.id); }} onSettings={editSetup} />}
-      transactions={<TransactionsScreen debts={onboardingData.debts} onSettings={editSetup} />}
-      budget={section => <BudgetScreen key={section} initialSection={section} data={onboardingData} plan={plan} currencySymbol={currencySymbol} onEditIncome={editSetup} onSettings={editSetup} onStrategy={value => { void handleToggleHomeStrategy(value); }} onExtra={value => { void handleSaveExtra(value); }} error={localError} />}
-      progress={<ProgressScreen debts={onboardingData.debts} currencySymbol={currencySymbol} onSettings={editSetup} />}
-      home={navigate => (
-    <View style={styles.root}>
-      <View style={styles.homeHeader}>
-        <View style={styles.logoBrand} accessible accessibilityRole="header" accessibilityLabel="DebtFree Home">
-          <View style={styles.brandMark}>
-            <AppIcon name="brandRise" size={16} color="#FFFFFF" />
-          </View>
-          <Text style={styles.logoText}>
-            Debt<Text style={styles.logoTextAccent}>Free</Text>
-          </Text>
-        </View>
-        <View style={styles.homeHeaderActions}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Edit setup"
-            style={styles.headerActionPill}
-            onPress={() => {
-              clearErrors();
-              onChangeStage('onboard_1');
-            }}
-          >
-            <AppIcon name="settings" size={12} color="#81DFD2" />
-            <Text style={styles.headerActionPillText}>Edit Setup</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Sign out"
-            disabled={authBusy}
-            style={[styles.headerSignOutPill, authBusy && styles.disabledButton]}
-            onPress={() => void onSignOut()}
-          >
-            <Text style={styles.headerSignOutPillText}>Sign Out</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.homeContent} showsVerticalScrollIndicator={false}>
-        <Text style={ui.title}>{`Hi, ${session?.user.user_metadata?.full_name?.split(' ')[0] || session?.user.email?.split('@')[0] || 'there'}`}</Text>
-        <Text style={ui.text}>Your debt-free journey</Text>
-        <Card>
-          <View style={[ui.row, { justifyContent: 'space-between' }]}>
-            <Text style={ui.heading}>Your debt-free date</Text>
-            <View style={ui.badge}>
-              <Text style={ui.badgeText}>ESTIMATE</Text>
-            </View>
-          </View>
-          <Text style={ui.small}>All active debts · projected from your plan</Text>
-          <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'stretch' }]}>
-            <View style={{ flex: 1, justifyContent: 'center' }}>
-              <Text style={ui.title}>{plan.debtFreeDateLabel}</Text>
-            </View>
-            <View style={{ width: 1, backgroundColor: '#353A37' }} />
-            <View style={{ alignItems: 'center', justifyContent: 'center', paddingLeft: 12 }}>
-              <Text style={ui.heading}>{plan.monthsToPayoff ?? '—'}</Text>
-              <Text style={ui.small}>months to go</Text>
-            </View>
-          </View>
-          <Bar percent={plan.progressPercent} />
-          <Text style={ui.small}>Balance snapshot · Keep building your freedom.</Text>
-        </Card>
-        <SnapshotCard debts={onboardingData.debts} currencySymbol={currencySymbol} />
-        <Card>
-          <View style={[ui.row, { justifyContent: 'space-between' }]}>
-            <Text style={ui.heading}>Payoff strategy</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="See all payoff strategy details"
-              style={[ui.row, { gap: 4 }]}
-              onPress={() => navigate('budget', 'Strategy')}
-            >
-              <Text style={ui.buttonText}>See all</Text>
-              <AppIcon name="chevronRight" size={12} color="#81DFD2" />
-            </Pressable>
-          </View>
-          <Text style={ui.text}>
-            {onboardingData.strategy === 'avalanche' ? 'Avalanche' : 'Snowball'} · All active debts
-          </Text>
-          <View style={ui.row}>
-            {(['avalanche', 'snowball'] as const).map(strategy => (
-              <Pressable
-                key={strategy}
-                accessibilityRole="button"
-                accessibilityState={{ selected: onboardingData.strategy === strategy }}
-                style={[ui.button, onboardingData.strategy === strategy && ui.selected]}
-                onPress={() => void handleToggleHomeStrategy(strategy)}
-              >
-                <AppIcon name={strategy} size={14} color="#81DFD2" />
-                <Text style={ui.buttonText}>
-                  {strategy === 'avalanche' ? 'Avalanche' : 'Snowball'}
-                </Text>
-              </Pressable>
-            ))}
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => openNewDebtEditor('Credit card')}
-              style={ui.button}
-            >
-              <AppIcon name="plus" size={12} color="#81DFD2" />
-              <Text style={ui.buttonText}>Add debt</Text>
-            </Pressable>
-          </View>
-          {!!localError && !showDebtForm && (
-            <Text accessibilityRole="alert" style={ui.text}>
-              {localError}
-            </Text>
-          )}
-          {debtEditor}
-          {plan.payoffOrder.map((item, idx) => {
-            const fullDebt = onboardingData.debts.find(d => d.id === item.id);
-            return (
-              <View key={item.id} style={[ui.divider, ui.row]}>
-                <View style={ui.badge}>
-                  <Text style={ui.badgeText}>#{idx + 1}</Text>
-                </View>
-                <View style={ui.iconCircle}>
-                  <AppIcon
-                    name={
-                      item.category === 'Mortgage'
-                        ? 'homeLoan'
-                        : item.category === 'Auto loan'
-                          ? 'auto'
-                          : 'creditCard'
-                    }
-                    color="#81DFD2"
-                    size={18}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={ui.heading}>{item.name}</Text>
-                  <Text style={ui.small}>
-                    {`${item.apr}% APR · ${formatCurrency(item.firstMonthPayment, currencySymbol)}/mo`}
-                  </Text>
-                </View>
-                <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                  <View style={ui.badge}>
-                    <Text style={ui.badgeText}>{item.projectedPayoffLabel}</Text>
-                  </View>
-                  {fullDebt ? (
-                    <View style={[ui.row, { gap: 10 }]}>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Edit ${item.name}`}
-                        onPress={() => openEditDebtEditor(fullDebt)}
-                      >
-                        <Text style={ui.buttonText}>Edit</Text>
-                      </Pressable>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Remove ${item.name}`}
-                        onPress={() => void handleDeleteDebt(item.id)}
-                      >
-                        <Text style={[ui.buttonText, { color: '#E3A088' }]}>Remove</Text>
-                      </Pressable>
-                    </View>
-                  ) : null}
-                </View>
-              </View>
-            );
-          })}
-        </Card>
-        <Card>
-          <View style={[ui.row, { justifyContent: 'space-between' }]}>
-            <Text style={ui.heading}>Recent activity</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="See all recent activity"
-              style={[ui.row, { gap: 4 }]}
-              onPress={() => navigate('transactions')}
-            >
-              <Text style={ui.buttonText}>See all</Text>
-              <AppIcon name="chevronRight" size={12} color="#81DFD2" />
-            </Pressable>
-          </View>
-          <Text style={ui.text}>No recorded activity yet. Transaction records are not connected.</Text>
-        </Card>
-        <Card>
-          <View style={[ui.row, { justifyContent: 'space-between' }]}>
-            <Text style={ui.heading}>Upcoming bills</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="See all upcoming bills"
-              style={[ui.row, { gap: 4 }]}
-              onPress={() => navigate('budget', 'Upcoming')}
-            >
-              <Text style={ui.buttonText}>See all</Text>
-              <AppIcon name="chevronRight" size={12} color="#81DFD2" />
-            </Pressable>
-          </View>
-          <Text style={ui.text}>Verified dated bills are unavailable.</Text>
-        </Card>
-      </ScrollView>
-    </View>
-    )} />
+    <HomeScreen
+      session={session}
+      onboardingData={onboardingData}
+      onUpdateOnboardingData={onUpdateOnboardingData}
+      transactions={transactions}
+      recurringBills={recurringBills}
+      reconciliationAnchors={reconciliationAnchors}
+      currencyCode={currencyCode}
+      currencySymbol={currencySymbol}
+      onSignOut={onSignOut}
+      onChangeStage={onChangeStage}
+      onAddTransaction={handleAddTransaction}
+      onUpdateTransaction={handleUpdateTransaction}
+      onDeleteTransaction={handleDeleteTransaction}
+      onRecordBillPayment={handleRecordBillPayment}
+      onReconcileDebt={handleReconcileDebt}
+      onAddRecurringBill={handleAddRecurringBill}
+      authBusy={authBusy}
+    />
   );
 }
 

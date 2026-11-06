@@ -32,4 +32,36 @@ These 16 screenshots preserve the prototype's screen structure and visible conte
 | Progress: lifetime overview | [05-progress-04-lifetime.jpg](./2026-11-04/05-progress-04-lifetime.jpg) |
 | Progress: credit utilization | [05-progress-05-utilization.jpg](./2026-11-04/05-progress-05-utilization.jpg) |
 | Progress: milestone overview and next unlock | [05-progress-06-milestones.jpg](./2026-11-04/05-progress-06-milestones.jpg) |
-| Progress: completed milestone cards, lower position | [05-progress-07-milestone-cards.jpg](./2026-11-04/05-progress-07-milestone-cards.jpg) |
+## Interaction Patterns & Interactive Blueprint (2026-11-06)
+
+For screen-by-screen modal flows, sheet actions, accordion expansions, and explicit user behavioral preferences, read:
+👉 **[`references/PROTOTYPE_INTERACTION_PATTERNS.md`](../PROTOTYPE_INTERACTION_PATTERNS.md)**
+
+Captured on **2026-11-06** in mobile viewport (**iPhone 14 Pro Max**, 430 × 932 px), stored in [`references/prototype/interactions/`](./interactions/):
+
+| View / Flow | Screenshot | Interaction Highlights |
+| :--- | :--- | :--- |
+| Home: Overview | [01-home-01-overview.png](./interactions/01-home-01-overview.png) | Cards & Loans summary, Payoff strategy preview (clickable), Recent activity |
+| Home: Carousel (Home) | [01-home-02-carousel-home.png](./interactions/01-home-02-carousel-home.png) | Home mortgage carousel slide (user wants visual redesign) |
+| Home: Carousel (Auto) | [01-home-03-carousel-auto.png](./interactions/01-home-03-carousel-auto.png) | Auto loan carousel slide |
+| Debt: Cards & Loans | [02-debt-01-cards-and-loans.png](./interactions/02-debt-01-cards-and-loans.png) | Filters, search, sort, account cards (click opens detail sheet) |
+| Debt: Account Modal (Overview) | [02-debt-02-debt-modal-overview.png](./interactions/02-debt-02-debt-modal-overview.png) | Detail sheet Tab 1: APR, minimums, payoff estimate, sparkline history |
+| Debt: Account Modal (Transactions) | [02-debt-03-debt-modal-transactions.png](./interactions/02-debt-03-debt-modal-transactions.png) | Detail sheet Tab 2: account-filtered transactions & totals |
+| Debt: Account Modal (Detail) | [02-debt-04-debt-modal-detail.png](./interactions/02-debt-04-debt-modal-detail.png) | Detail sheet Tab 3: terms, APR, minimums, delete button |
+| Debt: Home & Auto | [02-debt-05-home-and-auto.png](./interactions/02-debt-05-home-and-auto.png) | Filter pill switched to Home & Auto accounts |
+| Debt: Add Debt Modal | [02-debt-06-add-debt-modal.png](./interactions/02-debt-06-add-debt-modal.png) | Add debt account modal |
+| Transactions: History | [03-transactions-01-history.png](./interactions/03-transactions-01-history.png) | Period dropdown, Account filter, monthly metric cards |
+| Transactions: Edit Modal | [03-transactions-02-edit-transaction-modal.png](./interactions/03-transactions-02-edit-transaction-modal.png) | Edit transaction sheet with real-time balance calculator |
+| Transactions: Scheduled | [03-transactions-03-scheduled-empty.png](./interactions/03-transactions-03-scheduled-empty.png) | Scheduled toggle state |
+| Budget: Overview | [04-budget-01-overview.png](./interactions/04-budget-01-overview.png) | Month picker, income card, segmented progress bar, category totals |
+| Budget: Category Expanded | [04-budget-02-category-expanded.png](./interactions/04-budget-02-category-expanded.png) | Accordion expansion into line items |
+| Budget: Edit Spending Sheet | [04-budget-03-edit-spending-sheet.png](./interactions/04-budget-03-edit-spending-sheet.png) | Modal for editing line items |
+| Budget: Upcoming Bills | [04-budget-04-upcoming-bills.png](./interactions/04-budget-04-upcoming-bills.png) | Chronological bills with Pay Now buttons |
+| Budget: Pay Now Match Modal | [04-budget-05-pay-now-match-modal.png](./interactions/04-budget-05-pay-now-match-modal.png) | Pay Now sheet with unassigned payment matching |
+| Budget: Strategy Overview | [04-budget-06-strategy-overview.png](./interactions/04-budget-06-strategy-overview.png) | Extra payment input, Avalanche/Snowball, ranked list |
+| Budget: Strategy Table Expanded | [04-budget-07-strategy-penfed-expanded.png](./interactions/04-budget-07-strategy-penfed-expanded.png) | Expanded inline monthly payoff projection table |
+| Progress: Overview | [05-progress-01-overview.png](./interactions/05-progress-01-overview.png) | Period toggle, target gauge, activity by account |
+| Progress: Utilization | [05-progress-02-utilization.png](./interactions/05-progress-02-utilization.png) | Utilization gauge, cards to review, paydown targets |
+| Progress: Milestones | [05-progress-03-milestones.png](./interactions/05-progress-03-milestones.png) | Counters, Next unlock, timeline |
+| Settings: Overview | [06-settings-01-overview.png](./interactions/06-settings-01-overview.png) | Preferences, Household, Data & Security |
+| Settings: Backup & Recovery | [06-settings-02-backup-sheet.png](./interactions/06-settings-02-backup-sheet.png) | Export full backup, restore checkpoint |

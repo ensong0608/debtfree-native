@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS public.debts (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- This sandbox already has a legacy public.debts table. CREATE TABLE IF NOT
+-- EXISTS does not evolve it, so add the fields required by the native adapter
+-- without assigning guessed categories to existing debt rows.
+ALTER TABLE public.debts
+  ADD COLUMN IF NOT EXISTS household_id text,
+  ADD COLUMN IF NOT EXISTS category text,
+  ADD COLUMN IF NOT EXISTS due_day integer;
+
 ALTER TABLE public.debts ENABLE ROW LEVEL SECURITY;
 
 DO $$

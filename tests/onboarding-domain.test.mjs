@@ -115,8 +115,8 @@ test('Debt validation checks required fields, numeric ranges, and home/vehicle o
     updatedAt: '2026-11-04T00:00:00Z',
   };
 
-  // Owning a home requires a Mortgage entry unless user switches to Rent/Other
-  assert.match(validateDebtsStep('Own', 'Own', [cardItem]) ?? '', /Mortgage/);
+  // Mortgage is deliberately excluded from active onboarding, even for owners.
+  assert.equal(validateDebtsStep('Own', 'Own', [cardItem]), null);
   // Financing a vehicle requires an Auto loan entry
   assert.match(validateDebtsStep('Rent', 'Finance', [cardItem]) ?? '', /Auto loan/);
   // Rent + Own vehicle with 1 credit card passes

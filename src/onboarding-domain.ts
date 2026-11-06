@@ -1,3 +1,13 @@
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { CURRENCIES, getCurrency, type CurrencyScale } from './finance/currencies.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { classifyMoneyEdit, parseMoney, parseApr, makeMoney, multiplyMoneyRatio, addMoney } from './finance/money.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { householdDate, monthlyPaymentDate, parseDateOnly, type DateOnly } from './finance/calendar.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import type { DataContext } from './finance/contracts.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { calculatePayoff, type PayoffResult, type PayoffAccountInput } from './finance/payoff.ts';
 /**
  * Pure domain types, validation rules, income normalization, and Snowball/Avalanche
  * payoff calculation engine for the DebtFree Native Sign-Up, Onboarding, and Home flows.
@@ -80,15 +90,8 @@ export type DebtCategory =
   | 'Medical debt'
   | 'Other loan';
 
-export const DEBT_CATEGORIES: DebtCategory[] = [
-  'Credit card',
-  'Personal loan',
-  'Auto loan',
-  'Mortgage',
-  'Student loan',
-  'Medical debt',
-  'Other loan',
-];
+export const ACTIVE_DEBT_CATEGORIES: DebtCategory[] = ['Credit card', 'Personal loan', 'Auto loan', 'Student loan', 'Medical debt', 'Other loan'];
+export const DEBT_CATEGORIES = ACTIVE_DEBT_CATEGORIES;
 
 export type DebtItem = {
   id: string;
@@ -102,8 +105,19 @@ export type DebtItem = {
   creditLimit: number | null;
   createdAt: string;
   updatedAt: string;
+  /** Server-validated monotonic revision of a persisted debt row. */
+  serverVersion?: number;
 };
 
+export function isActiveDebtItem(d: DebtItem): boolean { return d.category !== 'Mortgage'; }
+export function activeDebts(debts: readonly DebtItem[]): DebtItem[] { return debts.filter(isActiveDebtItem); }
+export function categoryDebts(debts: readonly DebtItem[], category: string): DebtItem[] {
+  if (category === 'All Debts') return [...debts];
+  if (category === 'Home') return debts.filter(d => d.category === 'Mortgage');
+  if (category === 'Auto') return debts.filter(d => d.category === 'Auto loan');
+  if (category === 'Home & Auto') return debts.filter(d => d.category === 'Mortgage' || d.category === 'Auto loan');
+  return debts.filter(d => d.category !== 'Mortgage' && d.category !== 'Auto loan');
+}
 export type PayoffStrategy = 'snowball' | 'avalanche';
 
 export type NotificationPreferences = {
@@ -128,6 +142,7 @@ export type UserOnboardingData = {
   consideredBeforeAi: 'yes' | 'no' | null;
   // Sign-Up Step 4
   countryCode: CountryCode;
+  currencyCode?: string;
   managesWithPartner: boolean | null;
   worksWithProfessional: boolean | null;
   // Onboarding Step 1 (Income)
@@ -148,6 +163,8 @@ export type UserOnboardingData = {
   notifications: NotificationPreferences;
   completedAt: string | null;
   updatedAt: string;
+  /** Server-validated revision for settings held in auth metadata; absent on legacy profiles. */
+  settingsRevision?: number;
 };
 
 /** Round a numeric dollar amount to two decimal places using integer-cent precision. */
@@ -156,52 +173,49 @@ export function roundCents(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-/** Parse a user-entered currency string (e.g. "$5,200.50" or "150") into a finite 2-decimal number or null. */
-export function parseMoneyInput(raw: string): number | null {
-  const cleaned = raw.replace(/[$,\s]/g, '').trim();
-  if (!cleaned) return null;
-  if (!/^\d+(\.\d{0,2})?$/.test(cleaned)) return null;
-  const parsed = Number(cleaned);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return roundCents(parsed);
+const currencySymbols: Record<string, string> = { USD: '$', EUR: '€', GBP: '£', CAD: 'CA$', AUD: 'A$', JPY: '¥', CHF: 'CHF', CNY: 'CN¥', INR: '₹', KWD: 'KWD', CLF: 'CLF' };
+export const CURRENCY_OPTIONS: { code: string; scale: CurrencyScale; symbol: string; label: string }[] = CURRENCIES.map(c => ({ ...c, symbol: currencySymbols[c.code] ?? c.code, label: c.code }));
+export function resolveCurrencyOption(data?: Partial<UserOnboardingData> | null) {
+  return CURRENCY_OPTIONS.find(c => c.code === data?.currencyCode) ?? CURRENCY_OPTIONS.find(c => c.code === COUNTRY_OPTIONS.find(country => country.code === data?.countryCode)?.currency) ?? CURRENCY_OPTIONS[0];
 }
-
-/** Parse a user-entered APR percentage string (e.g. "19.99" or "0") into a finite number in [0, 100] or null. */
+function cleanMoney(raw: string, currencyCode: string): string {
+  let text = raw.trim();
+  const symbol = CURRENCY_OPTIONS.find(c => c.code === currencyCode)?.symbol;
+  if (symbol && text.startsWith(symbol)) text = text.slice(symbol.length).trim();
+  return text.replace(/,/g, '');
+}
+export function acceptMoneyEdit(previous: string, next: string, currencyCode = 'USD', signed = false): string {
+  const candidate = cleanMoney(next, currencyCode);
+  try { return classifyMoneyEdit(candidate, currencyCode, signed) === 'invalid' ? previous : candidate; } catch { return previous; }
+}
+export function formatEditableMoney(amount: number, currencyCode = 'USD'): string { return amount.toFixed(getCurrency(currencyCode).scale); }
+export function parseMoneyInput(raw: string, currencyCode = 'USD', signed = false): number | null {
+  try { return parseMoney(cleanMoney(raw, currencyCode), currencyCode, signed).minorUnits / 10 ** getCurrency(currencyCode).scale; } catch { return null; }
+}
 export function parsePercentInput(raw: string): number | null {
-  const cleaned = raw.replace(/[%\s]/g, '').trim();
-  if (!cleaned) return null;
-  if (!/^\d+(\.\d{0,3})?$/.test(cleaned)) return null;
-  const parsed = Number(cleaned);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return null;
-  return Math.round((parsed + Number.EPSILON) * 1000) / 1000;
+  try { return parseApr(raw.trim().replace(/%$/, '').trim()) / 1000; } catch { return null; }
 }
-
-/** Format a number as currency (e.g. "$5,200.00"). */
-export function formatCurrency(amount: number, symbol = '$', decimals = 2): string {
-  const safe = Number.isFinite(amount) ? roundCents(amount) : 0;
-  const negative = safe < 0;
-  const abs = Math.abs(safe);
-  const fixed = abs.toFixed(decimals);
-  const [whole, fraction] = fixed.split('.');
-  const withCommas = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  const formatted = decimals > 0 ? `${symbol}${withCommas}.${fraction}` : `${symbol}${withCommas}`;
-  return negative ? `-${formatted}` : formatted;
+export function acceptAprEdit(previous: string, next: string): string {
+  if (next === '') return next;
+  if (!/^\d+(?:\.\d{0,3})?$/.test(next)) return previous;
+  return parsePercentInput(next.endsWith('.') ? next.slice(0, -1) : next) === null ? previous : next;
+}
+export function formatCurrency(amount: number, symbolOrCurrency = '$', decimals?: number): string {
+  const option = CURRENCY_OPTIONS.find(c => c.code === symbolOrCurrency) ?? CURRENCY_OPTIONS.find(c => c.symbol === symbolOrCurrency);
+  const symbol = option?.symbol ?? symbolOrCurrency;
+  const digits = decimals ?? option?.scale ?? 2;
+  const safe = Number.isFinite(amount) ? Math.round((Math.abs(amount) + Number.EPSILON) * 10 ** digits) / 10 ** digits : 0;
+  const [whole, fraction] = safe.toFixed(digits).split('.');
+  const formatted = symbol + whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (digits ? '.' + fraction : '');
+  return amount < 0 ? '-' + formatted : formatted;
 }
 
 /** Convert an income paycheck/period amount to its monthly equivalent. */
-export function normalizeMonthlyIncome(amount: number, frequency: PayFrequency): number {
+export function normalizeMonthlyIncome(amount: number, frequency: PayFrequency, currencyCode = 'USD'): number {
   if (!Number.isFinite(amount) || amount <= 0) return 0;
-  switch (frequency) {
-    case 'weekly':
-      return roundCents((amount * 52) / 12);
-    case 'biweekly':
-      return roundCents((amount * 26) / 12);
-    case 'twice_monthly':
-      return roundCents(amount * 2);
-    case 'monthly':
-    default:
-      return roundCents(amount);
-  }
+  const source = parseMoney(String(amount), currencyCode);
+  const [numerator, denominator] = frequency === 'weekly' ? [52, 12] : frequency === 'biweekly' ? [26, 12] : frequency === 'twice_monthly' ? [2, 1] : [1, 1];
+  return multiplyMoneyRatio(source, BigInt(numerator), BigInt(denominator)).minorUnits / 10 ** getCurrency(currencyCode).scale;
 }
 
 /** Total monthly household take-home income across primary and additional income sources. */
@@ -209,13 +223,11 @@ export function calculateTotalMonthlyIncome(
   primaryAmount: number,
   primaryFrequency: PayFrequency,
   additionalIncomes: AdditionalIncomeSource[],
+  currencyCode = 'USD',
 ): number {
-  const primaryMonthly = normalizeMonthlyIncome(primaryAmount, primaryFrequency);
-  const extraMonthly = additionalIncomes.reduce(
-    (sum, item) => sum + normalizeMonthlyIncome(item.amount, item.frequency),
-    0,
-  );
-  return roundCents(primaryMonthly + extraMonthly);
+  const monthly = (amount: number, frequency: PayFrequency) => parseMoney(String(normalizeMonthlyIncome(amount, frequency, currencyCode)), currencyCode);
+  const total = additionalIncomes.reduce((sum, item) => addMoney(sum, monthly(item.amount, item.frequency)), monthly(primaryAmount, primaryFrequency));
+  return total.minorUnits / 10 ** getCurrency(currencyCode).scale;
 }
 
 export function createDefaultOnboardingData(userId: string): UserOnboardingData {
@@ -309,8 +321,9 @@ export function validateSignUpStep4(
 export function validateIncomeStep(
   primaryAmountRaw: string,
   additionalIncomes: { name: string; amount: number }[],
+  currencyCode = 'USD',
 ): { valid: true; primaryAmount: number } | { valid: false; error: string } {
-  const parsed = parseMoneyInput(primaryAmountRaw);
+  const parsed = parseMoneyInput(primaryAmountRaw, currencyCode);
   if (parsed === null || parsed <= 0) {
     return { valid: false, error: 'Enter a valid take-home income amount greater than $0.' };
   }
@@ -339,32 +352,36 @@ export type DebtDraftInput = {
 
 export function validateDebtDraft(
   draft: DebtDraftInput,
+  currencyCode = 'USD',
 ): { valid: true; debt: Omit<DebtItem, 'id' | 'createdAt' | 'updatedAt'> } | { valid: false; error: string } {
   const name = draft.name.trim();
   if (!name) {
     return { valid: false, error: 'Enter a name for this debt (for example, Chase Sapphire or Auto Loan).' };
   }
-  const balance = parseMoneyInput(draft.balanceRaw);
-  if (balance === null || balance <= 0) {
-    return { valid: false, error: 'Enter a current balance greater than $0.' };
+  // Signed credit balances and zero-balance accounts must remain representable.
+  const balance = parseMoneyInput(draft.balanceRaw, currencyCode, true);
+  if (balance === null) {
+    return { valid: false, error: 'Enter a valid current balance (negative for a credit).' };
   }
   const apr = parsePercentInput(draft.aprRaw);
   if (apr === null) {
     return { valid: false, error: 'Enter a valid APR percentage between 0% and 100%.' };
   }
-  const minimumPayment = parseMoneyInput(draft.minimumPaymentRaw);
-  if (minimumPayment === null || minimumPayment <= 0) {
-    return { valid: false, error: 'Enter a minimum monthly payment greater than $0.' };
+  const minimumPayment = parseMoneyInput(draft.minimumPaymentRaw, currencyCode);
+  if (minimumPayment === null || minimumPayment < 0 || (balance > 0 && minimumPayment === 0)) {
+    return { valid: false, error: balance > 0
+      ? 'Enter a minimum monthly payment greater than zero for an amount owed.'
+      : 'Enter a valid minimum payment of zero or more.' };
   }
 
   let originalBalance: number | null = null;
   if (draft.originalBalanceRaw && draft.originalBalanceRaw.trim() !== '') {
-    const parsedOrig = parseMoneyInput(draft.originalBalanceRaw);
+    const parsedOrig = parseMoneyInput(draft.originalBalanceRaw, currencyCode);
     if (parsedOrig === null || parsedOrig <= 0) {
       return { valid: false, error: 'Enter a valid original loan balance greater than $0.' };
     }
     originalBalance = parsedOrig;
-  } else if (draft.category === 'Mortgage' || draft.category === 'Auto loan') {
+  } else if (balance > 0 && (draft.category === 'Mortgage' || draft.category === 'Auto loan')) {
     originalBalance = balance;
   }
 
@@ -383,7 +400,7 @@ export function validateDebtDraft(
 
   let creditLimit: number | null = null;
   if (draft.creditLimitRaw && draft.creditLimitRaw.trim() !== '') {
-    const parsedLimit = parseMoneyInput(draft.creditLimitRaw);
+    const parsedLimit = parseMoneyInput(draft.creditLimitRaw, currencyCode);
     if (parsedLimit === null || parsedLimit <= 0) {
       return { valid: false, error: 'Enter a valid credit limit greater than $0.' };
     }
@@ -410,13 +427,10 @@ export function validateDebtsStep(
   vehicleStatus: VehicleOwnershipStatus,
   debts: DebtItem[],
 ): string | null {
-  if (homeStatus === 'Own' && !debts.some(d => d.category === 'Mortgage')) {
-    return 'You selected that you own a home with a mortgage. Please add your Mortgage details or switch Your home to Rent/Other.';
-  }
   if (vehicleStatus === 'Finance' && !debts.some(d => d.category === 'Auto loan')) {
     return 'You selected that you finance a vehicle. Please add your Auto loan details or update Your vehicle selection.';
   }
-  if (debts.length === 0) {
+  if (activeDebts(debts).length === 0) {
     return 'Add at least one debt account to build your payoff plan.';
   }
   return null;
@@ -424,28 +438,35 @@ export function validateDebtsStep(
 
 export function validateExtraPaymentInput(
   raw: string,
+  currencyCode = 'USD',
 ): { valid: true; extraMonthlyPayment: number } | { valid: false; error: string } {
   const trimmed = raw.replace(/[$,\s]/g, '').trim();
   if (trimmed === '') {
     return { valid: true, extraMonthlyPayment: 0 };
   }
-  const parsed = parseMoneyInput(raw);
+  const parsed = parseMoneyInput(raw, currencyCode);
   if (parsed === null || parsed < 0) {
     return { valid: false, error: 'Enter a valid extra monthly payment of $0 or more.' };
   }
   return { valid: true, extraMonthlyPayment: parsed };
 }
 
+/** Current entered-balance comparison, not a payment or milestone ledger. */
+export function calculateBalanceSnapshot(debts: readonly DebtItem[]) {
+  // Each account's obligation is floored separately, so credits never cancel others.
+  const balance = debts.reduce((sum, item) => sum + Math.max(0, item.balance), 0);
+  const starting = debts.reduce((sum, item) => sum + Math.max(0, item.balance, item.originalBalance ?? item.balance), 0);
+  return { balance, paid: starting - balance, percent: starting > 0 ? (starting - balance) / starting * 100 : 0 };
+}
+
 /** Sort debts according to Debt Snowball (smallest balance first) or Debt Avalanche (highest APR first). */
-export function sortDebtsByStrategy(debts: DebtItem[], strategy: PayoffStrategy): DebtItem[] {
-  return [...debts]
-    .filter(d => d.balance > 0)
-    .sort((a, b) => {
-      if (strategy === 'snowball') {
-        return a.balance - b.balance || b.apr - a.apr || a.name.localeCompare(b.name);
-      }
-      return b.apr - a.apr || a.balance - b.balance || a.name.localeCompare(b.name);
-    });
+export function sortDebtsByStrategy(debts: DebtItem[], strategy: PayoffStrategy, currencyCode = 'USD'): DebtItem[] {
+  const scale = 10 ** getCurrency(currencyCode).scale;
+  return activeDebts(debts).filter(d => d.balance > 0).sort((a, b) => {
+    const balance = Math.round(a.balance * scale) - Math.round(b.balance * scale);
+    const apr = Math.round(b.apr * 1000) - Math.round(a.apr * 1000);
+    return (strategy === 'snowball' ? balance || apr : apr || balance) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  });
 }
 
 export type DebtPayoffProjection = {
@@ -460,10 +481,20 @@ export type DebtPayoffProjection = {
   monthsToPayoff: number | null;
   projectedPayoffLabel: string;
   dueDay: number | null;
+  monthlySchedule: PayoffScheduleRow[];
+};
+
+export type PayoffScheduleRow = {
+  month: string;
+  payment: number;
+  interest: number;
+  balance: number;
 };
 
 export type PayoffPlanResult = {
   strategy: PayoffStrategy;
+  status: PayoffResult['status'];
+  unusedBudget: number;
   totalDebt: number;
   totalStartingDebt: number;
   progressPercent: number;
@@ -476,176 +507,87 @@ export type PayoffPlanResult = {
   stalled: boolean;
   firstTarget: DebtPayoffProjection | null;
   payoffOrder: DebtPayoffProjection[];
+  allProjections?: DebtPayoffProjection[];
 };
-
-const MAX_PROJECTION_MONTHS = 600;
 
 export function formatMonthOffsetLabel(monthsFromNow: number, baseDate: Date = new Date()): string {
   const target = new Date(Date.UTC(baseDate.getUTCFullYear(), baseDate.getUTCMonth() + monthsFromNow, 1));
-  const monthNames = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  return `${monthNames[target.getUTCMonth()]} ${target.getUTCFullYear()}`;
+  return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][target.getUTCMonth()] + ' ' + target.getUTCFullYear();
 }
-
-/**
- * Authoritative month-by-month debt payoff simulation supporting both Debt Snowball and Debt Avalanche.
- * Uses integer-cent math at each step to prevent floating-point drift.
- */
-export function calculatePayoffPlan(
-  debts: DebtItem[],
-  strategy: PayoffStrategy,
-  extraMonthlyPayment: number,
-  baseDate: Date = new Date(),
-): PayoffPlanResult {
-  const ordered = sortDebtsByStrategy(debts, strategy);
-  const safeExtra = Math.max(0, roundCents(extraMonthlyPayment));
-  const totalDebt = roundCents(ordered.reduce((sum, d) => sum + d.balance, 0));
-  const totalStartingDebt = roundCents(
-    ordered.reduce((sum, d) => sum + Math.max(d.balance, d.originalBalance ?? d.balance), 0),
-  );
-  const progressPercent =
-    totalStartingDebt > 0
-      ? Math.max(0, Math.min(100, Math.round(((totalStartingDebt - totalDebt) / totalStartingDebt) * 100)))
-      : 0;
-  const totalMinimums = roundCents(ordered.reduce((sum, d) => sum + d.minimumPayment, 0));
-  const monthlyTotalPayment = roundCents(totalMinimums + safeExtra);
-
-  if (ordered.length === 0) {
-    return {
-      strategy,
-      totalDebt: 0,
-      totalStartingDebt: 0,
-      progressPercent: 100,
-      totalMinimums: 0,
-      extraMonthlyPayment: safeExtra,
-      monthlyTotalPayment: safeExtra,
-      totalInterest: 0,
-      monthsToPayoff: 0,
-      debtFreeDateLabel: 'Debt-free now',
-      stalled: false,
-      firstTarget: null,
-      payoffOrder: [],
-    };
-  }
-
-  const balances = new Map<string, number>(ordered.map(d => [d.id, roundCents(d.balance)]));
-  const payoffMonthById = new Map<string, number>();
-  const firstMonthPaymentById = new Map<string, number>();
-  let totalInterest = 0;
-  let stalled = false;
-
-  for (let month = 1; month <= MAX_PROJECTION_MONTHS; month++) {
-    const startRemaining = roundCents([...balances.values()].reduce((s, b) => s + b, 0));
-    if (startRemaining <= 0.005) break;
-
-    let monthInterest = 0;
-    for (const d of ordered) {
-      const bal = balances.get(d.id) ?? 0;
-      if (bal <= 0.005) continue;
-      const interest = roundCents((bal * (d.apr / 100)) / 12);
-      balances.set(d.id, roundCents(bal + interest));
-      monthInterest = roundCents(monthInterest + interest);
-    }
-    totalInterest = roundCents(totalInterest + monthInterest);
-
-    let availableBudget = monthlyTotalPayment;
-    const monthPayments = new Map<string, number>();
-
-    // Step 1: pay required minimums on all open debts
-    for (const d of ordered) {
-      const bal = balances.get(d.id) ?? 0;
-      if (bal <= 0.005) continue;
-      const minPay = roundCents(Math.min(bal, d.minimumPayment, availableBudget));
-      if (minPay > 0) {
-        balances.set(d.id, roundCents(bal - minPay));
-        monthPayments.set(d.id, minPay);
-        availableBudget = roundCents(availableBudget - minPay);
-      }
-    }
-
-    // Step 2: roll any extra + freed-up minimums into priority order (Snowball or Avalanche)
-    const activePriority = sortDebtsByStrategy(
-      ordered.map(d => ({ ...d, balance: balances.get(d.id) ?? 0 })),
-      strategy,
-    );
-    for (const d of activePriority) {
-      if (availableBudget <= 0.005) break;
-      const bal = balances.get(d.id) ?? 0;
-      if (bal <= 0.005) continue;
-      const extraPay = roundCents(Math.min(bal, availableBudget));
-      if (extraPay > 0) {
-        balances.set(d.id, roundCents(bal - extraPay));
-        monthPayments.set(d.id, roundCents((monthPayments.get(d.id) ?? 0) + extraPay));
-        availableBudget = roundCents(availableBudget - extraPay);
-      }
-    }
-
-    if (month === 1) {
-      for (const d of ordered) {
-        firstMonthPaymentById.set(d.id, roundCents(monthPayments.get(d.id) ?? 0));
-      }
-    }
-
-    for (const d of ordered) {
-      const bal = balances.get(d.id) ?? 0;
-      if (bal <= 0.005 && !payoffMonthById.has(d.id)) {
-        balances.set(d.id, 0);
-        payoffMonthById.set(d.id, month);
-      }
-    }
-
-    const endRemaining = roundCents([...balances.values()].reduce((s, b) => s + b, 0));
-    if (endRemaining <= 0.005) {
-      break;
-    }
-    if (endRemaining >= startRemaining - 0.005) {
-      stalled = true;
-      break;
-    }
-    if (month === MAX_PROJECTION_MONTHS && endRemaining > 0.005) {
-      stalled = true;
-    }
-  }
-
-  const maxMonth = payoffMonthById.size === ordered.length
-    ? Math.max(...payoffMonthById.values())
-    : null;
-
+export function defaultFirstPaymentDate(baseDate: Date = new Date(), householdTimeZone = 'UTC'): DateOnly {
+  const local = householdDate(baseDate, householdTimeZone);
+  return monthlyPaymentDate(parseDateOnly(local.slice(0, 7) + '-01'), 1, 1);
+}
+export function formatDateOnlyMonthYear(date: DateOnly): string {
+  return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(date.slice(5, 7)) - 1] + ' ' + date.slice(0, 4);
+}
+export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy, extraMonthlyPayment: number, baseDate: Date = new Date(), currencyCode = 'USD', householdTimeZone = 'UTC'): PayoffPlanResult {
+  const scale = 10 ** getCurrency(currencyCode).scale;
+  const toMinor = (n: number) => Math.round(n * scale);
+  const money = (n: number) => makeMoney(currencyCode, toMinor(n));
+  const ordered = sortDebtsByStrategy(debts, strategy, currencyCode);
+  const totalDebt = ordered.reduce((sum, d) => sum + toMinor(d.balance), 0) / scale;
+  const totalStartingDebt = activeDebts(debts).reduce((sum, d) => sum + toMinor(Math.max(0, d.balance, d.originalBalance ?? d.balance)), 0) / scale;
+  const hasOpenObligations = ordered.length > 0;
+  const totalMinimums = ordered.reduce((sum, d) => sum + toMinor(d.minimumPayment), 0) / scale;
+  const safeExtra = toMinor(extraMonthlyPayment) / scale;
+  const context: DataContext = { householdId: 'local', source: { id: 'onboarding', kind: 'manual' }, asOf: null, coverage: { status: 'unknown' } };
+  let result: PayoffResult;
+  try {
+    const accounts: PayoffAccountInput[] = debts.map(d => ({ accountId: d.id, inclusion: isActiveDebtItem(d) ? 'accelerated' : 'excluded', balance: money(d.balance), aprThousandths: Math.round(d.apr * 1000), scheduledMinimum: money(d.minimumPayment) }));
+    result = calculatePayoff({ accounts: { status: 'available', data: accounts, context }, assumptions: { firstPaymentDate: defaultFirstPaymentDate(baseDate, householdTimeZone), requestedDay: 1, householdTimeZone }, strategy, currency: currencyCode, extraMonthlyPayment: money(extraMonthlyPayment) });
+  } catch (error) { result = { status: 'invalidInput', reason: error instanceof Error ? error.message : 'Invalid input' }; }
+  const common = 'schedule' in result ? result : null;
+  const labels: Record<Exclude<PayoffResult['status'], 'paidOff'>, string> = { paymentShortfall: 'Payment shortfall', notAmortizingUnderAssumptions: 'Not amortizing under current assumptions', horizonReached: 'Projection horizon reached', insufficientData: 'Insufficient data for projection', invalidInput: 'Invalid projection input' };
   const payoffOrder: DebtPayoffProjection[] = ordered.map(d => {
-    const m = payoffMonthById.get(d.id) ?? null;
+    const summary = common?.accounts.find(a => a.accountId === d.id);
+    const monthlySchedule: PayoffScheduleRow[] = (common?.schedule ?? [])
+      .filter(period => summary?.payoffMonth == null || period.period <= summary.payoffMonth)
+      .map(period => {
+        const row = period.accounts.find(a => a.accountId === d.id);
+        return {
+          month: formatDateOnlyMonthYear(period.paymentDate),
+          payment: (row?.totalPaid.minorUnits ?? 0) / scale,
+          interest: (row?.interestAccrued.minorUnits ?? 0) / scale,
+          balance: (row?.closingObligation.minorUnits ?? 0) / scale,
+        };
+      });
+    return { ...d, firstMonthPayment: monthlySchedule[0]?.payment ?? 0, monthsToPayoff: summary?.payoffMonth ?? null, projectedPayoffLabel: summary?.payoffDate ? formatDateOnlyMonthYear(summary.payoffDate) : 'Payoff date unavailable', monthlySchedule };
+  });
+
+  const excludedDebts = debts.filter(d => !isActiveDebtItem(d) && d.balance > 0);
+  const excludedProjections: DebtPayoffProjection[] = excludedDebts.map(d => {
+    const summary = common?.accounts.find(a => a.accountId === d.id);
+    const monthlySchedule: PayoffScheduleRow[] = (common?.schedule ?? [])
+      .filter(period => summary?.payoffMonth == null || period.period <= summary.payoffMonth)
+      .map(period => {
+        const row = period.accounts.find(a => a.accountId === d.id);
+        return {
+          month: formatDateOnlyMonthYear(period.paymentDate),
+          payment: (row?.totalPaid.minorUnits ?? 0) / scale,
+          interest: (row?.interestAccrued.minorUnits ?? 0) / scale,
+          balance: (row?.closingObligation.minorUnits ?? 0) / scale,
+        };
+      });
     return {
-      id: d.id,
-      name: d.name,
-      category: d.category,
-      balance: d.balance,
-      originalBalance: d.originalBalance,
-      apr: d.apr,
-      minimumPayment: d.minimumPayment,
-      firstMonthPayment: firstMonthPaymentById.get(d.id) ?? d.minimumPayment,
-      monthsToPayoff: m,
-      projectedPayoffLabel: m !== null ? formatMonthOffsetLabel(m, baseDate) : 'Needs higher payment',
-      dueDay: d.dueDay,
+      ...d,
+      firstMonthPayment: monthlySchedule[0]?.payment ?? d.minimumPayment,
+      monthsToPayoff: summary?.payoffMonth ?? null,
+      projectedPayoffLabel: summary?.payoffDate ? formatDateOnlyMonthYear(summary.payoffDate) : 'Payoff date unavailable',
+      monthlySchedule,
     };
   });
 
-  return {
-    strategy,
-    totalDebt,
-    totalStartingDebt,
-    progressPercent,
-    totalMinimums,
-    extraMonthlyPayment: safeExtra,
-    monthlyTotalPayment,
-    totalInterest,
-    monthsToPayoff: stalled ? null : maxMonth,
-    debtFreeDateLabel:
-      !stalled && maxMonth !== null
-        ? formatMonthOffsetLabel(maxMonth, baseDate)
-        : 'Increase monthly payment to amortize',
-    stalled,
-    firstTarget: payoffOrder[0] ?? null,
-    payoffOrder,
-  };
+  const lastPeriod = common?.schedule[common.schedule.length - 1];
+  // A known-zero set of *entered* accounts does not establish complete household coverage.
+  const displayStatus = hasOpenObligations ? result.status : 'insufficientData';
+  const displayPayoffLabel = !hasOpenObligations
+    ? (activeDebts(debts).length ? 'No balance owed on entered accounts' : 'Add accounts to estimate payoff')
+    : result.status === 'paidOff'
+      ? (result.monthsToPayoff === 0 ? 'No outstanding tracked debt'
+        : result.coverageScope === 'verified-household'
+          ? `Projected payoff: ${formatDateOnlyMonthYear(result.payoffDate!)}`
+          : `Entered debts projected paid off: ${formatDateOnlyMonthYear(result.payoffDate!)}`)
+      : labels[result.status];
+  return { strategy, status: displayStatus, unusedBudget: result.status === 'paidOff' ? result.unusedBudget.minorUnits / scale : (lastPeriod?.unusedBudget.minorUnits ?? 0) / scale, totalDebt, totalStartingDebt, progressPercent: totalStartingDebt > 0 ? Math.max(0, Math.min(100, Math.round((totalStartingDebt - totalDebt) / totalStartingDebt * 100))) : 0, totalMinimums, extraMonthlyPayment: safeExtra, monthlyTotalPayment: !hasOpenObligations ? 0 : common ? common.monthlyCommitment.minorUnits / scale : totalMinimums + safeExtra, totalInterest: result.status === 'paidOff' ? result.totalInterest.minorUnits / scale : result.status === 'paymentShortfall' || result.status === 'notAmortizingUnderAssumptions' || result.status === 'horizonReached' ? result.partialInterest.minorUnits / scale : 0, monthsToPayoff: hasOpenObligations && result.status === 'paidOff' ? result.monthsToPayoff : null, debtFreeDateLabel: displayPayoffLabel, stalled: displayStatus !== 'paidOff', firstTarget: payoffOrder[0] ?? null, payoffOrder, allProjections: [...payoffOrder, ...excludedProjections] };
 }

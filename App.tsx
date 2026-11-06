@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   Pressable,
   StyleSheet,
@@ -27,7 +28,7 @@ import {
   type FlowStage,
   type UserOnboardingData,
 } from './src/onboarding-domain';
-import { loadUserOnboardingData, resetUserOnboardingData } from './src/onboarding-storage';
+import { loadUserOnboardingData, resetUserOnboardingData, OnboardingDataUnavailableError } from './src/onboarding-storage';
 import { AppIcon } from './src/components/AppIcon';
 import { DebtFreeFlow } from './src/OnboardingAndHome';
 
@@ -97,7 +98,7 @@ function RootApp() {
         sessionRef.current = null;
         setSession(null);
         setOnboardingData(null);
-        if (err instanceof AuthUnavailableError) {
+        if (err instanceof AuthUnavailableError || err instanceof OnboardingDataUnavailableError) {
           setAuthScreen('unavailable');
           setError(err.message);
         } else {
@@ -191,7 +192,7 @@ function RootApp() {
         sessionRef.current = null;
         setSession(null);
         setOnboardingData(null);
-        setAuthScreen('ready');
+        setAuthScreen(err instanceof OnboardingDataUnavailableError ? 'unavailable' : 'ready');
         setError(err instanceof Error ? err.message : 'Sign-in failed. Please try again.');
       }
       return null;
@@ -248,14 +249,10 @@ function RootApp() {
       setResetKey(prev => prev + 1);
       setAuthScreen('ready');
       await signOut();
-    } catch {
+    } catch (err) {
       if (mounted.current && request === generation.current) {
-        sessionRef.current = null;
-        setSession(null);
-        setOnboardingData(null);
-        setStage('welcome');
-        setResetKey(prev => prev + 1);
-        setAuthScreen('ready');
+        Alert.alert('Reset not completed', err instanceof Error ? err.message : 'Unable to confirm the data reset.');
+        // Preserve the signed-in UI on failure; the next verified load reconciles remote state.
       }
     } finally {
       if (mounted.current && request === generation.current) {
@@ -331,19 +328,109 @@ function RootApp() {
     );
   }
 
+  const continueAsTestUser = () => {
+    const testUserId = 'test-user-preview';
+    const testData: UserOnboardingData = {
+      version: 1,
+      userId: testUserId,
+      householdId: 'hh-test-preview',
+      currentStage: 'home',
+      signupCompleted: true,
+      onboardingCompleted: true,
+      goals: ['Pay down my credit card debt'],
+      referralSource: 'Friend or family',
+      consideredBeforeAi: null,
+      countryCode: 'US',
+      currencyCode: 'USD',
+      managesWithPartner: false,
+      worksWithProfessional: false,
+      primaryIncomeAmount: 5200,
+      primaryPayFrequency: 'monthly',
+      primaryMonthlyIncome: 5200,
+      additionalIncomes: [],
+      selectedPlan: 'premium',
+      homeStatus: 'Rent',
+      vehicleStatus: 'Own',
+      debts: [
+        {
+          id: 'debt-chase-sapphire',
+          name: 'Chase Sapphire',
+          category: 'Credit card',
+          balance: 3450.00,
+          originalBalance: 4000.00,
+          apr: 21.99,
+          minimumPayment: 95.00,
+          dueDay: 15,
+          creditLimit: 8000.00,
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-11-01T00:00:00Z',
+          serverVersion: 1,
+        },
+        {
+          id: 'debt-citi-double',
+          name: 'Citi Double Cash',
+          category: 'Credit card',
+          balance: 1850.50,
+          originalBalance: 2500.00,
+          apr: 19.24,
+          minimumPayment: 55.00,
+          dueDay: 22,
+          creditLimit: 5000.00,
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-11-01T00:00:00Z',
+          serverVersion: 1,
+        },
+        {
+          id: 'debt-auto-loan',
+          name: 'Auto Loan',
+          category: 'Auto loan',
+          balance: 8200.00,
+          originalBalance: 15000.00,
+          apr: 5.49,
+          minimumPayment: 285.00,
+          dueDay: 5,
+          creditLimit: null,
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-11-01T00:00:00Z',
+          serverVersion: 1,
+        },
+      ],
+      strategy: 'snowball',
+      extraMonthlyPayment: 150,
+      notifications: {
+        upcomingReminders: true,
+        overdueAlerts: true,
+        milestonesAndProgress: true,
+        permissionRequested: true,
+        osPermissionStatus: 'granted',
+      },
+      completedAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    };
+    setOnboardingData(testData);
+    setStage('home');
+  };
+
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
       <DebtFreeFlow
-        key={resetKey}
+        key={`${session?.user.id ?? onboardingData?.userId ?? 'signed-out'}-${resetKey}`}
         session={session}
         onboardingData={onboardingData}
         stage={stage}
-        onChangeStage={setStage}
-        onUpdateOnboardingData={setOnboardingData}
+        onChangeStage={next => {
+          if (!session?.user.id || (sessionRef.current?.user.id ?? null) === (session?.user.id ?? null)) setStage(next);
+        }}
+        onUpdateOnboardingData={next => {
+          if (!session?.user.id || (sessionRef.current?.user.id === session.user.id && next.userId === session.user.id)) {
+            setOnboardingData(next);
+          }
+        }}
         onGoogleSignIn={() => login(signInWithGoogle)}
         onAppleSignIn={() => login(signInWithApple)}
         onSignOut={logout}
+        onTestUserSignIn={continueAsTestUser}
         appleAvailable={appleAvailable}
         configured={configured}
         configProblem={configProblem}
@@ -352,20 +439,22 @@ function RootApp() {
         authNotice={notice}
         onClearAuthError={() => setError('')}
       />
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Reset app and start over"
-        disabled={busy}
-        style={[
-          styles.floatingResetButton,
-          { bottom: Math.max(insets.bottom, 10) + (stage === 'home' && onboardingData ? 76 : 6) },
-          busy && styles.disabledButton,
-        ]}
-        onPress={() => void resetEverything()}
-      >
-        {!busy ? <AppIcon name="reset" size={12} color="#FF9367" /> : null}
-        <Text style={styles.floatingResetText}>{busy ? 'Resetting…' : 'Reset'}</Text>
-      </Pressable>
+      {__DEV__ && stage === 'welcome' ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Reset app and start over"
+          disabled={busy}
+          style={[
+            styles.floatingResetButton,
+            { bottom: Math.max(insets.bottom, 10) + 6 },
+            busy && styles.disabledButton,
+          ]}
+          onPress={() => void resetEverything()}
+        >
+          {!busy ? <AppIcon name="reset" size={12} color="#FF9367" /> : null}
+          <Text style={styles.floatingResetText}>{busy ? 'Resetting…' : 'Reset'}</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }

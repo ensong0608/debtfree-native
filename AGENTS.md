@@ -4,7 +4,21 @@ All agents operating in this repository MUST follow these rules.
 
 ## Saved Prototype References
 
-Before screen/UI work, read [the local prototype screenshot index](./references/prototype/README.md), [the prototype calculation and architectural reference](./references/PROTOTYPE_CALCULATIONS.md), and [APP_PLAN.md](./APP_PLAN.md). The screenshot index links to 16 signed-in prototype screenshots captured on 2026-11-04, and `references/PROTOTYPE_CALCULATIONS.md` documents the authoritative math and data models from [github.com/ensong0608/debtfree-dashboard](https://github.com/ensong0608/debtfree-dashboard). The prototype repo is cloned locally at `references/prototype-repo/` (git-ignored). Use them for functional structure and context. Explicit user decisions override the images: the prototype palette is not approved for the native app, and the selected native icon direction is Option B in `design/icon-directions.html`. Do not hardcode household data from screenshots.
+Before screen/UI work, read [the local prototype screenshot index](./references/prototype/README.md), [the prototype calculation and architectural reference](./references/PROTOTYPE_CALCULATIONS.md), [the prototype mobile interaction blueprint](./references/PROTOTYPE_INTERACTION_PATTERNS.md), and [APP_PLAN.md](./APP_PLAN.md). 
+
+The reference materials include:
+- `references/prototype/README.md`: Index of initial signed-in prototype captures (2026-11-04) and the 24 interactive mobile captures in `references/prototype/interactions/` (2026-11-06).
+- `references/PROTOTYPE_INTERACTION_PATTERNS.md`: Screen-by-screen interactive behavior guide (modals, accordions, click targets, redirection paths).
+- `references/PROTOTYPE_CALCULATIONS.md`: Authoritative math and data models from [github.com/ensong0608/debtfree-dashboard](https://github.com/ensong0608/debtfree-dashboard). The prototype repo is cloned locally at `references/prototype-repo/` (git-ignored).
+
+### Key User Directives for UI & Interaction (Mandatory)
+1. **Behavioral Model, Not a Carbon Copy**: Use the prototype for interaction mechanics, hierarchies, and flows, but refine styling and layout for mobile.
+2. **Upcoming Recurring Bills Card (Home Tab)**: Hidden by default on the Home tab. It ONLY appears if a recurring bill or credit card minimum is nearing its due date and has NOT been settled yet. The full list lives under **Budget → Upcoming**.
+3. **Home Card Carousel**: Keep the category cycling concept (Cards & Loans, Home, Auto), but refine the visual design (the user dislikes the current web design).
+4. **Payoff Strategy Redirection**: Clicking the Payoff strategy card or its "See all" on Home must redirect to **Budget → Strategy**.
+5. **Debt Detail Popups**: Clicking an account card on the Debt tab opens a 3-tab popup modal (**Overview**, **Transactions**, **Detail**).
+6. **Strategy Monthly Schedule Expansion**: On **Budget → Strategy**, clicking any account row toggles an inline monthly payoff projection table (`Month`, `Payment`, `Interest`, `Balance`).
+7. **Strict Backend Data Safety**: NEVER add, edit, delete, or submit mutations against live prototype or production data. Explicit user decisions override screenshot images. Do not hardcode household data from screenshots.
 
 
 ---

@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { AppIcon } from './AppIcon';
-import { formatCurrency, type DebtItem } from '../onboarding-domain';
+import { formatCurrency, categoryDebts, calculateBalanceSnapshot, type DebtItem } from '../onboarding-domain';
 
 export function FinancialScreen({
   title,
@@ -95,8 +95,8 @@ export function Segments({
   );
 }
 
-export function Card({ children }: { children: ReactNode }) {
-  return <View style={ui.card}>{children}</View>;
+export function Card({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
+  return <View style={[ui.card, style]}>{children}</View>;
 }
 
 export function Bar({ percent }: { percent: number }) {
@@ -154,26 +154,11 @@ export function Gauge({ label = '—' }: { label?: string }) {
   );
 }
 
-export const categories = ['Cards & Loans', 'Home & Auto', 'All Debts'] as const;
-
-export function categoryDebts(debts: DebtItem[], category: string) {
-  return debts.filter(
-    d =>
-      category === 'All Debts' ||
-      (category === 'Home & Auto'
-        ? d.category === 'Mortgage' || d.category === 'Auto loan'
-        : d.category !== 'Mortgage' && d.category !== 'Auto loan'),
-  );
-}
+export const categories = ['Cards & Loans', 'Home', 'Auto'] as const;
+export { categoryDebts };
 
 export function snapshot(debts: DebtItem[]) {
-  const balance = debts.reduce((s, d) => s + d.balance, 0);
-  const starting = debts.reduce((s, d) => s + Math.max(d.balance, d.originalBalance ?? d.balance), 0);
-  return {
-    balance,
-    paid: starting - balance,
-    percent: starting > 0 ? ((starting - balance) / starting) * 100 : 0,
-  };
+  return calculateBalanceSnapshot(debts);
 }
 
 export function SnapshotCard({
@@ -183,35 +168,16 @@ export function SnapshotCard({
   debts: DebtItem[];
   currencySymbol: string;
 }) {
-  const [index, setIndex] = useState(0);
-  const selected = categories[index];
+  const [selected, setSelected] = useState<string>(categories[0]);
   const stats = snapshot(categoryDebts(debts, selected));
   return (
     <Card>
-      <View style={[ui.row, { justifyContent: 'space-between' }]}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Previous category"
-          onPress={() => setIndex((index + categories.length - 1) % categories.length)}
-          style={ui.iconButton}
-        >
-          <AppIcon name="chevronLeft" size={18} color="#81DFD2" />
-        </Pressable>
-        <Text style={ui.heading}>{selected}</Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Next category"
-          onPress={() => setIndex((index + 1) % categories.length)}
-          style={ui.iconButton}
-        >
-          <AppIcon name="chevronRight" size={18} color="#81DFD2" />
-        </Pressable>
-      </View>
+      <Segments items={categories} selected={selected} onSelect={setSelected} />
       <View style={[ui.row, { gap: 16 }]}>
         <Ring percent={stats.percent} label="snapshot" />
         <View style={{ flex: 1, gap: 6 }}>
           <View>
-            <Text style={ui.small}>Paid (snapshot):</Text>
+            <Text style={ui.small}>Balance change</Text>
             <Text style={ui.value}>{formatCurrency(stats.paid, currencySymbol)}</Text>
           </View>
           <View style={ui.divider}>
@@ -220,28 +186,25 @@ export function SnapshotCard({
           </View>
         </View>
       </View>
-      <Text style={ui.small}>
-        Comparison with entered starting balances; not recorded payment history.
-      </Text>
     </Card>
   );
 }
 
 export const ui = StyleSheet.create({
-  screen: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 116, gap: 14 },
+  screen: { paddingHorizontal: 18, paddingTop: 18, paddingBottom: 120, gap: 16 },
   header: {
-    backgroundColor: '#262927',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 12,
-    gap: 10,
+    backgroundColor: '#242926',
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 14,
+    gap: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#414743',
+    borderBottomColor: '#353D38',
   },
-  title: { color: '#F9F9F6', fontSize: 24, fontWeight: '700' },
-  heading: { color: '#F9F9F6', fontSize: 17, fontWeight: '700' },
-  text: { color: '#AAB3AD', fontSize: 14, lineHeight: 20 },
-  small: { color: '#AAB3AD', fontSize: 12, lineHeight: 17 },
+  title: { color: '#F9F9F6', fontSize: 24, fontWeight: '700', letterSpacing: -0.45 },
+  heading: { color: '#F9F9F6', fontSize: 17, fontWeight: '700', letterSpacing: -0.2 },
+  text: { color: '#B5BDB7', fontSize: 14, lineHeight: 20 },
+  small: { color: '#AAB3AD', fontSize: 12, lineHeight: 16 },
   value: { color: '#81DFD2', fontSize: 17, fontWeight: '700' },
   badge: {
     backgroundColor: '#31534D',
@@ -251,12 +214,17 @@ export const ui = StyleSheet.create({
   },
   badgeText: { color: '#81DFD2', fontSize: 11, fontWeight: '700' },
   card: {
-    backgroundColor: '#292D2B',
-    borderRadius: 14,
-    padding: 16,
-    gap: 10,
+    backgroundColor: '#272D2A',
+    borderRadius: 18,
+    padding: 18,
+    gap: 12,
     borderWidth: 1,
-    borderColor: '#3C443F',
+    borderColor: '#37413B',
+    shadowColor: '#000000',
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1,
   },
   row: { flexDirection: 'row', gap: 10, alignItems: 'center' },
   button: {

@@ -1,5 +1,9 @@
 # DebtFree: five-tab scope and worker plan
 
+## Financial foundation planning update (2026-11-04)
+
+Read [NATIVE_FINANCIAL_PLAN.md](./NATIVE_FINANCIAL_PLAN.md) before assigning financial implementation. The user clarified that the prototype is a reference, not a rule; its calculations and the existing calculation guide require independent evaluation. The new plan records observed risks, decisions, shared contracts, proposed task dependencies and targeted acceptance scenarios. It supersedes earlier recommendations to copy prototype formulas automatically. This update authorizes no implementation, worker dispatch, bank integration or schema change.
+
 Recorded: 2026-11-03. Execution: next working session (tomorrow, as requested).
 Resumed: 2026-11-04 at the user's request. Icon choice: **Option B — Confident Solid / Sculpted Silhouette**, as shown in design/icon-directions.html. Apply this family to the native app; the palette is still undecided.
 Manager: GPT-6.1 Sol High. Status and assignments: [TRACKER.md](./TRACKER.md).
@@ -140,6 +144,7 @@ Inspected the 16 prototype screenshots in `references/prototype/2026-11-04/` (`T
 2. Budget shows whatever amounts the user entered. Preserve entered amounts and existing income-frequency normalization; distinguish strategy-based debt payment estimates from recorded payments. No inferred planned/actual duplication or automatic purchase imports.
 3. Progress leads with debt paid down, payments made, and accounts paid off across all three agreed periods. Use recorded history; do not infer monthly/lifetime performance from debt snapshots.
 4. Option B native renderer: use react-native-svg at the installed Expo SDK's bundled version (15.16.0 in node_modules/expo/bundledNativeModules.json). T-011 may add this dependency and port the approved paths. This is an implementation choice within the approved icon work.
+5. Mortgage set aside (updated 2026-11-04): Do not include or display Mortgage in the active payoff strategy, onboarding debt entry, or Debt/Home/Budget/Progress category views for now (it may receive its own dedicated page later). Consumer debts and Auto loans remain active and accelerated; category segments use `Cards & Loans`, `Auto`, and `All Debts`.
 
 Color palette, typography, detailed layouts, commercial content, and additional features await user direction. These choices do not block this plan or the initial implementation mapping.
 
