@@ -99,7 +99,7 @@ export function calculateActivitySummary(params: {
   today: DateOnly;
 }): ActivitySummary {
   const { transactions, debts, period, today } = params;
-  const filtered = filterTransactionsByPeriod(transactions, period, today);
+  const filtered = filterTransactionsByPeriod(transactions, period, today).filter(tx => !tx.isPending);
 
   let totalPayments = 0;
   let totalInterestAndFees = 0;
@@ -132,7 +132,9 @@ export function calculateActivitySummary(params: {
 
   const netBalanceChange = Math.round((totalCharges - totalPayments) * 100) / 100;
   const debtPaidDown = Math.max(0, Math.round((totalPayments - totalCharges) * 100) / 100);
-  const accountsPaidOffCount = debts.filter(d => d.balance <= 0).length;
+  // Provisional balances are not proof an obligation has been paid off.
+  const pendingAccounts = new Set(transactions.filter(tx => tx.isPending).map(tx => tx.accountId));
+  const accountsPaidOffCount = debts.filter(d => d.balance <= 0 && !pendingAccounts.has(d.id)).length;
 
   return {
     period,
@@ -154,7 +156,7 @@ export function calculateAccountActivities(params: {
   today: DateOnly;
 }): AccountActivity[] {
   const { transactions, debts, period, today } = params;
-  const filtered = filterTransactionsByPeriod(transactions, period, today);
+  const filtered = filterTransactionsByPeriod(transactions, period, today).filter(tx => !tx.isPending);
 
   return debts.map(debt => {
     const accountTxs = filtered.filter(tx => tx.accountId === debt.id);
@@ -234,9 +236,13 @@ export function calculateMilestones(params: {
 }): Milestone[] {
   const { debts, transactions } = params;
 
-  // Real recorded payments (excluding reconciliation drift adjustments)
+  // Pending balance changes are not authoritative even when their displayed balance is zero.
+  // Until a fresh authoritative debt snapshot is loaded, withhold balance-based awards.
+  const hasPendingBalanceWrites = transactions.some(tx => tx.isPending && tx.accountId !== null);
+
+  // Real recorded payments (excluding reconciliation drift adjustments and unverified pending payments)
   const paymentTxs = transactions.filter(
-    tx => tx.deletedAt === null && tx.category === 'payment' && tx.source !== 'reconciliation'
+    tx => tx.deletedAt === null && tx.category === 'payment' && tx.source !== 'reconciliation' && !tx.isPending
   );
   const totalPaymentsAmount = paymentTxs.reduce(
     (sum, tx) => sum + tx.amount.minorUnits / 100,
@@ -345,5 +351,11 @@ export function calculateMilestones(params: {
     },
   ];
 
+  if (hasPendingBalanceWrites) {
+    const balanceMilestones = new Set(['first_debt_cleared', 'progress_25', 'progress_50', 'progress_75', 'progress_100', 'credit_util_30']);
+    return milestones.map(m => balanceMilestones.has(m.id)
+      ? { ...m, status: 'locked' as const, earnedDate: null }
+      : m);
+  }
   return milestones;
 }

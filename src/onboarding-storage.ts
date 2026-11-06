@@ -336,7 +336,7 @@ async function verifyDebtTombstone(userId: string, debtId: string): Promise<bool
   return data?.id === debtId && data.deleted_user_id === userId;
 }
 
-async function cacheConfirmedDebts(next: UserOnboardingData): Promise<void> {
+export async function cacheConfirmedDebts(next: UserOnboardingData): Promise<void> {
   try { await chunkedStore.setItem(localStateKey(next.userId), JSON.stringify(next)); } catch {
     // Optional local cache may fail; the server-confirmed table result wins.
   }
@@ -370,9 +370,10 @@ export async function upsertUserDebt(
   };
   const supabase = getSupabaseClient();
   const response = existing
-    ? await supabase.from('debts').update({ ...values, updated_at: now })
-      .eq('user_id', current.userId).eq('id', debtId).eq('version', existing.serverVersion!)
-      .select(DEBT_ROW_COLUMNS)
+    ? await supabase.rpc('debtfree_update_debt_atomic', {
+        p_debt: { ...values, id: debtId, user_id: current.userId },
+        p_expected_version: existing.serverVersion!,
+      }).then(({ data, error }) => ({ data: data ? [data] : null, error }))
     : await supabase.from('debts').insert({ ...values, id: debtId, user_id: current.userId, updated_at: now })
       .select(DEBT_ROW_COLUMNS);
 
@@ -414,10 +415,11 @@ export async function deleteUserDebt(
   if (!Number.isSafeInteger(existing.serverVersion) || (existing.serverVersion ?? 0) < 1) {
     throw new OnboardingDataUnavailableError('Debt revision is unavailable. Apply the approved sandbox concurrency migration before deleting.');
   }
-  const { data, error } = await getSupabaseClient().from('debts').delete()
-    .eq('user_id', current.userId).eq('id', debtId)
-    .eq('version', existing.serverVersion!).select('id');
-  if (error || !Array.isArray(data) || data.length !== 1) {
+  const { data, error } = await getSupabaseClient().rpc('debtfree_delete_debt_atomic', {
+    p_debt_id: debtId,
+    p_expected_version: existing.serverVersion!,
+  });
+  if (error || !data || (data as { success?: boolean }).success !== true) {
     const observed = await verifyDebtRow(current.userId, debtId);
     if (observed) {
       if (error && isConfirmedServerRejection(error.code)) throw new DebtWriteFailedError(`The server rejected debt deletion: ${error.message}`);
@@ -443,8 +445,10 @@ export async function deleteUserDebt(
 export async function resetUserOnboardingData(userId: string): Promise<void> {
   await assertAuthenticatedUser(userId);
   const supabase = getSupabaseClient();
-  const { error: deleteError } = await supabase.from('debts').delete().eq('user_id', userId);
-  if (deleteError) throw new Error(`Could not reset saved debt accounts: ${deleteError.message}`);
+  const { data: deleteData, error: deleteError } = await supabase.rpc('debtfree_reset_debts_atomic');
+  if (deleteError || !deleteData || (deleteData as { success?: boolean }).success !== true) {
+    throw new Error(`Could not reset saved debt accounts: ${deleteError?.message ?? 'RPC did not confirm deletion'}`);
+  }
   const fresh = createDefaultOnboardingData(userId);
   const { error: updateError } = await supabase.auth.updateUser({ data: { debtfree_native_v1: fresh } });
   if (updateError) throw new Error(`Could not reset saved onboarding data: ${updateError.message}`);

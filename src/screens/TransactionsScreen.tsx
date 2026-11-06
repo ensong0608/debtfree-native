@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import * as Crypto from 'expo-crypto';
-import { Modal, Pressable, ScrollView, Text, TextInput, TouchableWithoutFeedback, View } from 'react-native';
+import { Alert, Modal, Pressable, ScrollView, Text, TextInput, TouchableWithoutFeedback, View } from 'react-native';
 import { AppIcon } from '../components/AppIcon';
 import { Card, FinancialScreen, ui } from '../components/FinancialScreen';
 import { SelectDropdown, type DropdownOption } from '../components/SelectDropdown';
 import { formatCurrency, acceptMoneyEdit, type DebtItem } from '../onboarding-domain';
 import {
   classifyCategoryDirection,
+  calculateTransactionBalanceDelta,
   type LedgerTransaction,
   type TransactionCategory,
 } from '../finance/ledger';
@@ -47,11 +48,11 @@ export function TransactionsScreen({
   currencySymbol?: string;
   currencyCode?: string;
   onSettings: () => void;
-  onAddTransaction?: (tx: LedgerTransaction) => void | Promise<void>;
-  onUpdateTransaction?: (tx: LedgerTransaction) => void | Promise<void>;
-  onDeleteTransaction?: (txId: string) => void | Promise<void>;
+  onAddTransaction?: (tx: LedgerTransaction) => unknown;
+  onUpdateTransaction?: (tx: LedgerTransaction) => unknown;
+  onDeleteTransaction?: (txId: string) => unknown;
   recurringBills?: RecurringBill[];
-  onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly) => Promise<void>;
+  onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly) => unknown;
 }) {
   const [tab, setTab] = useState('History');
   const [accountIdx, setAccountIdx] = useState(0); // 0 = All accounts, 1 = Debit/Checking, 2..N = debt accounts
@@ -68,6 +69,11 @@ export function TransactionsScreen({
   const [newAccountId, setNewAccountId] = useState(debts[0]?.id ?? '');
   const [newDate, setNewDate] = useState(() => localDateInputValue());
   const [newAppliesToDate, setNewAppliesToDate] = useState('');
+  const [newPrincipal, setNewPrincipal] = useState('');
+  const [newInterest, setNewInterest] = useState('');
+  const [newEscrow, setNewEscrow] = useState('');
+  const [newFee, setNewFee] = useState('');
+  const [savingTx, setSavingTx] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [datePickerMonth, setDatePickerMonth] = useState(() => localDateInputValue().slice(0, 7));
   const [formError, setFormError] = useState('');
@@ -82,6 +88,10 @@ export function TransactionsScreen({
   const [editAccountId, setEditAccountId] = useState<string | null>(null);
   const [editDate, setEditDate] = useState('');
   const [editMemo, setEditMemo] = useState('');
+  const [editPrincipal, setEditPrincipal] = useState('');
+  const [editInterest, setEditInterest] = useState('');
+  const [editEscrow, setEditEscrow] = useState('');
+  const [editFee, setEditFee] = useState('');
   const [editError, setEditError] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingTx, setDeletingTx] = useState(false);
@@ -219,10 +229,16 @@ export function TransactionsScreen({
       accountId = selectedDebt.id;
     }
 
+    setSavingTx(true);
     try {
       const actualDate = parseDateOnly(newDate.trim());
       const appliesToDate = newAppliesToDate.trim() ? parseDateOnly(newAppliesToDate.trim()) : null;
       const moneyAmount = parseMoney(newAmount, currencyCode);
+
+      const principalAmount = newPrincipal.trim() ? parseMoney(newPrincipal.trim(), currencyCode) : null;
+      const interestAmount = newInterest.trim() ? parseMoney(newInterest.trim(), currencyCode) : null;
+      const escrowAmount = newEscrow.trim() ? parseMoney(newEscrow.trim(), currencyCode) : null;
+      const feeAmount = newFee.trim() ? parseMoney(newFee.trim(), currencyCode) : null;
 
       const tx: LedgerTransaction = {
         id: `tx:${Crypto.randomUUID()}`,
@@ -237,17 +253,37 @@ export function TransactionsScreen({
         reconciled: false,
         createdAt: new Date().toISOString(),
         deletedAt: null,
+        principalAmount,
+        interestAmount,
+        escrowAmount,
+        feeAmount,
       };
 
       if (onAddTransaction) {
-        await onAddTransaction(tx);
+        const res = await onAddTransaction(tx);
+        if (res && (res as { outcome?: string }).outcome === 'pending') {
+          Alert.alert(
+            'Saved Locally (Pending Confirmation)',
+            'Transaction recorded locally. Confirmation will be verified upon connecting to the server.',
+          );
+        }
       }
       setShowAddForm(false);
       setNewPayee('');
       setNewAmount('');
       setNewAppliesToDate('');
+      setNewPrincipal('');
+      setNewInterest('');
+      setNewEscrow('');
+      setNewFee('');
     } catch (e) {
-      setFormError((e as Error).message || 'Unable to save transaction');
+      const msg = (e as Error).message || 'Unable to save transaction';
+      setFormError(msg);
+      if (msg.includes('conflict') || msg.includes('Conflict')) {
+        Alert.alert('Save Conflict', msg);
+      }
+    } finally {
+      setSavingTx(false);
     }
   };
 
@@ -260,11 +296,15 @@ export function TransactionsScreen({
     setEditAccountId(tx.accountId);
     setEditDate(tx.date);
     setEditMemo(tx.memo || '');
+    setEditPrincipal(tx.principalAmount ? moneyToMajor(tx.principalAmount).toFixed(2) : '');
+    setEditInterest(tx.interestAmount ? moneyToMajor(tx.interestAmount).toFixed(2) : '');
+    setEditEscrow(tx.escrowAmount ? moneyToMajor(tx.escrowAmount).toFixed(2) : '');
+    setEditFee(tx.feeAmount ? moneyToMajor(tx.feeAmount).toFixed(2) : '');
     setEditError('');
   };
 
   const handleSaveEdit = async () => {
-    if (!editingTx) return;
+    if (!editingTx || savingEdit) return;
     setEditError('');
     const parsedAmt = parseFloat(editAmount);
     if (Number.isNaN(parsedAmt) || parsedAmt <= 0) {
@@ -281,6 +321,10 @@ export function TransactionsScreen({
     try {
       const actualDate = parseDateOnly(editDate.trim());
       const moneyAmount = parseMoney(editAmount, currencyCode);
+      const principalAmount = editPrincipal.trim() ? parseMoney(editPrincipal.trim(), currencyCode) : null;
+      const interestAmount = editInterest.trim() ? parseMoney(editInterest.trim(), currencyCode) : null;
+      const escrowAmount = editEscrow.trim() ? parseMoney(editEscrow.trim(), currencyCode) : null;
+      const feeAmount = editFee.trim() ? parseMoney(editFee.trim(), currencyCode) : null;
 
       const updatedTx: LedgerTransaction = {
         ...editingTx,
@@ -290,25 +334,45 @@ export function TransactionsScreen({
         category: catOption.category,
         payee: editPayee.trim() || catOption.label,
         memo: editMemo.trim() || undefined,
+        principalAmount,
+        interestAmount,
+        escrowAmount,
+        feeAmount,
       };
 
       if (onUpdateTransaction) {
-        await onUpdateTransaction(updatedTx);
+        const res = await onUpdateTransaction(updatedTx);
+        if (res && (res as { outcome?: string }).outcome === 'pending') {
+          Alert.alert(
+            'Updated Locally (Pending Confirmation)',
+            'Transaction update saved locally. Confirmation will be verified upon connecting to the server.',
+          );
+        }
       }
       setEditingTx(null);
     } catch (e) {
-      setEditError((e as Error).message || 'Unable to save transaction');
+      const msg = (e as Error).message || 'Unable to save transaction';
+      setEditError(msg);
+      if (msg.includes('conflict') || msg.includes('Conflict')) {
+        Alert.alert('Update Conflict', msg);
+      }
     } finally {
       setSavingEdit(false);
     }
   };
 
   const handleDeleteTx = async () => {
-    if (!editingTx) return;
+    if (!editingTx || deletingTx) return;
     setDeletingTx(true);
     try {
       if (onDeleteTransaction) {
-        await onDeleteTransaction(editingTx.id);
+        const res = await onDeleteTransaction(editingTx.id);
+        if (res && (res as { outcome?: string }).outcome === 'pending') {
+          Alert.alert(
+            'Deleted Locally (Pending Confirmation)',
+            'Transaction deletion recorded locally. Confirmation will be verified upon connecting to the server.',
+          );
+        }
       } else if (onUpdateTransaction) {
         await onUpdateTransaction({
           ...editingTx,
@@ -317,7 +381,11 @@ export function TransactionsScreen({
       }
       setEditingTx(null);
     } catch (e) {
-      setEditError((e as Error).message || 'Unable to delete transaction');
+      const msg = (e as Error).message || 'Unable to delete transaction';
+      setEditError(msg);
+      if (msg.includes('conflict') || msg.includes('Conflict')) {
+        Alert.alert('Delete Conflict', msg);
+      }
     } finally {
       setDeletingTx(false);
     }
@@ -335,12 +403,8 @@ export function TransactionsScreen({
 
     // 1. Revert original transaction if it targeted this debt and was active
     if (editingTx && editingTx.accountId === targetEditDebt.id && editingTx.deletedAt === null) {
-      const origDir = classifyCategoryDirection(editingTx.category);
-      if (origDir === 'increase_debt') {
-        previewMoney = addMoney(previewMoney, makeMoney(currencyCode, -editingTx.amount.minorUnits));
-      } else if (origDir === 'decrease_debt') {
-        previewMoney = addMoney(previewMoney, editingTx.amount);
-      }
+      const origDelta = calculateTransactionBalanceDelta(editingTx, targetEditDebt.category);
+      previewMoney = addMoney(previewMoney, makeMoney(currencyCode, -origDelta.minorUnits));
     }
 
     // 2. Apply newly configured amount and category
@@ -348,12 +412,23 @@ export function TransactionsScreen({
     if (!Number.isNaN(parsedAmt) && parsedAmt > 0 && editCatOption.isDebt) {
       try {
         const newAmtMoney = parseMoney(editAmount, currencyCode);
-        const newDir = classifyCategoryDirection(editCatOption.category);
-        if (newDir === 'increase_debt') {
-          previewMoney = addMoney(previewMoney, newAmtMoney);
-        } else if (newDir === 'decrease_debt') {
-          previewMoney = addMoney(previewMoney, makeMoney(currencyCode, -newAmtMoney.minorUnits));
-        }
+        const pAmt = editPrincipal.trim() ? parseMoney(editPrincipal.trim(), currencyCode) : null;
+        const iAmt = editInterest.trim() ? parseMoney(editInterest.trim(), currencyCode) : null;
+        const eAmt = editEscrow.trim() ? parseMoney(editEscrow.trim(), currencyCode) : null;
+        const fAmt = editFee.trim() ? parseMoney(editFee.trim(), currencyCode) : null;
+
+        const candidateTx: LedgerTransaction = {
+          ...editingTx!,
+          accountId: targetEditDebt.id,
+          amount: newAmtMoney,
+          category: editCatOption.category,
+          principalAmount: pAmt,
+          interestAmount: iAmt,
+          escrowAmount: eAmt,
+          feeAmount: fAmt,
+        };
+        const newDelta = calculateTransactionBalanceDelta(candidateTx, targetEditDebt.category);
+        previewMoney = addMoney(previewMoney, newDelta);
       } catch {
         // invalid input ignored for preview
       }
@@ -504,12 +579,64 @@ export function TransactionsScreen({
             />
           ) : null}
 
+          {CATEGORY_CHOICES[newCategoryIdx].category === 'payment' && selectedDebt && (selectedDebt.category === 'Mortgage' || selectedDebt.category === 'Auto loan') ? (
+            <View style={{ marginTop: 8, padding: 10, backgroundColor: '#212623', borderRadius: 8, borderWidth: 1, borderColor: '#313C36' }}>
+              <Text style={[ui.small, { color: '#81DFD2', fontWeight: 'bold' }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+              <Text style={[ui.small, { color: '#AAB3AD', marginTop: 2, marginBottom: 8 }]}>
+                If unknown, full payment is recorded in cashflow while loan principal remains unchanged.
+              </Text>
+              <Text style={ui.small}>Principal reduction</Text>
+              <TextInput
+                placeholder="0.00"
+                placeholderTextColor="#AAB3AD"
+                keyboardType="decimal-pad"
+                value={newPrincipal}
+                onChangeText={val => setNewPrincipal(acceptMoneyEdit(newPrincipal, val, currencyCode))}
+                style={ui.input}
+              />
+              <Text style={[ui.small, { marginTop: 6 }]}>Interest paid</Text>
+              <TextInput
+                placeholder="0.00"
+                placeholderTextColor="#AAB3AD"
+                keyboardType="decimal-pad"
+                value={newInterest}
+                onChangeText={val => setNewInterest(acceptMoneyEdit(newInterest, val, currencyCode))}
+                style={ui.input}
+              />
+              {selectedDebt.category === 'Mortgage' ? (
+                <>
+                  <Text style={[ui.small, { marginTop: 6 }]}>Escrow (taxes & insurance)</Text>
+                  <TextInput
+                    placeholder="0.00"
+                    placeholderTextColor="#AAB3AD"
+                    keyboardType="decimal-pad"
+                    value={newEscrow}
+                    onChangeText={val => setNewEscrow(acceptMoneyEdit(newEscrow, val, currencyCode))}
+                    style={ui.input}
+                  />
+                </>
+              ) : null}
+              <Text style={[ui.small, { marginTop: 6 }]}>Fees</Text>
+              <TextInput
+                placeholder="0.00"
+                placeholderTextColor="#AAB3AD"
+                keyboardType="decimal-pad"
+                value={newFee}
+                onChangeText={val => setNewFee(acceptMoneyEdit(newFee, val, currencyCode))}
+                style={ui.input}
+              />
+            </View>
+          ) : null}
+
           <Pressable
             accessibilityRole="button"
+            disabled={savingTx}
             onPress={handleSaveTransaction}
             style={[ui.button, { backgroundColor: '#81DFD2', marginTop: 12, justifyContent: 'center' }]}
           >
-            <Text style={[ui.buttonText, { color: '#1B1E1C', fontWeight: 'bold' }]}>Save Transaction</Text>
+            <Text style={[ui.buttonText, { color: '#1B1E1C', fontWeight: 'bold' }]}>
+              {savingTx ? 'Saving\u2026' : 'Save Transaction'}
+            </Text>
           </Pressable>
         </Card>
       ) : null}
@@ -710,7 +837,11 @@ export function TransactionsScreen({
                           </Text>
                           <AppIcon name="chevronRight" size={14} color="#AAB3AD" />
                         </View>
-                        {tx.source === 'recurring_bill' ? (
+                        {tx.isPending ? (
+                          <View style={[ui.badge, { backgroundColor: '#38321E', borderColor: '#F2C94C', borderWidth: 1 }]}>
+                            <Text style={[ui.badgeText, { color: '#F2C94C', fontSize: 10 }]}>Pending Confirmation</Text>
+                          </View>
+                        ) : tx.source === 'recurring_bill' ? (
                           <View style={[ui.badge, { backgroundColor: '#1E2C28' }]}>
                             <Text style={[ui.badgeText, { color: '#81DFD2', fontSize: 10 }]}>Auto-Bill</Text>
                           </View>
@@ -754,6 +885,13 @@ export function TransactionsScreen({
                 </Text>
               )}
 
+              {editingTx?.isPending ? (
+                <View style={{ backgroundColor: '#2D281E', borderColor: '#F2C94C', borderWidth: 1, borderRadius: 8, padding: 8, marginBottom: 8 }}>
+                  <Text style={[ui.small, { color: '#F2C94C', fontWeight: 'bold' }]}>Pending Confirmation</Text>
+                  <Text style={[ui.small, { color: '#D4C9A8' }]}>This transaction has not yet been confirmed by the server.</Text>
+                </View>
+              ) : null}
+
               <Text style={ui.small}>Payee or Description</Text>
               <TextInput
                 accessibilityLabel="Payee or description"
@@ -791,6 +929,55 @@ export function TransactionsScreen({
                   options={debtAccountDropdownOptions}
                   onSelect={setEditAccountId}
                 />
+              ) : null}
+
+              {editCatOption.category === 'payment' && targetEditDebt && (targetEditDebt.category === 'Mortgage' || targetEditDebt.category === 'Auto loan') ? (
+                <View style={{ marginTop: 8, padding: 10, backgroundColor: '#212623', borderRadius: 8, borderWidth: 1, borderColor: '#313C36' }}>
+                  <Text style={[ui.small, { color: '#81DFD2', fontWeight: 'bold' }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+                  <Text style={[ui.small, { color: '#AAB3AD', marginTop: 2, marginBottom: 8 }]}>
+                    If unknown, full payment is recorded in cashflow while loan principal remains unchanged.
+                  </Text>
+                  <Text style={ui.small}>Principal reduction</Text>
+                  <TextInput
+                    placeholder="0.00"
+                    placeholderTextColor="#AAB3AD"
+                    keyboardType="decimal-pad"
+                    value={editPrincipal}
+                    onChangeText={val => setEditPrincipal(acceptMoneyEdit(editPrincipal, val, currencyCode))}
+                    style={ui.input}
+                  />
+                  <Text style={[ui.small, { marginTop: 6 }]}>Interest paid</Text>
+                  <TextInput
+                    placeholder="0.00"
+                    placeholderTextColor="#AAB3AD"
+                    keyboardType="decimal-pad"
+                    value={editInterest}
+                    onChangeText={val => setEditInterest(acceptMoneyEdit(editInterest, val, currencyCode))}
+                    style={ui.input}
+                  />
+                  {targetEditDebt.category === 'Mortgage' ? (
+                    <>
+                      <Text style={[ui.small, { marginTop: 6 }]}>Escrow (taxes & insurance)</Text>
+                      <TextInput
+                        placeholder="0.00"
+                        placeholderTextColor="#AAB3AD"
+                        keyboardType="decimal-pad"
+                        value={editEscrow}
+                        onChangeText={val => setEditEscrow(acceptMoneyEdit(editEscrow, val, currencyCode))}
+                        style={ui.input}
+                      />
+                    </>
+                  ) : null}
+                  <Text style={[ui.small, { marginTop: 6 }]}>Fees</Text>
+                  <TextInput
+                    placeholder="0.00"
+                    placeholderTextColor="#AAB3AD"
+                    keyboardType="decimal-pad"
+                    value={editFee}
+                    onChangeText={val => setEditFee(acceptMoneyEdit(editFee, val, currencyCode))}
+                    style={ui.input}
+                  />
+                </View>
               ) : null}
 
               <Text style={[ui.small, { marginTop: 8 }]}>Transaction Date (YYYY-MM-DD)</Text>

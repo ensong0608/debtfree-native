@@ -46,8 +46,56 @@ export type SupabaseTransactionRow = {
   source: string;
   reconciled: boolean;
   created_at: string;
+  updated_at?: string;
   deleted_at: string | null;
+  is_pending?: boolean;
+  principal_amount?: string | number | null;
+  interest_amount?: string | number | null;
+  escrow_amount?: string | number | null;
+  fee_amount?: string | number | null;
 };
+
+/** Decide whether a disputed local transaction has been committed by comparing the
+ * actual financial fields returned by the server (never client timestamps). */
+export function matchesConfirmedTransactionRow(
+  remote: SupabaseTransactionRow,
+  pending: SupabaseTransactionRow,
+): boolean {
+  const textFields = ['id', 'user_id', 'account_id', 'date', 'applies_to_date',
+    'category', 'payee', 'memo', 'source'] as const;
+  if (textFields.some(field => (remote[field] ?? null) !== (pending[field] ?? null))) return false;
+  if (remote.reconciled !== pending.reconciled) return false;
+  const amounts = ['amount', 'principal_amount', 'interest_amount', 'escrow_amount', 'fee_amount'] as const;
+  if (amounts.some(field => {
+    const a = remote[field];
+    const b = pending[field];
+    return a == null || b == null ? a != null || b != null : Number(a) !== Number(b);
+  })) return false;
+  // The database produces its own soft-deletion timestamp.
+  return (remote.deleted_at === null) === (pending.deleted_at === null);
+}
+
+/** Resolve uncertain writes by readback only; never automatically replay them. */
+export function reconcilePendingTransactionRows(
+  remote: readonly SupabaseTransactionRow[],
+  pending: Readonly<Record<string, unknown | null>>,
+): { rows: SupabaseTransactionRow[]; unresolved: Record<string, unknown | null>; confirmedIds: string[] } {
+  const unresolved = { ...pending };
+  const confirmedIds: string[] = [];
+  const byId = new Map(remote.map(row => [row.id, row]));
+  for (const [id, intent] of Object.entries(pending)) {
+    const observed = byId.get(id);
+    if (intent === null ? !observed : !!observed && matchesConfirmedTransactionRow(observed, intent as SupabaseTransactionRow)) {
+      delete unresolved[id];
+      confirmedIds.push(id);
+    }
+  }
+  return {
+    rows: mergeFinanceRowsWithPendingWrites(remote, unresolved),
+    unresolved,
+    confirmedIds,
+  };
+}
 
 export type SupabaseRecurringBillRow = {
   id: string;
@@ -135,7 +183,21 @@ export function encodeTransactionRow(
     source: tx.source,
     reconciled: Boolean(tx.reconciled),
     created_at: tx.createdAt,
+    updated_at: tx.updatedAt ?? tx.createdAt,
     deleted_at: tx.deletedAt ?? null,
+    is_pending: tx.isPending ?? false,
+    principal_amount: tx.principalAmount
+      ? canonicalDebtAmount(moneyToCanonicalDecimal(tx.principalAmount), tx.principalAmount.currency, false)
+      : null,
+    interest_amount: tx.interestAmount
+      ? canonicalDebtAmount(moneyToCanonicalDecimal(tx.interestAmount), tx.interestAmount.currency, false)
+      : null,
+    escrow_amount: tx.escrowAmount
+      ? canonicalDebtAmount(moneyToCanonicalDecimal(tx.escrowAmount), tx.escrowAmount.currency, false)
+      : null,
+    fee_amount: tx.feeAmount
+      ? canonicalDebtAmount(moneyToCanonicalDecimal(tx.feeAmount), tx.feeAmount.currency, false)
+      : null,
   };
 }
 
@@ -161,6 +223,19 @@ export function decodeTransactionRow(
   }
   const source = row.source as TransactionSource;
 
+  const principalAmount = row.principal_amount != null && row.principal_amount !== ''
+    ? parseMoney(canonicalDebtAmount(row.principal_amount, currency, false), currency, false)
+    : null;
+  const interestAmount = row.interest_amount != null && row.interest_amount !== ''
+    ? parseMoney(canonicalDebtAmount(row.interest_amount, currency, false), currency, false)
+    : null;
+  const escrowAmount = row.escrow_amount != null && row.escrow_amount !== ''
+    ? parseMoney(canonicalDebtAmount(row.escrow_amount, currency, false), currency, false)
+    : null;
+  const feeAmount = row.fee_amount != null && row.fee_amount !== ''
+    ? parseMoney(canonicalDebtAmount(row.fee_amount, currency, false), currency, false)
+    : null;
+
   const tx: LedgerTransaction = {
     id: row.id,
     accountId: row.account_id ?? null,
@@ -173,7 +248,13 @@ export function decodeTransactionRow(
     source,
     reconciled: Boolean(row.reconciled),
     createdAt: String(row.created_at ?? ''),
+    updatedAt: row.updated_at ? String(row.updated_at) : undefined,
     deletedAt: row.deleted_at ?? null,
+    isPending: Boolean(row.is_pending),
+    principalAmount,
+    interestAmount,
+    escrowAmount,
+    feeAmount,
   };
 
   validateLedgerTransaction(tx);

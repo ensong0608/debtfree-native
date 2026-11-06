@@ -63,6 +63,7 @@ export function ProgressScreen({
     today,
   });
 
+  const hasUnconfirmedDebtWrites = transactions.some(tx => tx.isPending && tx.accountId !== null);
   const utilization = calculateCreditUtilization(debts);
   const milestones = calculateMilestones({ debts, transactions });
 
@@ -88,13 +89,16 @@ export function ProgressScreen({
       onSelect={setTab}
       onSettings={onSettings}
     >
+      {hasUnconfirmedDebtWrites ? (
+        <Text style={[ui.small, { color: '#E3A088', marginBottom: 8 }]}>Pending changes: displayed balances and payoff percentages are provisional. Achievements await server confirmation.</Text>
+      ) : null}
       {tab === 'Overview' ? (
         <>
           <Card style={{ gap: 14, paddingVertical: 18 }}>
             <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
               <View style={{ flex: 1, gap: 6 }}>
                 <Text style={ui.small}>OVERALL DEBT PAYOFF</Text>
-                <Text style={[ui.heading, { fontSize: 22 }]}>{`${Math.round(overallProgress)}% paid down`}</Text>
+                <Text style={[ui.heading, { fontSize: 22 }]}>{`${Math.round(overallProgress)}% ${hasUnconfirmedDebtWrites ? 'provisional payoff' : 'paid down'}`}</Text>
                 <Text style={ui.text}>{`${formatCurrency(balanceSnapshot.balance, currencySymbol)} remaining`}</Text>
               </View>
               <Ring percent={overallProgress} label="paid down" />

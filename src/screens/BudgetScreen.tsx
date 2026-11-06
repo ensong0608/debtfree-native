@@ -18,10 +18,11 @@ import {
   type DebtItem,
 } from '../onboarding-domain';
 import { calculateMonthlyCashflow, calculateCategoryBreakdown } from '../finance/budget';
-import { makeMoney, moneyToMajor, parseMoney } from '../finance/money';
+import { makeMoney, moneyFromMajor, moneyToMajor, parseMoney } from '../finance/money';
 import { resolveRecurringBillDate, type RecurringBill, type RecurringBillCategory, type RecurringBillPaymentMethod } from '../finance/recurring-bills';
 import { parseDateOnly, type DateOnly } from '../finance/calendar';
 import type { LedgerTransaction } from '../finance/ledger';
+import { paymentMatchesObligation } from '../finance/payment-matching';
 
 const BILL_CATEGORIES: readonly DropdownOption<RecurringBillCategory>[] = [
   { value: 'utilities', label: 'Utilities', subtitle: 'Water, Electric, Gas, Internet', icon: 'calendar' },
@@ -40,6 +41,16 @@ type PayNowTarget = {
   bill?: RecurringBill;
   debt?: DebtItem;
 };
+
+/** One settled obligation is identified by account/bill AND due cycle, never date alone. */
+function paymentMatchesTarget(tx: LedgerTransaction, target: PayNowTarget, includePending = false): boolean {
+  return paymentMatchesObligation(tx, {
+    kind: target.type,
+    dueDate: target.dueDate,
+    accountId: target.accountId,
+    billId: target.bill?.id,
+  }, includePending);
+}
 
 export function BudgetScreen({
   data,
@@ -69,10 +80,10 @@ export function BudgetScreen({
   onStrategy: (strategy: PayoffStrategy) => void;
   onExtra: (amount: number) => void;
   onSettings: () => void;
-  onAddRecurringBill?: (bill: RecurringBill) => void;
-  onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly) => Promise<void>;
-  onAddTransaction?: (tx: LedgerTransaction) => void | Promise<void>;
-  onUpdateTransaction?: (tx: LedgerTransaction) => void | Promise<void>;
+  onAddRecurringBill?: (bill: RecurringBill) => unknown;
+  onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly) => unknown;
+  onAddTransaction?: (tx: LedgerTransaction) => unknown;
+  onUpdateTransaction?: (tx: LedgerTransaction) => unknown;
   error: string;
   initialSection: string;
 }) {
@@ -134,35 +145,25 @@ export function BudgetScreen({
   const currentMonthStr = new Date().toISOString().slice(0, 7);
 
   const paidThisCycleMinor = payNowTarget
-    ? transactions
-        .filter(tx => {
-          if (tx.deletedAt !== null || tx.category !== 'payment') return false;
-          if (tx.appliesToDate === payNowTarget.dueDate) return true;
-          if (payNowTarget.accountId && tx.accountId === payNowTarget.accountId) {
-            return tx.date.slice(0, 7) === payNowTarget.dueDate.slice(0, 7);
-          }
-          return false;
-        })
+    ? transactions.filter(tx => paymentMatchesTarget(tx, payNowTarget))
+        .reduce((sum, tx) => sum + tx.amount.minorUnits, 0)
+    : 0;
+
+  const pendingThisCycleMinor = payNowTarget
+    ? transactions.filter(tx => paymentMatchesTarget(tx, payNowTarget, true) && tx.isPending)
         .reduce((sum, tx) => sum + tx.amount.minorUnits, 0)
     : 0;
 
   const paidThisCycle = moneyToMajor(makeMoney(currencyCode, paidThisCycleMinor));
+  const pendingThisCycle = moneyToMajor(makeMoney(currencyCode, pendingThisCycleMinor));
   const requiredAmount = payNowTarget?.requiredAmount ?? 0;
   const remainingAmount = Math.max(0, requiredAmount - paidThisCycle);
 
   const candidatePayments = payNowTarget
     ? transactions.filter(tx => {
-        if (tx.deletedAt !== null) return false;
-        if (tx.category !== 'payment') return false;
-        if (tx.appliesToDate === payNowTarget.dueDate) return false;
-        if (payNowTarget.type === 'bill') {
-          return !tx.appliesToDate || (payNowTarget.accountId && tx.accountId === payNowTarget.accountId);
-        } else {
-          return (
-            tx.accountId === payNowTarget.accountId ||
-            (!tx.appliesToDate && (!tx.accountId || tx.payee.toLowerCase().includes(payNowTarget.name.toLowerCase())))
-          );
-        }
+        if (tx.deletedAt !== null || tx.isPending || tx.category !== 'payment' || tx.appliesToDate) return false;
+        // Cash bills and merchant charges are not debt repayments; never attach them by date/payee.
+        return payNowTarget.type === 'debt' && !!payNowTarget.accountId && tx.accountId === payNowTarget.accountId;
       })
     : [];
 
@@ -204,7 +205,7 @@ export function BudgetScreen({
           accountId: payNowTarget.debt.id,
           date: parseDateOnly(todayStr),
           appliesToDate: payNowTarget.dueDate,
-          amount: makeMoney(currencyCode, Math.round(payAmount * 100)),
+          amount: moneyFromMajor(payAmount, currencyCode),
           category: 'payment',
           payee: `Payment to ${payNowTarget.debt.name}`,
           memo: `Payment for ${payNowTarget.dueDate}`,
@@ -725,10 +726,15 @@ export function BudgetScreen({
                   </View>
                   <View style={{ width: 1, height: 32, backgroundColor: '#353A37' }} />
                   <View style={{ alignItems: 'center' }}>
-                    <Text style={ui.small}>Paid this cycle</Text>
+                    <Text style={ui.small}>Paid (confirmed)</Text>
                     <Text style={[ui.heading, { color: paidThisCycle > 0 ? '#73D9C6' : '#AAB3AD' }]}>
                       {formatCurrency(paidThisCycle, currencySymbol)}
                     </Text>
+                    {pendingThisCycle > 0 ? (
+                      <Text style={[ui.small, { color: '#F2C94C', fontSize: 10 }]}>
+                        {`(+${formatCurrency(pendingThisCycle, currencySymbol)} pending)`}
+                      </Text>
+                    ) : null}
                   </View>
                   <View style={{ width: 1, height: 32, backgroundColor: '#353A37' }} />
                   <View style={{ alignItems: 'center' }}>
@@ -759,7 +765,14 @@ export function BudgetScreen({
                         ]}
                       >
                         <View style={{ flex: 1 }}>
-                          <Text style={ui.heading}>{tx.payee}</Text>
+                          <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+                            <Text style={ui.heading}>{tx.payee}</Text>
+                            {tx.isPending ? (
+                              <View style={[ui.badge, { backgroundColor: '#38321E', borderColor: '#F2C94C', borderWidth: 1, paddingVertical: 1, paddingHorizontal: 5 }]}>
+                                <Text style={[ui.badgeText, { color: '#F2C94C', fontSize: 9 }]}>Pending</Text>
+                              </View>
+                            ) : null}
+                          </View>
                           <Text style={ui.small}>{`${tx.date} · ${tx.memo || 'Unassigned payment'}`}</Text>
                         </View>
                         <View style={[ui.row, { gap: 10, alignItems: 'center' }]}>

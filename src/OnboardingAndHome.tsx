@@ -397,7 +397,7 @@ export function DebtFreeFlow({
   };
 
   const handleAddTransaction = async (tx: LedgerTransaction) => {
-    if (!onboardingData) return;
+    if (!onboardingData) return { outcome: 'rejected' as const, syncStatus: 'cached_offline' as const };
     try {
       const res = await executeAddTransaction({
         session,
@@ -410,13 +410,16 @@ export function DebtFreeFlow({
       if (res.updatedOnboardingData) {
         onUpdateOnboardingData(res.updatedOnboardingData);
       }
+      return { outcome: res.outcome, syncStatus: res.syncResult.syncStatus };
     } catch (err) {
-      setLocalError(err instanceof Error ? err.message : 'Unable to record transaction.');
+      const msg = err instanceof Error ? err.message : 'Unable to record transaction.';
+      setLocalError(msg);
+      throw err;
     }
   };
 
   const handleUpdateTransaction = async (tx: LedgerTransaction) => {
-    if (!onboardingData) return;
+    if (!onboardingData) return { outcome: 'rejected' as const, syncStatus: 'cached_offline' as const };
     try {
       const res = await executeUpdateTransaction({
         session,
@@ -429,13 +432,16 @@ export function DebtFreeFlow({
       if (res.updatedOnboardingData) {
         onUpdateOnboardingData(res.updatedOnboardingData);
       }
+      return { outcome: res.outcome, syncStatus: res.syncResult.syncStatus };
     } catch (err) {
-      setLocalError(err instanceof Error ? err.message : 'Unable to update transaction.');
+      const msg = err instanceof Error ? err.message : 'Unable to update transaction.';
+      setLocalError(msg);
+      throw err;
     }
   };
 
   const handleDeleteTransaction = async (txId: string) => {
-    if (!onboardingData) return;
+    if (!onboardingData) return { outcome: 'rejected' as const, syncStatus: 'cached_offline' as const };
     try {
       const res = await executeDeleteTransaction({
         session,
@@ -448,13 +454,16 @@ export function DebtFreeFlow({
       if (res.updatedOnboardingData) {
         onUpdateOnboardingData(res.updatedOnboardingData);
       }
+      return { outcome: res.outcome, syncStatus: res.syncResult.syncStatus };
     } catch (err) {
-      setLocalError(err instanceof Error ? err.message : 'Unable to delete transaction.');
+      const msg = err instanceof Error ? err.message : 'Unable to delete transaction.';
+      setLocalError(msg);
+      throw err;
     }
   };
 
   const handleRecordBillPayment = async (bill: RecurringBill, dueCycle: DateOnly) => {
-    if (!onboardingData) return;
+    if (!onboardingData) return { outcome: 'rejected' as const, syncStatus: 'cached_offline' as const };
     try {
       const res = await executeRecordBillPayment({
         session,
@@ -468,8 +477,11 @@ export function DebtFreeFlow({
       if (res.updatedOnboardingData) {
         onUpdateOnboardingData(res.updatedOnboardingData);
       }
+      return { outcome: res.outcome, syncStatus: res.syncResult.syncStatus };
     } catch (err) {
-      setLocalError(err instanceof Error ? err.message : 'Unable to record bill payment.');
+      const msg = err instanceof Error ? err.message : 'Unable to record bill payment.';
+      setLocalError(msg);
+      throw err;
     }
   };
 
@@ -478,7 +490,7 @@ export function DebtFreeFlow({
     verifiedBalance: number,
     reason: 'interest_adjustment' | 'balance_adjustment' | 'credit_adjustment',
   ) => {
-    if (!onboardingData) return;
+    if (!onboardingData) return { outcome: 'rejected' as const, syncStatus: 'cached_offline' as const };
     try {
       const res = await executeReconcileDebt({
         session,
@@ -494,8 +506,11 @@ export function DebtFreeFlow({
       setTransactions(res.transactions);
       setReconciliationAnchors(res.reconciliationAnchors);
       onUpdateOnboardingData(res.updatedOnboardingData);
+      return { outcome: res.outcome, syncStatus: res.syncStatus };
     } catch (err) {
-      setLocalError(err instanceof Error ? err.message : 'Unable to reconcile debt.');
+      const msg = err instanceof Error ? err.message : 'Unable to reconcile debt.';
+      setLocalError(msg);
+      throw err;
     }
   };
 

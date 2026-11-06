@@ -67,16 +67,16 @@ export type HomeScreenProps = {
   currencySymbol: string;
   onSignOut: () => void | Promise<void>;
   onChangeStage: (stage: FlowStage) => void;
-  onAddTransaction: (tx: LedgerTransaction) => void | Promise<void>;
-  onUpdateTransaction?: (tx: LedgerTransaction) => void | Promise<void>;
-  onDeleteTransaction?: (txId: string) => void | Promise<void>;
-  onRecordBillPayment: (bill: RecurringBill, dueCycle: DateOnly) => Promise<void>;
+  onAddTransaction: (tx: LedgerTransaction) => unknown;
+  onUpdateTransaction?: (tx: LedgerTransaction) => unknown;
+  onDeleteTransaction?: (txId: string) => unknown;
+  onRecordBillPayment: (bill: RecurringBill, dueCycle: DateOnly) => unknown;
   onReconcileDebt: (
     item: DebtItem,
     verifiedBalance: number,
     reason: 'interest_adjustment' | 'balance_adjustment' | 'credit_adjustment',
-  ) => void | Promise<void>;
-  onAddRecurringBill: (bill: RecurringBill) => void | Promise<void>;
+  ) => unknown;
+  onAddRecurringBill: (bill: RecurringBill) => unknown;
   authBusy?: boolean;
 };
 
@@ -135,12 +135,12 @@ export function HomeScreen({
   const upcomingItems = [
     ...recurringBills.filter(bill => bill.active).flatMap(bill => {
       const dueDate = billDueInWindow(bill.dueDay);
-      if (!dueDate || transactions.some(tx => tx.id === `bill:${bill.id}:${dueDate}` && tx.deletedAt === null)) return [];
+      if (!dueDate || transactions.some(tx => tx.id === `bill:${bill.id}:${dueDate}` && tx.deletedAt === null && !tx.isPending)) return [];
       return [{ id: bill.id, name: bill.name, dueDate, amount: moneyToMajor(bill.amount) }];
     }),
     ...activeDebts(onboardingData.debts).filter(debt => debt.balance > 0 && debt.minimumPayment > 0 && debt.dueDay !== null).flatMap(debt => {
       const dueDate = billDueInWindow(debt.dueDay!);
-      if (!dueDate || transactions.some(tx => tx.accountId === debt.id && tx.category === 'payment' && tx.deletedAt === null &&
+      if (!dueDate || transactions.some(tx => tx.accountId === debt.id && tx.category === 'payment' && tx.deletedAt === null && !tx.isPending &&
         ((tx.appliesToDate && tx.appliesToDate === dueDate) || (!tx.appliesToDate && tx.date.slice(0, 7) === dueDate.slice(0, 7) && tx.date <= dueDate)))) return [];
       return [{ id: `minimum:${debt.id}`, name: `${debt.name} minimum`, dueDate, amount: debt.minimumPayment }];
     }),
@@ -434,6 +434,7 @@ export function HomeScreen({
           initialSelectedId={targetDebtId}
           plan={plan}
           currencySymbol={currencySymbol}
+          currencyCode={currencyCode}
           transactions={transactions}
           reconciliationAnchors={reconciliationAnchors}
           editor={debtEditor}
@@ -673,7 +674,14 @@ export function HomeScreen({
                     return (
                       <View key={tx.id} style={[ui.divider, ui.row, { justifyContent: 'space-between' }]}>
                         <View style={{ flex: 1 }}>
-                          <Text style={ui.heading}>{tx.payee}</Text>
+                          <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+                            <Text style={ui.heading}>{tx.payee}</Text>
+                            {tx.isPending ? (
+                              <View style={[ui.badge, { backgroundColor: '#38321E', borderColor: '#F2C94C', borderWidth: 1, paddingVertical: 1, paddingHorizontal: 5 }]}>
+                                <Text style={[ui.badgeText, { color: '#F2C94C', fontSize: 9 }]}>Pending</Text>
+                              </View>
+                            ) : null}
+                          </View>
                           <Text style={ui.small}>{`${tx.date} · ${tx.category.replace('_', ' ')}`}</Text>
                         </View>
                         <Text style={[ui.value, { color: isPayment ? '#81DFD2' : '#E3A088' }]}>

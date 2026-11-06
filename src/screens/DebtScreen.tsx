@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { BackHandler, Pressable, Text, TextInput, View } from 'react-native';
+import { Alert, BackHandler, Pressable, Text, TextInput, View } from 'react-native';
 import Svg, { Defs, LinearGradient, Path, Stop, Circle } from 'react-native-svg';
 import { Bar, Card, categoryDebts, FinancialScreen, Segments, snapshot, ui } from '../components/FinancialScreen';
 import { AppIcon } from '../components/AppIcon';
@@ -108,6 +108,7 @@ function BalanceSparkline({
 
 export function DebtScreen({
   debts, plan, currencySymbol, editor, error, transactions, reconciliationAnchors = [],
+  currencyCode = 'USD',
   onAdd, onEdit, onRemove, onReconcile, onSettings, initialSelectedId,
 }: {
   debts: DebtItem[];
@@ -117,10 +118,11 @@ export function DebtScreen({
   error: string;
   transactions: LedgerTransaction[];
   reconciliationAnchors?: ReconciliationAnchor[];
+  currencyCode?: string;
   onAdd: () => void;
   onEdit: (item: DebtItem) => void;
   onRemove: (item: DebtItem) => void;
-  onReconcile?: (item: DebtItem, verifiedBalance: number, reason: 'interest_adjustment' | 'balance_adjustment' | 'credit_adjustment') => void;
+  onReconcile?: (item: DebtItem, verifiedBalance: number, reason: 'interest_adjustment' | 'balance_adjustment' | 'credit_adjustment') => unknown;
   onSettings: () => void;
   initialSelectedId?: string | null;
 }) {
@@ -133,6 +135,8 @@ export function DebtScreen({
   const [reconciling, setReconciling] = useState(false);
   const [reconcileInput, setReconcileInput] = useState('');
   const [reconcileReason, setReconcileReason] = useState<'interest_adjustment' | 'balance_adjustment' | 'credit_adjustment'>('interest_adjustment');
+  const [reconcileBusy, setReconcileBusy] = useState(false);
+  const [reconcileError, setReconcileError] = useState('');
 
   const [prevInitialId, setPrevInitialId] = useState(initialSelectedId);
   if (initialSelectedId !== prevInitialId) {
@@ -169,14 +173,38 @@ export function DebtScreen({
     if (!selected) return;
     setReconcileInput(String(selected.balance));
     setReconcileReason('interest_adjustment');
+    setReconcileError('');
     setReconciling(true);
   };
-  const saveReconcile = () => {
-    if (!selected) return;
+  const saveReconcile = async () => {
+    if (!selected || reconcileBusy) return;
     const parsed = parseFloat(reconcileInput);
-    if (Number.isNaN(parsed) || parsed < 0) return;
-    onReconcile?.(selected, parsed, reconcileReason);
-    setReconciling(false);
+    if (Number.isNaN(parsed) || parsed < 0) {
+      setReconcileError('Please enter a valid statement balance');
+      return;
+    }
+    setReconcileBusy(true);
+    setReconcileError('');
+    try {
+      if (onReconcile) {
+        const res = await onReconcile(selected, parsed, reconcileReason);
+        if (res && (res as { outcome?: string }).outcome === 'pending') {
+          Alert.alert(
+            'Reconciled Locally (Pending Confirmation)',
+            'Account balance updated locally. Confirmation will be verified upon connecting to the server.',
+          );
+        }
+      }
+      setReconciling(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Reconciliation failed.';
+      setReconcileError(msg);
+      if (msg.includes('conflict') || msg.includes('Conflict')) {
+        Alert.alert('Reconciliation Conflict', msg);
+      }
+    } finally {
+      setReconcileBusy(false);
+    }
   };
   const backToAccounts = () => { setSelectedId(null); setReconciling(false); };
 
@@ -302,7 +330,14 @@ export function DebtScreen({
                     return (
                       <View key={tx.id} style={[ui.divider, ui.row, { justifyContent: 'space-between' }]}>
                         <View style={{ flex: 1 }}>
-                          <Text style={ui.heading}>{tx.payee}</Text>
+                          <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+                            <Text style={ui.heading}>{tx.payee}</Text>
+                            {tx.isPending ? (
+                              <View style={[ui.badge, { backgroundColor: '#38321E', borderColor: '#F2C94C', borderWidth: 1, paddingVertical: 1, paddingHorizontal: 5 }]}>
+                                <Text style={[ui.badgeText, { color: '#F2C94C', fontSize: 9 }]}>Pending</Text>
+                              </View>
+                            ) : null}
+                          </View>
                           <Text style={ui.small}>{`${tx.date} · ${tx.category.replace('_', ' ')}`}</Text>
                         </View>
                         <Text style={[ui.value, { color: direction === 'decrease_debt' ? '#81DFD2' : '#E3A088' }]}>{signed}</Text>
@@ -330,15 +365,23 @@ export function DebtScreen({
           <Card>
             <Text style={ui.heading}>Reconcile statement balance</Text>
             {!reconciling ? <Pressable accessibilityRole="button" onPress={startReconcile} style={ui.button}><Text style={ui.buttonText}>Reconcile balance</Text></Pressable> : <>
+              {!!reconcileError && <Text accessibilityRole="alert" style={[ui.small, { color: '#E3A088', marginVertical: 6 }]}>{reconcileError}</Text>}
               <Text style={ui.small}>{`Current balance ${formatCurrency(selected.balance, currencySymbol)}`}</Text>
-              <TextInput accessibilityLabel="Statement balance" placeholder="0.00" placeholderTextColor="#AAB3AD" keyboardType="decimal-pad" value={reconcileInput} onChangeText={value => setReconcileInput(acceptMoneyEdit(reconcileInput, value, 'USD'))} style={ui.input} />
+              <TextInput accessibilityLabel="Statement balance" placeholder="0.00" placeholderTextColor="#AAB3AD" keyboardType="decimal-pad" value={reconcileInput} onChangeText={value => setReconcileInput(acceptMoneyEdit(reconcileInput, value, currencyCode))} style={ui.input} />
               <Text style={ui.small}>{`Difference: ${formatCurrency(drift, currencySymbol)}`}</Text>
               {drift !== 0 && <View style={{ gap: 8 }}>
                 {(drift > 0 ? ['interest_adjustment', 'balance_adjustment'] as const : ['credit_adjustment'] as const).map(reason => <Pressable key={reason} onPress={() => setReconcileReason(reason)} style={ui.row}>
                   <Text style={[ui.buttonText, { color: reconcileReason === reason ? '#81DFD2' : '#AAB3AD' }]}>{reconcileReason === reason ? '◉' : '○'} {reason.replace('_', ' ')}</Text>
                 </Pressable>)}
               </View>}
-              <View style={ui.row}><Pressable onPress={() => setReconciling(false)} style={[ui.button, { flex: 1 }]}><Text style={ui.buttonText}>Cancel</Text></Pressable><Pressable onPress={saveReconcile} style={[ui.button, { flex: 1, backgroundColor: '#31534D' }]}><Text style={ui.buttonText}>Save balance</Text></Pressable></View>
+              <View style={ui.row}>
+                <Pressable onPress={() => setReconciling(false)} disabled={reconcileBusy} style={[ui.button, { flex: 1 }]}>
+                  <Text style={ui.buttonText}>Cancel</Text>
+                </Pressable>
+                <Pressable onPress={() => void saveReconcile()} disabled={reconcileBusy} style={[ui.button, { flex: 1, backgroundColor: '#31534D' }]}>
+                  <Text style={ui.buttonText}>{reconcileBusy ? 'Saving\u2026' : 'Save balance'}</Text>
+                </Pressable>
+              </View>
             </>}
           </Card>
           <Pressable accessibilityRole="button" onPress={() => onRemove(selected)} style={[ui.button, { borderWidth: 1, borderColor: '#8B4F42' }]}><Text style={[ui.buttonText, { color: '#E3A088' }]}>Delete account</Text></Pressable>
