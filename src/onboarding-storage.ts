@@ -12,7 +12,8 @@ import {
 } from './onboarding-domain';
 
 import { assertCurrencyChangeAllowed, canonicalDebtAmount, canonicalOptionalDebtAmount, decodeDebtAmount, resolveDatabaseDebtCategory, validateStoredAmounts } from './debt-storage-domain';
-import { loadFinanceRecords } from './finance-storage';
+import { clearUserFinanceStorage, loadFinanceRecords } from './finance-storage';
+import { isLocalAcceptanceOwner, saveLocalAcceptanceFixture } from './dev/local-acceptance';
 
 const secureOptions = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
 
@@ -167,6 +168,7 @@ export async function loadUserOnboardingData(session: Session): Promise<UserOnbo
 }
 
 async function assertStoredCurrencyUnchanged(data: UserOnboardingData): Promise<void> {
+  if (isLocalAcceptanceOwner(data.userId)) return;
   const previousRaw = await chunkedStore.getItem(localStateKey(data.userId));
   const cached = previousRaw ? JSON.parse(previousRaw) as UserOnboardingData : null;
   const previous = cached?.userId === data.userId && cached.version === 1 ? cached : null;
@@ -236,6 +238,10 @@ function sameSettings(a: UserOnboardingData, b: UserOnboardingData): boolean {
  * revision guard. No second authoritative settings table is introduced.
  */
 export async function saveUserOnboardingData(data: UserOnboardingData): Promise<UserOnboardingData> {
+  if (isLocalAcceptanceOwner(data.userId)) {
+    validateStoredAmounts(data);
+    return saveLocalAcceptanceFixture(data);
+  }
   await assertStoredCurrencyUnchanged(data);
   validateStoredAmounts(data);
   await assertAuthenticatedUser(data.userId);
@@ -273,6 +279,31 @@ export async function saveUserOnboardingData(data: UserOnboardingData): Promise<
   // An optional cache is never used to claim a failed server write succeeded.
   try { await chunkedStore.setItem(localStateKey(data.userId), JSON.stringify(confirmed)); } catch { /* optional */ }
   return confirmed;
+}
+
+/** Save a narrow settings patch with CAS rebase only when none of its target fields changed. */
+export async function saveUserOnboardingSettingsPatch(
+  current: UserOnboardingData,
+  patch: Partial<UserOnboardingData>,
+  session: Session | null,
+): Promise<UserOnboardingData> {
+  if (isLocalAcceptanceOwner(current.userId)) return saveUserOnboardingData({ ...current, ...patch });
+  const canonical = (value: unknown): string => {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
+    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+    return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`;
+  };
+  try {
+    return await saveUserOnboardingData({ ...current, ...patch });
+  } catch (error) {
+    if (!(error instanceof FinancialSettingsConflictError)) throw error;
+    if (!session) throw error;
+    const fresh = await loadUserOnboardingData(session);
+    const changedTarget = (Object.keys(patch) as (keyof UserOnboardingData)[])
+      .some(key => canonical(fresh[key]) !== canonical(current[key]));
+    if (changedTarget) throw error;
+    return saveUserOnboardingData({ ...fresh, ...patch });
+  }
 }
 
 /** A server rejection that was verified not to commit. */
@@ -351,6 +382,14 @@ export async function upsertUserDebt(
   current: UserOnboardingData,
   debtInput: Omit<DebtItem, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
 ): Promise<UserOnboardingData> {
+  if (isLocalAcceptanceOwner(current.userId)) {
+    const debtId = debtInput.id ?? Crypto.randomUUID();
+    const existing = current.debts.some(debt => debt.id === debtId);
+    const now = new Date().toISOString();
+    const nextDebt: DebtItem = { ...debtInput, id: debtId, createdAt: current.debts.find(debt => debt.id === debtId)?.createdAt ?? now, updatedAt: now };
+    const next = { ...current, debts: existing ? current.debts.map(debt => debt.id === debtId ? nextDebt : debt) : [...current.debts, nextDebt] };
+    return saveLocalAcceptanceFixture(next);
+  }
   await assertStoredCurrencyUnchanged(current);
   await assertAuthenticatedUser(current.userId);
   const debtId = debtInput.id ?? Crypto.randomUUID();
@@ -409,6 +448,9 @@ export async function deleteUserDebt(
   current: UserOnboardingData,
   debtId: string,
 ): Promise<UserOnboardingData> {
+  if (isLocalAcceptanceOwner(current.userId)) {
+    return saveLocalAcceptanceFixture({ ...current, debts: current.debts.filter(debt => debt.id !== debtId) });
+  }
   await assertAuthenticatedUser(current.userId);
   const existing = current.debts.find(d => d.id === debtId);
   if (!existing) return current; // Already removed in this snapshot.
@@ -439,19 +481,27 @@ export async function deleteUserDebt(
 }
 
 /**
- * Completely reset the user's onboarding progress and debts in both local SecureStore
- * and the sandbox Supabase project (`public.debts` + `auth.users.user_metadata`).
+ * Reset server financial records first, then separately reset onboarding metadata
+ * and purge local caches. The metadata update is not part of the financial transaction.
  */
 export async function resetUserOnboardingData(userId: string): Promise<void> {
   await assertAuthenticatedUser(userId);
   const supabase = getSupabaseClient();
-  const { data: deleteData, error: deleteError } = await supabase.rpc('debtfree_reset_debts_atomic');
-  if (deleteError || !deleteData || (deleteData as { success?: boolean }).success !== true) {
-    throw new Error(`Could not reset saved debt accounts: ${deleteError?.message ?? 'RPC did not confirm deletion'}`);
+
+  // Do not touch onboarding or local caches unless the full reset is confirmed.
+  const { data: fullResetData, error: fullResetError } = await supabase.rpc('debtfree_reset_financial_data_atomic');
+  if (fullResetError || !fullResetData || (fullResetData as { success?: boolean; user_id?: string }).success !== true ||
+      (fullResetData as { user_id?: string }).user_id !== userId) {
+    throw new Error('Financial reset is unavailable or could not be confirmed. Local data and onboarding were not changed; reload before retrying.');
   }
+
   const fresh = createDefaultOnboardingData(userId);
   const { error: updateError } = await supabase.auth.updateUser({ data: { debtfree_native_v1: fresh } });
-  if (updateError) throw new Error(`Could not reset saved onboarding data: ${updateError.message}`);
+  if (updateError) throw new Error(`Financial data was reset, but onboarding could not be reset: ${updateError.message}`);
+
+  // Purge all local finance caches and pending write keys
+  await clearUserFinanceStorage(userId);
+
   try { await chunkedStore.removeItem(localStateKey(userId)); } catch {
     // The confirmed remote reset wins. A stale cache must never replace it.
   }

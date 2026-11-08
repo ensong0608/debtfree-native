@@ -1,5 +1,24 @@
 # DebtFree: five-tab scope and worker plan
 
+## Owner-approved Budget and pairing corrections (2026-11-07)
+
+- Restore the Home debt-free estimate hierarchy (title, subtitle, estimate badge, date, months remaining, divider, and progress) and remove only the unwanted entered-debts wording.
+- Remove the standalone spending card. Keep month navigation with the Monthly Budget Breakdown; place recorded single purchases in that breakdown as a separate actual-spending row. Hide categories with no source records, even if their computed amount is zero.
+- Edit primary and additional income from a dedicated Budget popup; do not route to onboarding. Add/edit debt from a real modal. Use one shared, theme-aware bottom-sheet frame for Budget income, recurring-bill, and debt forms.
+- Mortgage/auto loan to debit recurring-bill links are explicit, persistent, user-confirmed settings. Suggestions never auto-link. Support manual link/unlink, mark-separate, and dismiss choices; surface unresolved reviews on Home. A link changes only commitment/reminder grouping: it does not create ledger rows, alter a payment, or change a balance. One bill reminder represents the shared monthly cycle; an existing linked account payment can satisfy that cycle by month. For auto loans, the recurring bill replaces the minimum inside the shared payoff-plan commitment total; mortgage projections remain standalone and the linked recurring bill is their budget commitment. Account terms stay unchanged, and escrow/principal components are never inferred.
+- Persist link and income edits through the existing revision-checked settings save path. This local change does not authorize live prototype or production mutation, app builds, or device work.
+
+## Owner-approved remediation update (2026-11-07)
+
+The owner authorized local implementation of the reviewed audit plan in `docs/APP_AUDIT_AND_COMPLETION_PLAN_2026-11-07.md`, with these overriding decisions:
+
+- New debt and bill tracking starts today or later. A due day already passed in the household's current month starts next month. A new obligation due today asks whether this cycle was already paid; Yes records a cycle acknowledgement without inventing a ledger transaction or changing the debt balance. The acknowledged cycle does not generate an upcoming reminder.
+- Persist first-due dates and effective monthly terms; edits must not rewrite prior obligations. Home, Budget Upcoming, Transactions Scheduled and payment matching must consume the same schedule.
+- Separate one-time budget entries are no longer required. Single purchases belong in Transactions and can be summarized by category/month in Budget as recorded spending, separately from recurring and debt-plan commitments, without double counting.
+- GPT-6.1 Terra Medium and GPT-6 Luna Max are approved workers for this work. Every handback needs manager review and corrective follow-up before acceptance.
+
+Current assignments and evidence are in `TRACKER.md`. Historical completion labels below remain historical. Full atomic backup restore is blocked on a safe server protocol and isolated verification; the application must not simulate successful restoration through state-only imports. Live prototype/production mutations and public publication are outside this local implementation work. Existing iOS, signing, production-service and store gates remain explicit.
+
 ## Financial foundation planning update (2026-11-04)
 
 Read [NATIVE_FINANCIAL_PLAN.md](./NATIVE_FINANCIAL_PLAN.md) before assigning financial implementation. The user clarified that the prototype is a reference, not a rule; its calculations and the existing calculation guide require independent evaluation. The new plan records observed risks, decisions, shared contracts, proposed task dependencies and targeted acceptance scenarios. It supersedes earlier recommendations to copy prototype formulas automatically. This update authorizes no implementation, worker dispatch, bank integration or schema change.
@@ -157,3 +176,11 @@ Color palette, typography, detailed layouts, commercial content, and additional 
 - Work sequentially until shared file ownership is clear. Parallel tasks require disjoint files and agreed data contracts.
 - On a blocker, record BLOCKED with the exact reason in TRACKER.md, stop, and notify the manager. On completion, record DONE, modified files, and a concise handback, then stop.
 - This document neither launches workers nor schedules automatic execution. Resume and dispatch in the next requested working session.
+
+### T-079 owner correction and implementation (2026-11-07)
+
+The owner's latest instructions supersede the 2026-11-04 Mortgage exclusion decision for onboarding. First-time or reset onboarding now includes a Home / Mortgage account entry; completed-account Setup edits do not acquire new onboarding routes or auto-create linked bills. An Auto loan or Mortgage entered during initial onboarding creates one debit recurring spending item with a stable ID shared with the debt, a preserved due-date schedule, and an explicit linked relationship. Retries reuse IDs and skip unchanged debt writes. An existing bill row is reused only after authoritative confirmation; unresolved rows block another bill write until Finance Recovery confirms the server state. The recurring record does not create a payment transaction or mutate the debt balance. Linked Auto minimums are offset once from the payoff-plan commitment, and a linked bill provides the single reminder.
+
+Loan payment review now lives on Home. Confirmed links do not appear as a Needs attention notice. Debt Detail and the recurring spending editor show the relationship and provide unlink controls. Custom names entered for the Other recurring spending category remain metadata keyed by recurring bill ID through the existing settings CAS, reload, backup, and restore paths; Budget groups same-label bills while the stored recurring bill category remains `other_bill`.
+
+Focused source tests passed (23 checks across loan pairing and retry recovery, budget grouping, backup recovery, and onboarding domain) and `npm.cmd run typecheck` passed. No live services, device, build, or dependency changes were used. Runtime visual behavior was not exercised. The owner prohibited subagents, so no independent delegated review was run; implementation was self-reviewed against this plan and the required prototype references.

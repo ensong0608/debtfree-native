@@ -115,8 +115,9 @@ test('Debt validation checks required fields, numeric ranges, and home/vehicle o
     updatedAt: '2026-11-04T00:00:00Z',
   };
 
-  // Mortgage is deliberately excluded from active onboarding, even for owners.
+  // Mortgage accounts remain separate from the shared payoff strategy but are valid onboarding debts.
   assert.equal(validateDebtsStep('Own', 'Own', [cardItem]), null);
+  assert.equal(validateDebtsStep('Own', 'Own', [{ ...cardItem, id: 'mortgage', category: 'Mortgage' }]), null);
   // Financing a vehicle requires an Auto loan entry
   assert.match(validateDebtsStep('Rent', 'Finance', [cardItem]) ?? '', /Auto loan/);
   // Rent + Own vehicle with 1 credit card passes

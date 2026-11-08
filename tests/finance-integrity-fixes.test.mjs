@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { paymentMatchesObligation } from '../src/finance/payment-matching.ts';
 import { calculateActivitySummary, calculateAccountActivities, calculateMilestones } from '../src/finance/progress.ts';
-import { reconcilePendingTransactionRows } from '../src/finance/storage-domain.ts';
+import { classifyFinanceSnapshot, isCompleteAuthoritativeFinanceSnapshot, reconcilePendingTransactionRows } from '../src/finance/storage-domain.ts';
 import { makeMoney } from '../src/finance/money.ts';
 import { parseDateOnly } from '../src/finance/calendar.ts';
 
@@ -32,7 +32,7 @@ test('P1: pending payments do not count towards confirmed Progress metrics or aw
   const activity = calculateActivitySummary({ transactions: [pending], debts, period: 'current_month', today: '2026-11-06' });
   assert.equal(activity.totalPayments, 0);
   assert.equal(activity.transactionsCount, 0);
-  assert.equal(activity.accountsPaidOffCount, 0);
+  assert.equal(activity.accountsPaidOffCount, null);
   const perAccount = calculateAccountActivities({ transactions: [pending], debts, period: 'current_month', today: '2026-11-06' });
   assert.equal(perAccount[0].payments, 0);
   assert.equal(perAccount[0].transactionCount, 0);
@@ -40,6 +40,16 @@ test('P1: pending payments do not count towards confirmed Progress metrics or aw
   assert.equal(milestones.find(m => m.id === 'first_payment').status, 'in_progress');
   assert.equal(milestones.find(m => m.id === 'first_debt_cleared').status, 'locked');
   assert.equal(milestones.find(m => m.id === 'progress_100').status, 'locked');
+});
+
+test('T-049: cached and pending-write snapshots never qualify as fully authoritative', () => {
+  assert.equal(classifyFinanceSnapshot('authoritative', false), 'authoritative');
+  assert.equal(isCompleteAuthoritativeFinanceSnapshot(classifyFinanceSnapshot('authoritative', false)), true);
+  assert.equal(classifyFinanceSnapshot('authoritative', true), 'authoritative_with_pending_writes');
+  assert.equal(classifyFinanceSnapshot('cache', false), 'cached');
+  assert.equal(classifyFinanceSnapshot('cache', true), 'cached_with_pending_writes');
+  assert.equal(isCompleteAuthoritativeFinanceSnapshot(classifyFinanceSnapshot('authoritative', true)), false);
+  assert.equal(isCompleteAuthoritativeFinanceSnapshot(classifyFinanceSnapshot('cache', false)), false);
 });
 
 test('P1: lost RPC response is confirmed by authoritative readback, not by replay', () => {

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, Text, View } from '../components/NativeAppearance';
 import { AppIcon } from '../components/AppIcon';
 import {
   Bar,
@@ -17,7 +17,7 @@ import {
   calculateMilestones,
   type ProgressPeriod,
 } from '../finance/progress';
-import { parseDateOnly } from '../finance/calendar';
+import { currentHouseholdDate } from '../finance/calendar';
 import type { LedgerTransaction } from '../finance/ledger';
 
 const PERIOD_ITEMS = ['Current month', 'Previous month', 'Lifetime'] as const;
@@ -26,21 +26,25 @@ export function ProgressScreen({
   debts,
   transactions = [],
   currencySymbol = '$',
+  currencyCode = 'USD',
   strategy = 'avalanche',
+  householdTimeZone,
   onSettings,
   onSelectDebt,
 }: {
   debts: DebtItem[];
   transactions?: LedgerTransaction[];
   currencySymbol?: string;
+  currencyCode?: string;
   strategy?: PayoffStrategy;
+  householdTimeZone?: string;
   onSettings: () => void;
   onSelectDebt?: (debtId: string) => void;
 }) {
   const [tab, setTab] = useState('Overview');
   const [period, setPeriod] = useState<typeof PERIOD_ITEMS[number]>('Current month');
 
-  const today = parseDateOnly(new Date().toISOString().slice(0, 10));
+  const today = currentHouseholdDate(householdTimeZone);
   const mappedPeriod: ProgressPeriod =
     period === 'Current month'
       ? 'current_month'
@@ -54,6 +58,7 @@ export function ProgressScreen({
     debts,
     period: mappedPeriod,
     today,
+    currencyCode,
   });
 
   const accountActivities = calculateAccountActivities({
@@ -61,11 +66,12 @@ export function ProgressScreen({
     debts,
     period: mappedPeriod,
     today,
+    currencyCode,
   });
 
   const hasUnconfirmedDebtWrites = transactions.some(tx => tx.isPending && tx.accountId !== null);
-  const utilization = calculateCreditUtilization(debts);
-  const milestones = calculateMilestones({ debts, transactions });
+  const utilization = calculateCreditUtilization(debts, currencyCode);
+  const milestones = calculateMilestones({ debts, transactions, currencyCode });
 
   const completedCount = milestones.filter(m => m.status === 'completed').length;
   const inProgressCount = milestones.filter(m => m.status === 'in_progress').length;
@@ -90,18 +96,19 @@ export function ProgressScreen({
       onSettings={onSettings}
     >
       {hasUnconfirmedDebtWrites ? (
-        <Text style={[ui.small, { color: '#E3A088', marginBottom: 8 }]}>Pending changes: displayed balances and payoff percentages are provisional. Achievements await server confirmation.</Text>
+        <Text style={[ui.small, { color: '#E3A088', marginBottom: 8 }]}>Pending changes: displayed balances are provisional. Pending payments are excluded from recorded activity.</Text>
       ) : null}
       {tab === 'Overview' ? (
         <>
           <Card style={{ gap: 14, paddingVertical: 18 }}>
             <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
               <View style={{ flex: 1, gap: 6 }}>
-                <Text style={ui.small}>OVERALL DEBT PAYOFF</Text>
-                <Text style={[ui.heading, { fontSize: 22 }]}>{`${Math.round(overallProgress)}% ${hasUnconfirmedDebtWrites ? 'provisional payoff' : 'paid down'}`}</Text>
-                <Text style={ui.text}>{`${formatCurrency(balanceSnapshot.balance, currencySymbol)} remaining`}</Text>
+                <Text style={ui.small}>BALANCE SNAPSHOT</Text>
+                <Text style={[ui.heading, { fontSize: 22 }]}>{`${Math.round(overallProgress)}% below reference balances`}</Text>
+                <Text style={ui.text}>{`${formatCurrency(balanceSnapshot.balance, currencySymbol)} current balance`}</Text>
+                <Text style={ui.small}>Compared with the higher of each current and entered original balance; changes may include corrections or credits.</Text>
               </View>
-              <Ring percent={overallProgress} label="paid down" />
+              <Ring percent={overallProgress} label="snapshot" />
             </View>
             <View style={[ui.divider, { paddingTop: 12 }]}>
               <Text style={ui.small}>NEXT PAYOFF TARGET · {strategy.toUpperCase()}</Text>
@@ -133,13 +140,11 @@ export function ProgressScreen({
                   </Text>
                 </View>
                 <Text style={ui.heading}>
-                  {summary.debtPaidDown > 0
-                    ? `${formatCurrency(summary.debtPaidDown, currencySymbol)} paid down`
-                    : summary.totalPayments > 0
-                      ? `${formatCurrency(summary.totalPayments, currencySymbol)} in payments`
-                      : 'No payments in this period'}
+                  {summary.totalPayments > 0
+                    ? `${formatCurrency(summary.totalPayments, currencySymbol)} in recorded payments`
+                    : 'No payments recorded in this period'}
                 </Text>
-                <Text style={ui.small}>{summary.transactionsCount > 0 ? 'From recorded activity' : 'No activity recorded'}</Text>
+                <Text style={ui.small}>Recorded history may be incomplete; loan payments without a principal allocation may not reduce the balance.</Text>
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text style={ui.small}>Payments</Text>
@@ -148,17 +153,22 @@ export function ProgressScreen({
             </View>
 
             <View style={[ui.divider, ui.row, { justifyContent: 'space-between' }]}>
-              <Text style={ui.text}>Debt paid down (Principal)</Text>
+              <Text style={ui.text}>Recorded payment balance reduction</Text>
               <Text style={[ui.value, { color: '#73D9C6' }]}>
-                {formatCurrency(summary.debtPaidDown, currencySymbol)}
+                {formatCurrency(summary.principalReduction, currencySymbol)}
               </Text>
             </View>
 
             <View style={[ui.divider, ui.row, { justifyContent: 'space-between' }]}>
-              <Text style={ui.text}>Total payments made</Text>
+              <Text style={ui.text}>Recorded payments</Text>
               <Text style={ui.value}>
                 {formatCurrency(summary.totalPayments, currencySymbol)}
               </Text>
+            </View>
+
+            <View style={[ui.divider, ui.row, { justifyContent: 'space-between' }]}>
+              <Text style={ui.text}>Accounts paid off</Text>
+              <Text style={ui.value}>Unavailable</Text>
             </View>
 
             <View style={[ui.row, { gap: 8, marginTop: 8 }]}>
@@ -390,6 +400,8 @@ export function ProgressScreen({
             </View>
           </Card>
 
+          <Text style={ui.small}>Payment milestones use confirmed records. Payoff milestones require recorded payoff events and complete history coverage; utilization reflects the current state.</Text>
+
           {nextUnlock ? (
             <Card>
               <View style={[ui.row, { gap: 6 }]}>
@@ -436,7 +448,7 @@ export function ProgressScreen({
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={ui.heading}>{m.title}</Text>
-                      <Text style={ui.small}>{isCompleted ? (m.earnedDate ? `Earned ${m.earnedDate.slice(0, 7)}` : 'Achieved') : isInProgress ? `${Math.round(m.percent)}% complete` : 'Up next'}</Text>
+                      <Text style={ui.small}>{m.description}</Text>
                     </View>
                   </View>
                   <View
@@ -463,7 +475,7 @@ export function ProgressScreen({
                         },
                       ]}
                     >
-                      {isCompleted ? 'EARNED' : isInProgress ? `${Math.round(m.percent)}%` : 'LOCKED'}
+                      {m.id === 'credit_util_30' && isCompleted ? 'CURRENT' : isCompleted ? 'EARNED' : isInProgress ? `${Math.round(m.percent)}%` : 'UNAVAILABLE'}
                     </Text>
                   </View>
                 </View>

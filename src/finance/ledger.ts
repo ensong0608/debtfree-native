@@ -238,6 +238,7 @@ export function calculateReconciledBalance(params: {
   const currency = openingBalance.currency;
   const startingBalance = anchor ? anchor.verifiedBalance : openingBalance;
   let runningBalance = startingBalance;
+  let netChange = makeMoney(currency, 0);
   let totalCharges = makeMoney(currency, 0);
   let totalPayments = makeMoney(currency, 0);
   let activeCount = 0;
@@ -274,6 +275,7 @@ export function calculateReconciledBalance(params: {
     const direction = classifyCategoryDirection(tx.category);
     const delta = calculateTransactionBalanceDelta(tx, debtCategory);
     runningBalance = addMoney(runningBalance, delta);
+    netChange = addMoney(netChange, delta);
 
     if (direction === 'increase_debt') {
       totalCharges = addMoney(totalCharges, tx.amount);
@@ -283,8 +285,6 @@ export function calculateReconciledBalance(params: {
       activeCount++;
     }
   }
-
-  const netChange = addMoney(totalCharges, makeMoney(currency, -totalPayments.minorUnits));
 
   return {
     accountId,

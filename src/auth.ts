@@ -38,7 +38,8 @@ const projectUrl = process.env.EXPO_PUBLIC_SANDBOX_SUPABASE_URL ?? '';
 const publicKey = process.env.EXPO_PUBLIC_SANDBOX_SUPABASE_PUBLISHABLE_KEY ?? '';
 const allowedRef = process.env.EXPO_PUBLIC_SANDBOX_PROJECT_REF ?? '';
 const configProblem = sandboxConfigProblem(projectUrl, allowedRef, publicKey);
-const configured = configProblem === null;
+const localAcceptanceRequested = __DEV__ && process.env.EXPO_PUBLIC_ENABLE_LOCAL_ACCEPTANCE === 'true';
+const configured = configProblem === null && !localAcceptanceRequested;
 const signedOutKey = 'debtfree-signed-out';
 const secureOptions = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
 

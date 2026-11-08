@@ -1,3 +1,5 @@
+// @ts-ignore TS5097
+import type { ObligationSchedules } from './finance/obligation-schedule.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { CURRENCIES, getCurrency, type CurrencyScale } from './finance/currencies.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
@@ -76,6 +78,12 @@ export type AdditionalIncomeSource = {
   monthlyAmount: number;
 };
 
+/** Explicitly reviewed relationship between a mortgage/auto loan and its payment bill. */
+export type LoanBillPairing = Readonly<{
+  status: 'linked' | 'separate' | 'dismissed';
+  billId?: string;
+}>;
+
 export type PremiumPlanChoice = 'premium' | 'premium_bank_sync';
 
 export type HomeOwnershipStatus = 'Own' | 'Rent' | 'Other';
@@ -143,6 +151,7 @@ export type UserOnboardingData = {
   // Sign-Up Step 4
   countryCode: CountryCode;
   currencyCode?: string;
+  householdTimeZone?: string;
   managesWithPartner: boolean | null;
   worksWithProfessional: boolean | null;
   // Onboarding Step 1 (Income)
@@ -165,6 +174,15 @@ export type UserOnboardingData = {
   updatedAt: string;
   /** Server-validated revision for settings held in auth metadata; absent on legacy profiles. */
   settingsRevision?: number;
+  obligationSchedules?: ObligationSchedules;
+  /** User-entered monthly escrow component for mortgage payments; missing means unknown. */
+  mortgageEscrowByDebtId?: Record<string, number>;
+  /** Independently entered monthly extra payment for each mortgage projection. */
+  mortgageExtraPaymentByDebtId?: Record<string, number>;
+  /** User-confirmed loan-to-recurring-bill relationships and review choices. */
+  loanBillPairingByDebtId?: Record<string, LoanBillPairing>;
+  /** Reusable display labels for recurring bills stored with the compatible other_bill enum. */
+  recurringBillCategoryLabelByBillId?: Record<string, string>;
 };
 
 /** Round a numeric dollar amount to two decimal places using integer-cent precision. */
@@ -430,8 +448,8 @@ export function validateDebtsStep(
   if (vehicleStatus === 'Finance' && !debts.some(d => d.category === 'Auto loan')) {
     return 'You selected that you finance a vehicle. Please add your Auto loan details or update Your vehicle selection.';
   }
-  if (activeDebts(debts).length === 0) {
-    return 'Add at least one debt account to build your payoff plan.';
+  if (debts.length === 0) {
+    return 'Add at least one debt account to continue.';
   }
   return null;
 }
@@ -521,6 +539,10 @@ export function defaultFirstPaymentDate(baseDate: Date = new Date(), householdTi
 export function formatDateOnlyMonthYear(date: DateOnly): string {
   return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(date.slice(5, 7)) - 1] + ' ' + date.slice(0, 4);
 }
+/** Home shows the date alone; the estimate badge and subtitle already explain the forecast scope. */
+export function homeDebtFreeEstimateDate(label: string): string {
+  return label.replace(/^Entered debts projected paid off:\s*/, '');
+}
 export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy, extraMonthlyPayment: number, baseDate: Date = new Date(), currencyCode = 'USD', householdTimeZone = 'UTC'): PayoffPlanResult {
   const scale = 10 ** getCurrency(currencyCode).scale;
   const toMinor = (n: number) => Math.round(n * scale);
@@ -590,4 +612,30 @@ export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy,
           : `Entered debts projected paid off: ${formatDateOnlyMonthYear(result.payoffDate!)}`)
       : labels[result.status];
   return { strategy, status: displayStatus, unusedBudget: result.status === 'paidOff' ? result.unusedBudget.minorUnits / scale : (lastPeriod?.unusedBudget.minorUnits ?? 0) / scale, totalDebt, totalStartingDebt, progressPercent: totalStartingDebt > 0 ? Math.max(0, Math.min(100, Math.round((totalStartingDebt - totalDebt) / totalStartingDebt * 100))) : 0, totalMinimums, extraMonthlyPayment: safeExtra, monthlyTotalPayment: !hasOpenObligations ? 0 : common ? common.monthlyCommitment.minorUnits / scale : totalMinimums + safeExtra, totalInterest: result.status === 'paidOff' ? result.totalInterest.minorUnits / scale : result.status === 'paymentShortfall' || result.status === 'notAmortizingUnderAssumptions' || result.status === 'horizonReached' ? result.partialInterest.minorUnits / scale : 0, monthsToPayoff: hasOpenObligations && result.status === 'paidOff' ? result.monthsToPayoff : null, debtFreeDateLabel: displayPayoffLabel, stalled: displayStatus !== 'paidOff', firstTarget: payoffOrder[0] ?? null, payoffOrder, allProjections: [...payoffOrder, ...excludedProjections] };
+}
+
+export type IndependentMortgageProjection = Readonly<{
+  debt: DebtItem;
+  escrow: number;
+  extraMonthlyPayment: number;
+  plan: PayoffPlanResult;
+  projection: DebtPayoffProjection;
+}>;
+
+/** Project each mortgage in its own amortization pool, excluding entered escrow. */
+export function calculateIndependentMortgageProjections(
+  debts: readonly DebtItem[], strategy: PayoffStrategy, escrowByDebtId: Readonly<Record<string, number>>,
+  extraByDebtId: Readonly<Record<string, number>>, baseDate = new Date(), currencyCode = 'USD', householdTimeZone = 'UTC',
+): IndependentMortgageProjection[] {
+  return debts.flatMap(debt => {
+    if (debt.category !== 'Mortgage' || debt.balance <= 0) return [];
+    const escrow = escrowByDebtId[debt.id];
+    const extra = extraByDebtId[debt.id] ?? 0;
+    if (escrow === undefined || !Number.isFinite(escrow) || escrow < 0 || escrow > debt.minimumPayment ||
+        !Number.isFinite(extra) || extra < 0 || debt.minimumPayment - escrow + extra <= 0) return [];
+    const amortizingAccount = { ...debt, category: 'Auto loan' as const, minimumPayment: debt.minimumPayment - escrow };
+    const plan = calculatePayoffPlan([amortizingAccount], strategy, extra, baseDate, currencyCode, householdTimeZone);
+    const projection = plan.payoffOrder[0];
+    return projection ? [{ debt, escrow, extraMonthlyPayment: extra, plan, projection }] : [];
+  });
 }

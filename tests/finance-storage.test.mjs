@@ -11,6 +11,7 @@ const {
   encodeReconciliationAnchorRow,
   decodeReconciliationAnchorRow,
   mergeFinanceRowsWithPendingWrites,
+  rebaseFinanceCacheRows,
 } = require('../src/finance/storage-domain.ts');
 const { makeMoney } = require('../src/finance/money.ts');
 const { parseDateOnly } = require('../src/finance/calendar.ts');
@@ -105,6 +106,17 @@ test('online row refresh preserves pending local updates and deletions', () => {
   assert.deepEqual(mergeFinanceRowsWithPendingWrites(remote, pending), [
     { id: 'tx-a', amount: '11.00' },
     { id: 'tx-local', amount: '30.00' },
+  ]);
+});
+
+test('stale supplied snapshots rebase without erasing other queued cache rows', () => {
+  const cached = [{ id: 'tx-a', amount: 11 }, { id: 'tx-b', amount: 22 }];
+  const staleSnapshot = [{ id: 'tx-a', amount: 10 }, { id: 'tx-c', amount: 30 }];
+  assert.deepEqual(rebaseFinanceCacheRows(cached, staleSnapshot, [{ id: 'tx-c', amount: 31 }]), [
+    { id: 'tx-a', amount: 11 }, { id: 'tx-b', amount: 22 }, { id: 'tx-c', amount: 31 },
+  ]);
+  assert.deepEqual(rebaseFinanceCacheRows(cached, staleSnapshot, [], ['tx-b']), [
+    { id: 'tx-a', amount: 11 }, { id: 'tx-c', amount: 30 },
   ]);
 });
 

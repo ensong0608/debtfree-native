@@ -1,0 +1,36 @@
+-- DebtFree Native: atomic native snapshot restore preparation.
+-- STATUS: NOT APPLIED; intentionally fail-closed preparation only.
+--
+-- T-058-B2 blocker: the installed schema has no canonical, owner-scoped server
+-- snapshot reader or durable restore receipt protocol. A restore RPC cannot
+-- safely compare one exact baseline across auth.users metadata (settings CAS),
+-- debt revisions/tombstones, ledger rows, bills, and reconciliation anchors
+-- without first defining and verifying that shared canonical projection.
+-- The existing settings RPC strips debts from metadata and increments its CAS
+-- revision; the debt RPCs require one expected row version per change; and the
+-- ledger RPCs apply deltas. Treating those independent calls as a snapshot
+-- restore would be non-atomic and could double-apply ledger history.
+--
+-- This file deliberately defines no function, table, grant, or mutation. It is
+-- a guard against accidentally treating an incomplete migration as a feature.
+-- Before replacing this guard with executable SQL, add and review a single
+-- authenticated protocol that:
+--   * derives auth.uid() in SQL, validates caller ownership and currency, and
+--     never authorizes through raw_user_meta_data;
+--   * locks/compares a canonical baseline covering every restored domain and
+--     settings revision, then commits the complete snapshot in one transaction;
+--   * revision-updates existing debts, refuses tombstoned identity revival,
+--     and deletes omitted rows only for explicitly confirmed replacement;
+--   * stores an owner + stable operation ID + canonical payload fingerprint
+--     receipt in that same transaction and returns authoritative readback;
+--   * validates all references/allocations and writes final debt balances once
+--     without replaying historical transaction deltas;
+--   * revokes PUBLIC/anon execution and grants only authenticated callers.
+--
+-- The application service remains disabled until that protocol is implemented,
+-- applied to an isolated environment, and verified. Do not apply this file.
+DO $$
+BEGIN
+  RAISE EXCEPTION 'NATIVE_RESTORE_UNAVAILABLE: canonical atomic snapshot and receipt protocol is not prepared';
+END;
+$$;

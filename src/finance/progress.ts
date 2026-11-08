@@ -2,7 +2,11 @@
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { type DateOnly } from './calendar.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
-import { type LedgerTransaction, classifyCategoryDirection } from './ledger.ts';
+import { type LedgerTransaction, classifyCategoryDirection, calculateTransactionBalanceDelta } from './ledger.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { moneyToMajor } from './money.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { getCurrency } from './currencies.ts';
 
 export type ProgressPeriod = 'current_month' | 'previous_month' | 'lifetime';
 
@@ -18,11 +22,13 @@ export type ProgressDebtItem = Readonly<{
 export type ActivitySummary = Readonly<{
   period: ProgressPeriod;
   totalPayments: number;
+  principalReduction: number;
+  newSpending: number;
   totalInterestAndFees: number;
   totalAdjustments: number;
   netBalanceChange: number;
   debtPaidDown: number;
-  accountsPaidOffCount: number;
+  accountsPaidOffCount: number | null;
   transactionsCount: number;
 }>;
 
@@ -62,6 +68,11 @@ export type CreditUtilizationSummary = Readonly<{
   statusBand: 'optimal' | 'good' | 'moderate' | 'high' | 'unavailable';
 }>;
 
+function roundToCurrency(amount: number, currencyCode: string): number {
+  const scale = getCurrency(currencyCode).scale;
+  return Math.round(amount * 10 ** scale) / 10 ** scale;
+}
+
 function getPreviousMonth(monthStr: string): string {
   const [yearStr, mStr] = monthStr.split('-');
   let y = Number(yearStr);
@@ -91,56 +102,72 @@ export function filterTransactionsByPeriod(
   });
 }
 
-/** Aggregate period activity from recorded transactions. */
+/** Aggregate period activity from recorded transactions using centralized money primitives. */
 export function calculateActivitySummary(params: {
   transactions: readonly LedgerTransaction[];
   debts: readonly ProgressDebtItem[];
   period: ProgressPeriod;
   today: DateOnly;
+  currencyCode?: string;
 }): ActivitySummary {
-  const { transactions, debts, period, today } = params;
+  const { transactions, debts, period, today, currencyCode = 'USD' } = params;
   const filtered = filterTransactionsByPeriod(transactions, period, today).filter(tx => !tx.isPending);
 
   let totalPayments = 0;
+  let principalReduction = 0;
+  let newSpending = 0;
   let totalInterestAndFees = 0;
   let totalAdjustments = 0;
-  let totalCharges = 0;
+  let netDebtDeltaMinor = 0;
 
   for (const tx of filtered) {
-    const amount = tx.amount.minorUnits / 100;
+    if (tx.amount.currency !== currencyCode) {
+      throw new TypeError(`Currency mismatch: summary expected ${currencyCode}, transaction has ${tx.amount.currency}`);
+    }
+    if (tx.principalAmount && tx.principalAmount.currency !== currencyCode) {
+      throw new TypeError(`Currency mismatch: summary expected ${currencyCode}, transaction principal has ${tx.principalAmount.currency}`);
+    }
+    const amount = moneyToMajor(tx.amount);
+    const debt = debts.find(d => d.id === tx.accountId);
+
+    if (debt) {
+      const delta = calculateTransactionBalanceDelta(tx, debt.category);
+      netDebtDeltaMinor += delta.minorUnits;
+    }
 
     if (tx.source === 'reconciliation') {
       totalAdjustments += amount;
-      if (classifyCategoryDirection(tx.category) === 'increase_debt') {
-        totalCharges += amount;
-      } else if (classifyCategoryDirection(tx.category) === 'decrease_debt') {
-        totalPayments += amount;
-      }
-    } else if (tx.category === 'payment' || tx.category === 'refund') {
+    } else if (tx.category === 'payment' && debt) {
       totalPayments += amount;
+      // Follow the ledger's payment reduction policy; refunds and adjustments are excluded.
+      principalReduction -= moneyToMajor(calculateTransactionBalanceDelta(tx, debt.category));
+    } else if (tx.category === 'refund') {
+      // Per Finding 5: Merchant refund is a merchant credit reducing balance owed, NOT a repayment or negative payment!
+      // Its balance reduction is accurately reflected in netDebtDeltaMinor via calculateTransactionBalanceDelta.
     } else if (
       tx.category === 'interest' ||
       tx.category === 'fee' ||
       tx.category === 'annual_fee'
     ) {
       totalInterestAndFees += amount;
-      totalCharges += amount;
     } else if (classifyCategoryDirection(tx.category) === 'increase_debt') {
-      totalCharges += amount;
+      newSpending += amount;
     }
   }
 
-  const netBalanceChange = Math.round((totalCharges - totalPayments) * 100) / 100;
-  const debtPaidDown = Math.max(0, Math.round((totalPayments - totalCharges) * 100) / 100);
-  // Provisional balances are not proof an obligation has been paid off.
-  const pendingAccounts = new Set(transactions.filter(tx => tx.isPending).map(tx => tx.accountId));
-  const accountsPaidOffCount = debts.filter(d => d.balance <= 0 && !pendingAccounts.has(d.id)).length;
+  const scale = getCurrency(currencyCode).scale;
+  const netBalanceChange = roundToCurrency(netDebtDeltaMinor / 10 ** scale, currencyCode);
+  // Without coverage or explicit payoff events, snapshots cannot establish a payoff period.
+  const accountsPaidOffCount = null;
+  const debtPaidDown = roundToCurrency(principalReduction, currencyCode);
 
   return {
     period,
-    totalPayments: Math.round(totalPayments * 100) / 100,
-    totalInterestAndFees: Math.round(totalInterestAndFees * 100) / 100,
-    totalAdjustments: Math.round(totalAdjustments * 100) / 100,
+    totalPayments: roundToCurrency(totalPayments, currencyCode),
+    principalReduction: roundToCurrency(principalReduction, currencyCode),
+    newSpending: roundToCurrency(newSpending, currencyCode),
+    totalInterestAndFees: roundToCurrency(totalInterestAndFees, currencyCode),
+    totalAdjustments: roundToCurrency(totalAdjustments, currencyCode),
     netBalanceChange,
     debtPaidDown,
     accountsPaidOffCount,
@@ -154,8 +181,9 @@ export function calculateAccountActivities(params: {
   debts: readonly ProgressDebtItem[];
   period: ProgressPeriod;
   today: DateOnly;
+  currencyCode?: string;
 }): AccountActivity[] {
-  const { transactions, debts, period, today } = params;
+  const { transactions, debts, period, today, currencyCode = 'USD' } = params;
   const filtered = filterTransactionsByPeriod(transactions, period, today).filter(tx => !tx.isPending);
 
   return debts.map(debt => {
@@ -164,15 +192,22 @@ export function calculateAccountActivities(params: {
     let charges = 0;
     let interestAndFees = 0;
     let adjustments = 0;
+    let netDeltaMinor = 0;
 
     for (const tx of accountTxs) {
-      const amt = tx.amount.minorUnits / 100;
+      if (tx.amount.currency !== currencyCode) {
+        throw new TypeError(`Currency mismatch: account activities expected ${currencyCode}, transaction has ${tx.amount.currency}`);
+      }
+      const amt = moneyToMajor(tx.amount);
+      const delta = calculateTransactionBalanceDelta(tx, debt.category);
+      netDeltaMinor += delta.minorUnits;
+
       if (tx.source === 'reconciliation') {
         adjustments += amt;
-        if (classifyCategoryDirection(tx.category) === 'increase_debt') charges += amt;
-        else if (classifyCategoryDirection(tx.category) === 'decrease_debt') payments += amt;
-      } else if (tx.category === 'payment' || tx.category === 'refund') {
+      } else if (tx.category === 'payment') {
         payments += amt;
+      } else if (tx.category === 'refund') {
+        // Merchant refund is a merchant credit reducing balance owed, not a repayment
       } else if (
         tx.category === 'interest' ||
         tx.category === 'fee' ||
@@ -185,23 +220,27 @@ export function calculateAccountActivities(params: {
       }
     }
 
+    const scale = getCurrency(currencyCode).scale;
     return {
       accountId: debt.id,
       accountName: debt.name,
       category: debt.category,
       balance: debt.balance,
-      payments: Math.round(payments * 100) / 100,
-      charges: Math.round(charges * 100) / 100,
-      interestAndFees: Math.round(interestAndFees * 100) / 100,
-      adjustments: Math.round(adjustments * 100) / 100,
-      netChange: Math.round((charges - payments) * 100) / 100,
+      payments: roundToCurrency(payments, currencyCode),
+      charges: roundToCurrency(charges, currencyCode),
+      interestAndFees: roundToCurrency(interestAndFees, currencyCode),
+      adjustments: roundToCurrency(adjustments, currencyCode),
+      netChange: roundToCurrency(netDeltaMinor / 10 ** scale, currencyCode),
       transactionCount: accountTxs.length,
     };
   });
 }
 
 /** Compute overall revolving credit utilization. */
-export function calculateCreditUtilization(debts: readonly ProgressDebtItem[]): CreditUtilizationSummary {
+export function calculateCreditUtilization(
+  debts: readonly ProgressDebtItem[],
+  currencyCode = 'USD',
+): CreditUtilizationSummary {
   const cards = debts.filter(d => d.category === 'Credit card');
   const tracked = cards.filter(d => d.creditLimit !== null && d.creditLimit > 0);
 
@@ -219,9 +258,9 @@ export function calculateCreditUtilization(debts: readonly ProgressDebtItem[]): 
   }
 
   return {
-    totalLimit: Math.round(totalLimit * 100) / 100,
-    totalUsed: Math.round(totalUsed * 100) / 100,
-    availableCredit: Math.round(availableCredit * 100) / 100,
+    totalLimit: roundToCurrency(totalLimit, currencyCode),
+    totalUsed: roundToCurrency(totalUsed, currencyCode),
+    availableCredit: roundToCurrency(availableCredit, currencyCode),
     utilizationPercent: Math.round(utilizationPercent * 10) / 10,
     trackedCardsCount: tracked.length,
     totalCardsCount: cards.length,
@@ -229,133 +268,56 @@ export function calculateCreditUtilization(debts: readonly ProgressDebtItem[]): 
   };
 }
 
-/** Compute real earned payoff milestones. */
+/** Milestones supported by confirmed recorded debt payments. History may be partial. */
 export function calculateMilestones(params: {
   debts: readonly ProgressDebtItem[];
   transactions: readonly LedgerTransaction[];
+  currencyCode?: string;
 }): Milestone[] {
-  const { debts, transactions } = params;
-
-  // Pending balance changes are not authoritative even when their displayed balance is zero.
-  // Until a fresh authoritative debt snapshot is loaded, withhold balance-based awards.
-  const hasPendingBalanceWrites = transactions.some(tx => tx.isPending && tx.accountId !== null);
-
-  // Real recorded payments (excluding reconciliation drift adjustments and unverified pending payments)
-  const paymentTxs = transactions.filter(
-    tx => tx.deletedAt === null && tx.category === 'payment' && tx.source !== 'reconciliation' && !tx.isPending
+  const { debts, transactions, currencyCode = 'USD' } = params;
+  const debtIds = new Set(debts.map(debt => debt.id));
+  const paymentTxs = transactions.filter(tx =>
+    tx.deletedAt === null && !tx.isPending && tx.category === 'payment' &&
+    tx.source !== 'reconciliation' && tx.accountId !== null && debtIds.has(tx.accountId) && tx.amount.minorUnits > 0
   );
-  const totalPaymentsAmount = paymentTxs.reduce(
-    (sum, tx) => sum + tx.amount.minorUnits / 100,
-    0
-  );
-
-  // Total debt starting vs current
-  const totalCurrentDebt = debts.reduce((sum, d) => sum + Math.max(0, d.balance), 0);
-  const totalStartingDebt = debts.reduce(
-    (sum, d) => sum + Math.max(0, d.originalBalance ?? d.balance),
-    0
-  );
-
-  const totalReduction = Math.max(0, totalStartingDebt - totalCurrentDebt);
-  const overallProgressPercent =
-    totalStartingDebt > 0
-      ? Math.min(100, Math.round((totalReduction / totalStartingDebt) * 100))
-      : totalCurrentDebt === 0 ? 100 : 0;
-
-  const paidOffAccountsCount = debts.filter(d => d.balance <= 0).length;
-  const utilization = calculateCreditUtilization(debts);
-
-  const milestones: Milestone[] = [
-    {
-      id: 'first_payment',
-      title: 'First payment recorded',
-      description: 'Record your first debt payment in the ledger',
-      targetValue: 1,
-      currentValue: paymentTxs.length,
-      percent: paymentTxs.length >= 1 ? 100 : 0,
-      status: paymentTxs.length >= 1 ? 'completed' : 'in_progress',
-      earnedDate: paymentTxs.length >= 1 ? paymentTxs[paymentTxs.length - 1].date : null,
-    },
-    {
-      id: 'first_debt_cleared',
-      title: 'First debt paid off',
-      description: 'Bring any card or loan balance completely down to $0',
-      targetValue: 1,
-      currentValue: paidOffAccountsCount,
-      percent: paidOffAccountsCount >= 1 ? 100 : 0,
-      status: paidOffAccountsCount >= 1 ? 'completed' : 'in_progress',
-    },
-    {
-      id: 'first_1000',
-      title: 'First $1,000 paid down',
-      description: 'Pay down $1,000 in recorded debt payments',
-      targetValue: 1000,
-      currentValue: Math.round(totalPaymentsAmount * 100) / 100,
-      percent: Math.min(100, Math.round((totalPaymentsAmount / 1000) * 100)),
-      status: totalPaymentsAmount >= 1000 ? 'completed' : 'in_progress',
-    },
-    {
-      id: 'progress_25',
-      title: '25% Debt Free',
-      description: 'Eliminate one-quarter of your total debt obligations',
-      targetValue: 25,
-      currentValue: overallProgressPercent,
-      percent: Math.min(100, Math.round((overallProgressPercent / 25) * 100)),
-      status: overallProgressPercent >= 25 ? 'completed' : overallProgressPercent > 0 ? 'in_progress' : 'locked',
-    },
-    {
-      id: 'progress_50',
-      title: 'Halfway Mark (50%)',
-      description: 'Pay off half of your total debt obligations',
-      targetValue: 50,
-      currentValue: overallProgressPercent,
-      percent: Math.min(100, Math.round((overallProgressPercent / 50) * 100)),
-      status: overallProgressPercent >= 50 ? 'completed' : overallProgressPercent >= 25 ? 'in_progress' : 'locked',
-    },
-    {
-      id: 'credit_util_30',
-      title: 'Under 30% Credit Utilization',
-      description: 'Lower overall credit card utilization below the 30% healthy threshold',
-      targetValue: 30,
-      currentValue: utilization.utilizationPercent,
-      percent:
-        utilization.totalLimit > 0
-          ? utilization.utilizationPercent <= 30
-            ? 100
-            : Math.max(0, Math.round(((100 - utilization.utilizationPercent) / 70) * 100))
-          : 0,
-      status:
-        utilization.totalLimit > 0 && utilization.utilizationPercent <= 30
-          ? 'completed'
-          : utilization.totalLimit > 0
-            ? 'in_progress'
-            : 'locked',
-    },
-    {
-      id: 'progress_75',
-      title: '75% Debt Free',
-      description: 'Three-quarters of your debt eliminated',
-      targetValue: 75,
-      currentValue: overallProgressPercent,
-      percent: Math.min(100, Math.round((overallProgressPercent / 75) * 100)),
-      status: overallProgressPercent >= 75 ? 'completed' : overallProgressPercent >= 50 ? 'in_progress' : 'locked',
-    },
-    {
-      id: 'progress_100',
-      title: '100% Debt Free!',
-      description: 'All active credit cards and loans completely paid off',
-      targetValue: 100,
-      currentValue: overallProgressPercent,
-      percent: overallProgressPercent,
-      status: overallProgressPercent >= 100 ? 'completed' : 'in_progress',
-    },
-  ];
-
-  if (hasPendingBalanceWrites) {
-    const balanceMilestones = new Set(['first_debt_cleared', 'progress_25', 'progress_50', 'progress_75', 'progress_100', 'credit_util_30']);
-    return milestones.map(m => balanceMilestones.has(m.id)
-      ? { ...m, status: 'locked' as const, earnedDate: null }
-      : m);
+  for (const tx of paymentTxs) {
+    if (tx.amount.currency !== currencyCode) {
+      throw new TypeError(`Currency mismatch: milestones expected ${currencyCode}, transaction has ${tx.amount.currency}`);
+    }
   }
-  return milestones;
+  const debtById = new Map(debts.map(debt => [debt.id, debt]));
+  const total = roundToCurrency(paymentTxs.reduce((sum, tx) => sum - moneyToMajor(calculateTransactionBalanceDelta(tx, debtById.get(tx.accountId!)!.category)), 0), currencyCode);
+  const firstDate = paymentTxs.reduce<string | null>((first, tx) => !first || tx.date < first ? tx.date : first, null);
+  const utilization = calculateCreditUtilization(debts, currencyCode);
+  const hasPendingBalanceWrites = transactions.some(tx => tx.isPending && tx.deletedAt === null && tx.accountId !== null);
+  const unavailable = (id: string, title: string, targetValue: number): Milestone => ({
+    id, title, targetValue, currentValue: 0, percent: 0, status: 'locked',
+    description: 'Unavailable: recorded payoff events and complete history coverage are needed.',
+  });
+  return [
+    {
+      id: 'first_payment', title: 'First payment recorded',
+      description: 'Record your first debt payment in the ledger', targetValue: 1,
+      currentValue: paymentTxs.length, percent: paymentTxs.length ? 100 : 0,
+      status: paymentTxs.length ? 'completed' : 'in_progress', earnedDate: firstDate,
+    },
+    unavailable('first_debt_cleared', 'First debt paid off', 1),
+    {
+      id: 'first_1000', title: 'First 1,000 in payment balance reduction',
+      description: 'Record 1,000 in payment balance reductions; unallocated auto and mortgage payments do not count.', targetValue: 1000,
+      currentValue: total, percent: Math.min(100, Math.round(total / 10)),
+      status: total >= 1000 ? 'completed' : 'in_progress',
+    },
+    unavailable('progress_25', '25% Debt Free', 25),
+    unavailable('progress_50', 'Halfway Mark (50%)', 50),
+    {
+      id: 'credit_util_30', title: 'Current credit utilization at or below 30%',
+      description: hasPendingBalanceWrites ? 'Unavailable while balance changes are pending.' : utilization.totalLimit > 0 ? 'Current-state goal based on tracked card balances and limits; not a historical achievement.' : 'Unavailable until a card with a credit limit is tracked.',
+      targetValue: 30, currentValue: utilization.utilizationPercent,
+      percent: !hasPendingBalanceWrites && utilization.totalLimit > 0 ? utilization.utilizationPercent <= 30 ? 100 : Math.max(0, Math.round((100 - utilization.utilizationPercent) / 70 * 100)) : 0,
+      status: hasPendingBalanceWrites || utilization.totalLimit <= 0 ? 'locked' : utilization.utilizationPercent <= 30 ? 'completed' : 'in_progress',
+    },
+    unavailable('progress_75', '75% Debt Free', 75),
+    unavailable('progress_100', '100% Debt Free', 100),
+  ];
 }

@@ -1,15 +1,12 @@
 import { useState } from 'react';
 import {
   Modal,
-  Pressable,
-  ScrollView,
   StyleSheet,
-  Text,
   TouchableWithoutFeedback,
-  View,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import { Pressable, ScrollView, Text, View } from './NativeAppearance';
 import { AppIcon, type AppIconName } from './AppIcon';
 
 export type DropdownOption<T extends string | number> = {
@@ -94,7 +91,7 @@ export function SelectDropdown<T extends string | number>({
                     onPress={() => setModalVisible(false)}
                     style={styles.closeButton}
                   >
-                    <Text style={styles.closeButtonText}>✕</Text>
+                    <Text style={styles.closeButtonText}>X</Text>
                   </Pressable>
                 </View>
 

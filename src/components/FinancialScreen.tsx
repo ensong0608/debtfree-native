@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
+import { Pressable, ScrollView, Text, View, appearanceColor, useNativeAppearance } from './NativeAppearance';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { AppIcon } from './AppIcon';
+import { SelectDropdown, type DropdownOption } from './SelectDropdown';
 import { formatCurrency, categoryDebts, calculateBalanceSnapshot, type DebtItem } from '../onboarding-domain';
 
 export function FinancialScreen({
@@ -33,7 +35,7 @@ export function FinancialScreen({
           {onSettings && (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Edit setup"
+              accessibilityLabel="Open settings"
               onPress={onSettings}
               style={ui.iconButton}
             >
@@ -108,16 +110,17 @@ export function Bar({ percent }: { percent: number }) {
 }
 
 export function Ring({ percent, label }: { percent: number; label?: string }) {
+  const { isLight } = useNativeAppearance();
   const p = Math.max(0, Math.min(100, percent));
   return (
     <View style={{ width: 112, height: 112, alignItems: 'center', justifyContent: 'center' }}>
       <Svg width={112} height={112} viewBox="0 0 112 112" style={{ position: 'absolute' }}>
-        <Circle cx="56" cy="56" r="48" stroke="#414A45" strokeWidth="9" fill="none" />
+        <Circle cx="56" cy="56" r="48" stroke={appearanceColor('#414A45', isLight)} strokeWidth="9" fill="none" />
         <Circle
           cx="56"
           cy="56"
           r="48"
-          stroke="#81DFD2"
+          stroke={appearanceColor('#81DFD2', isLight)}
           strokeWidth="9"
           fill="none"
           strokeDasharray={`${p * 3.016} 301.6`}
@@ -132,13 +135,14 @@ export function Ring({ percent, label }: { percent: number; label?: string }) {
 }
 
 export function Gauge({ label = '—' }: { label?: string }) {
+  const { isLight } = useNativeAppearance();
   return (
     <View style={{ width: 124, alignItems: 'center' }}>
       <View style={{ width: 120, height: 68, alignItems: 'center', justifyContent: 'flex-end' }}>
         <Svg width={120} height={68} viewBox="0 0 120 68" style={{ position: 'absolute', top: 0 }}>
           <Path
             d="M12 58 A48 48 0 0 1 108 58"
-            stroke="#414A45"
+            stroke={appearanceColor('#414A45', isLight)}
             strokeWidth="10"
             strokeLinecap="round"
             fill="none"
@@ -170,12 +174,15 @@ export function SnapshotCard({
 }) {
   const [selected, setSelected] = useState<string>(categories[0]);
   const stats = snapshot(categoryDebts(debts, selected));
+  const selectedDebts = categoryDebts(debts, selected);
+  const options: readonly DropdownOption<string>[] = categories.map(value => ({ value, label: value, icon: value === 'Auto' ? 'auto' : value === 'Home' ? 'homeLoan' : 'creditCard' }));
   return (
     <Card>
-      <Segments items={categories} selected={selected} onSelect={setSelected} />
+      <SelectDropdown label="Debt category" value={selected} options={options} onSelect={setSelected} sheetTitle="Choose debt category" />
       <View style={[ui.row, { gap: 16 }]}>
         <Ring percent={stats.percent} label="snapshot" />
         <View style={{ flex: 1, gap: 6 }}>
+          <Text style={ui.small}>{`${selectedDebts.length} accounts`}</Text>
           <View>
             <Text style={ui.small}>Balance change</Text>
             <Text style={ui.value}>{formatCurrency(stats.paid, currencySymbol)}</Text>

@@ -12,6 +12,27 @@ import { type RecurringBill, type RecurringBillCategory, type RecurringBillPayme
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { canonicalDebtAmount } from '../debt-storage-domain.ts';
 
+export type FinanceSnapshotStatus =
+  | 'authoritative'
+  | 'authoritative_with_pending_writes'
+  | 'cached'
+  | 'cached_with_pending_writes';
+
+/** A cache or a server read with unresolved writes is never a fully verified snapshot. */
+export function classifyFinanceSnapshot(
+  source: 'authoritative' | 'cache',
+  hasUnresolvedPendingWrites: boolean,
+): FinanceSnapshotStatus {
+  if (source === 'authoritative') {
+    return hasUnresolvedPendingWrites ? 'authoritative_with_pending_writes' : 'authoritative';
+  }
+  return hasUnresolvedPendingWrites ? 'cached_with_pending_writes' : 'cached';
+}
+
+export function isCompleteAuthoritativeFinanceSnapshot(status: FinanceSnapshotStatus): boolean {
+  return status === 'authoritative';
+}
+
 export function moneyToCanonicalDecimal(money: Money): string {
   const { scale } = getCurrency(money.currency);
   const divisor = 10 ** scale;
@@ -30,6 +51,21 @@ export function mergeFinanceRowsWithPendingWrites<T extends { id: string }>(
     else merged.set(id, row as T);
   }
   return [...merged.values()];
+}
+
+/** Rebase a caller snapshot on cached rows without allowing a stale array to erase
+ * work for other row IDs that was serialized after that snapshot was captured. */
+export function rebaseFinanceCacheRows<T extends { id: string }>(
+  cached: readonly T[],
+  supplied: readonly T[],
+  overrides: readonly T[] = [],
+  removeIds: readonly string[] = [],
+): T[] {
+  const byId = new Map(cached.map(row => [row.id, row]));
+  for (const row of supplied) if (!byId.has(row.id)) byId.set(row.id, row);
+  for (const row of overrides) byId.set(row.id, row);
+  for (const id of removeIds) byId.delete(id);
+  return [...byId.values()];
 }
 
 export type SupabaseTransactionRow = {
@@ -329,6 +365,7 @@ export function decodeRecurringBillRow(
     autoPost: Boolean(row.auto_post),
     active: Boolean(row.active),
     createdAt: String(row.created_at ?? ''),
+    updatedAt: row.updated_at ? String(row.updated_at) : undefined,
   };
 }
 

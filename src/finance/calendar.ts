@@ -1,7 +1,7 @@
 /** A validated Gregorian date in the inclusive range 0001-01-01..9999-12-31. */
 export type DateOnly = string & { readonly __dateOnly: unique symbol };
 export type DatePeriod = Readonly<{ start: DateOnly; endExclusive: DateOnly }>;
-function daysInMonth(year: number, month: number): number {
+export function daysInMonth(year: number, month: number): number {
   return [31, (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
 }
 export function parseDateOnly(value: string): DateOnly {
@@ -13,6 +13,16 @@ export function parseDateOnly(value: string): DateOnly {
 }
 function dateFromParts(year: number, month: number, day: number): DateOnly {
   return parseDateOnly(`${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+}
+/** Add calendar days to a date-only value without consulting the device time zone. */
+export function addCalendarDays(value: DateOnly, days: number): DateOnly {
+  const date = parseDateOnly(value);
+  if (!Number.isSafeInteger(days)) throw new RangeError('Calendar day offset must be an integer');
+  const result = new Date(0);
+  result.setUTCFullYear(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10)));
+  result.setUTCHours(0, 0, 0, 0);
+  result.setUTCDate(result.getUTCDate() + days);
+  return dateFromParts(result.getUTCFullYear(), result.getUTCMonth() + 1, result.getUTCDate());
 }
 /** Offset from the first payment's month, preserving the original requested day. */
 export function monthlyPaymentDate(firstPayment: DateOnly, requestedDay: number, monthOffset: number): DateOnly {
@@ -49,3 +59,47 @@ export function dateInPeriod(date: DateOnly, period: DatePeriod): boolean {
 export function instantInPeriod(instant: Date, timeZone: string, period: DatePeriod): boolean {
   return dateInPeriod(householdDate(instant, timeZone), period);
 }
+
+/**
+ * Returns the current calendar date interpreted under the given or device IANA time zone.
+ * Avoids UTC boundary shifts around midnight and month transitions.
+ */
+export function currentHouseholdDate(timeZone?: string, now = new Date()): DateOnly {
+  const tz =
+    timeZone && /^(?:[A-Za-z_+-]+(?:\/[A-Za-z0-9_+.-]+)+|UTC)$/.test(timeZone)
+      ? timeZone
+      : Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  return householdDate(now, tz);
+}
+
+/** Returns the current calendar month in YYYY-MM format under the household time zone. */
+export function currentHouseholdMonth(timeZone?: string, now = new Date()): string {
+  return currentHouseholdDate(timeZone, now).slice(0, 7);
+}
+
+/** Computes the previous calendar month string (YYYY-MM). */
+export function getPreviousMonthString(monthStr: string): string {
+  const match = /^(\d{4})-(\d{2})/.exec(monthStr);
+  if (!match) return currentHouseholdMonth();
+  let y = Number(match[1]);
+  let m = Number(match[2]) - 1;
+  if (m < 1) {
+    m = 12;
+    y -= 1;
+  }
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
+}
+
+/** Computes the next calendar month string (YYYY-MM). */
+export function getNextMonthString(monthStr: string): string {
+  const match = /^(\d{4})-(\d{2})/.exec(monthStr);
+  if (!match) return currentHouseholdMonth();
+  let y = Number(match[1]);
+  let m = Number(match[2]) + 1;
+  if (m > 12) {
+    m = 1;
+    y += 1;
+  }
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
+}
+

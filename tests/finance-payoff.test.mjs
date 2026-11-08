@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { calculateIndependentMortgageProjections } from '../src/onboarding-domain.ts';
 const require = createRequire(import.meta.url);
 const { calculatePayoff, rankAcceleratedAccounts } = require('../src/finance/payoff.ts');
 const m = (minorUnits, currency = 'USD') => ({ currency, minorUnits });
@@ -9,6 +10,25 @@ const a = (accountId, balance, aprThousandths = 0, minimum = 0, inclusion = 'acc
 const input = (accounts, commitment, extra = 0) => ({ accounts: { status: 'available', data: accounts, context }, currency: 'USD', strategy: 'snowball', extraMonthlyPayment: m(extra), ...(commitment === undefined ? {} : { fixedMonthlyCommitment: m(commitment) }), assumptions: { firstPaymentDate: '2024-01-31', requestedDay: 31, householdTimeZone: 'America/Los_Angeles' } });
 const n = x => x.minorUnits;
 const run = (accounts, cap, extra) => calculatePayoff(input(accounts, cap, extra));
+test('mortgage projections retain per-account escrow and extra assumptions without rollover', () => {
+  const mortgages = [
+    { id:'home-a', name:'Home A', category:'Mortgage', balance:200, originalBalance:200, apr:0, minimumPayment:1000, dueDay:1 },
+    { id:'home-b', name:'Home B', category:'Mortgage', balance:5000, originalBalance:5000, apr:0, minimumPayment:700, dueDay:1 },
+  ];
+  const projections = calculateIndependentMortgageProjections(
+    mortgages, 'snowball', { 'home-a':200, 'home-b':100 }, { 'home-a':0, 'home-b':50 },
+    new Date('2026-11-07T20:00:00Z'), 'USD', 'UTC',
+  );
+  assert.equal(projections.find(row => row.debt.id === 'home-a').projection.firstMonthPayment, 200);
+  assert.equal(projections.find(row => row.debt.id === 'home-b').projection.firstMonthPayment, 650);
+  assert.equal(projections.find(row => row.debt.id === 'home-b').escrow, 100);
+  assert.deepEqual(projections.find(row => row.debt.id === 'home-b').projection.monthlySchedule.map(row => row.payment), [650,650,650,650,650,650,650,450]);
+});
+test('mortgage projections require known valid escrow and never infer it', () => {
+  const mortgage = { id:'home', name:'Home', category:'Mortgage', balance:10000, originalBalance:10000, apr:4, minimumPayment:1200, dueDay:1 };
+  assert.deepEqual(calculateIndependentMortgageProjections([mortgage], 'snowball', {}, {}, new Date('2026-11-07T20:00:00Z')), []);
+  assert.deepEqual(calculateIndependentMortgageProjections([mortgage], 'snowball', { home:1300 }, {}, new Date('2026-11-07T20:00:00Z')), []);
+});
 test('S1 and S8: zero interest, final cap, recurrence and conservation', () => {
   const r = run([a('A',10000)],3000);
   assert.equal(r.status,'paidOff'); assert.equal(r.monthsToPayoff,4);

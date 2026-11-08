@@ -37,6 +37,13 @@ export function validateStoredAmounts(data: UserOnboardingData): void {
     canonicalOptionalDebtAmount(debt.originalBalance, currency);
     canonicalOptionalDebtAmount(debt.creditLimit, currency);
   }
+  for (const escrow of Object.values(data.mortgageEscrowByDebtId ?? {})) canonicalDebtAmount(escrow, currency);
+  for (const extra of Object.values(data.mortgageExtraPaymentByDebtId ?? {})) canonicalDebtAmount(extra, currency);
+  for (const [billId, label] of Object.entries(data.recurringBillCategoryLabelByBillId ?? {})) {
+    if (!billId.trim() || typeof label !== 'string' || !label.trim() || label.trim() !== label || label.length > 40) {
+      throw new TypeError('Invalid recurring bill custom category label');
+    }
+  }
 }
 export type MonetaryRecordsContext = {
   transactions: readonly { readonly id: string }[];
@@ -53,7 +60,9 @@ export function hasMonetaryRecords(
     (data.debts?.length ?? 0) > 0 ||
     data.primaryIncomeAmount !== 0 ||
     (data.additionalIncomes?.length ?? 0) > 0 ||
-    data.extraMonthlyPayment !== 0;
+    data.extraMonthlyPayment !== 0 ||
+    Object.keys(data.mortgageEscrowByDebtId ?? {}).length > 0 ||
+    Object.keys(data.mortgageExtraPaymentByDebtId ?? {}).length > 0;
 
   const hasFinanceMoney =
     context.transactions.length > 0 ||

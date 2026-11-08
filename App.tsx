@@ -31,8 +31,60 @@ import {
 import { loadUserOnboardingData, resetUserOnboardingData, OnboardingDataUnavailableError } from './src/onboarding-storage';
 import { AppIcon } from './src/components/AppIcon';
 import { DebtFreeFlow } from './src/OnboardingAndHome';
+import { acceptOnboardingSnapshot } from './src/onboarding-snapshot';
+import {
+  PROTOTYPE_HOUSEHOLD_ONBOARDING_DATA,
+} from './src/finance/prototype-loader';
+import { seedPrototypeHouseholdToStorage } from './src/finance-storage';
+import { isLocalAcceptanceEnabled, loadLocalAcceptanceFixture, saveLocalAcceptanceFixture } from './src/dev/local-acceptance';
 
 type AuthScreenState = 'checking' | 'ready' | 'unavailable';
+
+function LocalAcceptanceEntry() {
+  const [data, setData] = useState<UserOnboardingData | null>(null);
+  const [stage, setStage] = useState<FlowStage>('home');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    loadLocalAcceptanceFixture().then(fixture => {
+      if (active) { setData(fixture); setStage('home'); }
+    }).catch(err => {
+      if (active) setError(err instanceof Error ? err.message : String(err));
+    });
+    return () => { active = false; };
+  }, []);
+
+  if (!data) return (
+    <View style={styles.root}>
+      <SafeAreaView style={styles.centered} edges={['top', 'bottom', 'left', 'right']}>
+        {error ? <Text accessibilityRole="alert" style={styles.unavailableError}>{`Local acceptance setup failed: ${error}`}</Text> : <ActivityIndicator size="large" color="#58CBD0" />}
+      </SafeAreaView>
+    </View>
+  );
+
+  return <DebtFreeFlow
+    key={`local-acceptance-${data.userId}`}
+    session={null}
+    onboardingData={data}
+    stage={stage}
+    onChangeStage={setStage}
+    onUpdateOnboardingData={next => {
+      if (next.userId !== 'local-acceptance-owner-v1' || next.householdId !== 'hh-local-acceptance-owner-v1') return;
+      setData(next);
+      void saveLocalAcceptanceFixture(next).then(setData).catch(err => setError(err instanceof Error ? err.message : String(err)));
+    }}
+    onGoogleSignIn={async () => null}
+    onAppleSignIn={async () => null}
+    onSignOut={async () => {}}
+    appleAvailable={false}
+    configured={false}
+    configProblem={null}
+    authBusy={false}
+    authError={error}
+    authNotice=""
+    onClearAuthError={() => setError('')}
+  />;
+}
 
 function RootApp() {
   const insets = useSafeAreaInsets();
@@ -328,87 +380,12 @@ function RootApp() {
     );
   }
 
+  const previewAllowed = __DEV__ && configured && process.env.EXPO_PUBLIC_ENABLE_SANDBOX_PREVIEW === 'true';
   const continueAsTestUser = () => {
-    const testUserId = 'test-user-preview';
-    const testData: UserOnboardingData = {
-      version: 1,
-      userId: testUserId,
-      householdId: 'hh-test-preview',
-      currentStage: 'home',
-      signupCompleted: true,
-      onboardingCompleted: true,
-      goals: ['Pay down my credit card debt'],
-      referralSource: 'Friend or family',
-      consideredBeforeAi: null,
-      countryCode: 'US',
-      currencyCode: 'USD',
-      managesWithPartner: false,
-      worksWithProfessional: false,
-      primaryIncomeAmount: 5200,
-      primaryPayFrequency: 'monthly',
-      primaryMonthlyIncome: 5200,
-      additionalIncomes: [],
-      selectedPlan: 'premium',
-      homeStatus: 'Rent',
-      vehicleStatus: 'Own',
-      debts: [
-        {
-          id: 'debt-chase-sapphire',
-          name: 'Chase Sapphire',
-          category: 'Credit card',
-          balance: 3450.00,
-          originalBalance: 4000.00,
-          apr: 21.99,
-          minimumPayment: 95.00,
-          dueDay: 15,
-          creditLimit: 8000.00,
-          createdAt: '2026-01-01T00:00:00Z',
-          updatedAt: '2026-11-01T00:00:00Z',
-          serverVersion: 1,
-        },
-        {
-          id: 'debt-citi-double',
-          name: 'Citi Double Cash',
-          category: 'Credit card',
-          balance: 1850.50,
-          originalBalance: 2500.00,
-          apr: 19.24,
-          minimumPayment: 55.00,
-          dueDay: 22,
-          creditLimit: 5000.00,
-          createdAt: '2026-01-01T00:00:00Z',
-          updatedAt: '2026-11-01T00:00:00Z',
-          serverVersion: 1,
-        },
-        {
-          id: 'debt-auto-loan',
-          name: 'Auto Loan',
-          category: 'Auto loan',
-          balance: 8200.00,
-          originalBalance: 15000.00,
-          apr: 5.49,
-          minimumPayment: 285.00,
-          dueDay: 5,
-          creditLimit: null,
-          createdAt: '2026-01-01T00:00:00Z',
-          updatedAt: '2026-11-01T00:00:00Z',
-          serverVersion: 1,
-        },
-      ],
-      strategy: 'snowball',
-      extraMonthlyPayment: 150,
-      notifications: {
-        upcomingReminders: true,
-        overdueAlerts: true,
-        milestonesAndProgress: true,
-        permissionRequested: true,
-        osPermissionStatus: 'granted',
-      },
-      completedAt: '2026-11-01T00:00:00Z',
-      updatedAt: '2026-11-01T00:00:00Z',
-    };
-    setOnboardingData(testData);
+    if (!previewAllowed || sessionRef.current) return;
+    setOnboardingData(PROTOTYPE_HOUSEHOLD_ONBOARDING_DATA);
     setStage('home');
+    void seedPrototypeHouseholdToStorage('test-user-preview');
   };
 
   return (
@@ -424,13 +401,13 @@ function RootApp() {
         }}
         onUpdateOnboardingData={next => {
           if (!session?.user.id || (sessionRef.current?.user.id === session.user.id && next.userId === session.user.id)) {
-            setOnboardingData(next);
+            setOnboardingData(current => acceptOnboardingSnapshot(current, next));
           }
         }}
         onGoogleSignIn={() => login(signInWithGoogle)}
         onAppleSignIn={() => login(signInWithApple)}
         onSignOut={logout}
-        onTestUserSignIn={continueAsTestUser}
+        onTestUserSignIn={previewAllowed && !session ? continueAsTestUser : undefined}
         appleAvailable={appleAvailable}
         configured={configured}
         configProblem={configProblem}
@@ -460,6 +437,9 @@ function RootApp() {
 }
 
 export default function App() {
+  if (isLocalAcceptanceEnabled()) {
+    return <SafeAreaProvider><LocalAcceptanceEntry /></SafeAreaProvider>;
+  }
   return (
     <SafeAreaProvider>
       <RootApp />

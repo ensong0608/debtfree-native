@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateMonthlyCashflow, calculateCategoryBreakdown } from '../src/finance/budget.ts';
+import { calculateMonthlyCashflow, calculateCategoryBreakdown, summarizeSinglePurchases } from '../src/finance/budget.ts';
 import { makeMoney } from '../src/finance/money.ts';
 
 test('T-028: calculateMonthlyCashflow correctly differentiates debit cashflow from credit charges', () => {
@@ -147,6 +147,21 @@ test('T-028: calculateCategoryBreakdown categorizes bills and debt plan', () => 
   assert.equal(subItem.count, 1);
 });
 
+test('T-079: custom recurring labels are grouped by reusable name while storage stays other_bill', () => {
+  const bills = [
+    { id: 'driveway', name: 'Gas', category: 'other_bill', amount: makeMoney('USD', 7200), dueDay: 3, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-11-01T00:00:00Z' },
+    { id: 'parking', name: 'Parking', category: 'other_bill', amount: makeMoney('USD', 1800), dueDay: 10, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-11-01T00:00:00Z' },
+    { id: 'misc', name: 'Other fee', category: 'other_bill', amount: makeMoney('USD', 500), dueDay: 20, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-11-01T00:00:00Z' },
+  ];
+  const rows = calculateCategoryBreakdown({ recurringBills: bills, customCategoryLabelsByBillId: { driveway: 'Transportation', parking: 'transportation' }, monthlyIncome: 1000, monthlyDebtPlanPayment: 0, currencyCode: 'USD' });
+  const transportation = rows.find(row => row.categoryKey === 'custom:transportation');
+  assert.equal(transportation.label, 'Transportation');
+  assert.equal(transportation.amount, 90);
+  assert.equal(transportation.count, 2);
+  assert.equal(rows.find(row => row.categoryKey === 'other_bill').amount, 5);
+  assert.equal(bills[0].category, 'other_bill');
+});
+
 test('cashflow and category amounts retain 0, 3, and 4 decimal currency scales', () => {
   for (const sample of [
     { code: 'JPY', units: 1, income: 10, expected: 1 },
@@ -164,3 +179,17 @@ test('cashflow and category amounts retain 0, 3, and 4 decimal currency scales',
     assert.equal(categories.find(item => item.categoryKey === 'utilities').amount, sample.expected);
   }
 });
+
+test('single purchases include only confirmed standalone purchases in the selected month', () => {
+  const base = { id: 'one', accountId: 'card', date: '2026-11-03', amount: makeMoney('USD', 1250), category: 'purchase', payee: 'Shop', source: 'manual', reconciled: false, createdAt: '2026-11-03', deletedAt: null };
+  const transactions = [base, { ...base, id: 'two', amount: makeMoney('USD', 99) },
+    { ...base, id: 'pending', isPending: true }, { ...base, id: 'deleted', deletedAt: '2026-11-04' },
+    { ...base, id: 'bill:abc:2026-11-01' }, { ...base, id: 'memo', memo: '[bill:abc]' },
+    { ...base, id: 'source', source: 'recurring_bill' }, { ...base, id: 'other', category: 'payment' },
+    { ...base, id: 'prior', date: '2026-10-31' }];
+  const summary = summarizeSinglePurchases(transactions, '2026-11', 'USD');
+  assert.deepEqual(summary.items.map(tx => tx.id), ['one', 'two']);
+  assert.equal(summary.total, 13.49);
+  assert.equal(summarizeSinglePurchases(transactions, '2026-10', 'USD').total, 12.5);
+});
+

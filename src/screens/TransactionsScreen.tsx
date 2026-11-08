@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as Crypto from 'expo-crypto';
-import { Alert, Modal, Pressable, ScrollView, Text, TextInput, TouchableWithoutFeedback, View } from 'react-native';
+import { Alert, Modal, TouchableWithoutFeedback } from 'react-native';
+import { Pressable, ScrollView, Text, TextInput, View } from '../components/NativeAppearance';
 import { AppIcon } from '../components/AppIcon';
 import { Card, FinancialScreen, ui } from '../components/FinancialScreen';
 import { SelectDropdown, type DropdownOption } from '../components/SelectDropdown';
@@ -11,13 +12,15 @@ import {
   type LedgerTransaction,
   type TransactionCategory,
 } from '../finance/ledger';
-import { makeMoney, moneyFromMajor, moneyToMajor, parseMoney, addMoney } from '../finance/money';
-import { parseDateOnly, type DateOnly } from '../finance/calendar';
+import { makeMoney, moneyFromMajor, moneyToMajor, parseMoney, addMoney, type Money } from '../finance/money';
+import { currentHouseholdDate, currentHouseholdMonth, getNextMonthString, getPreviousMonthString, parseDateOnly, type DateOnly } from '../finance/calendar';
 import { resolveRecurringBillDate, type RecurringBill } from '../finance/recurring-bills';
+import { createDebtMinimumPaymentTransaction, findUnassignedPaymentsForObligation, getObligationPaymentState, getScheduledObligationRows, type PaymentObligation, type ScheduledObligationRow } from '../finance/payment-matching';
+import { type ObligationSchedules } from '../finance/obligation-schedule';
 
 const CATEGORY_CHOICES: { label: string; category: TransactionCategory; isDebt: boolean }[] = [
   { label: 'Payment', category: 'payment', isDebt: true },
-  { label: 'Purchase', category: 'purchase', isDebt: true },
+  { label: 'Single purchase', category: 'purchase', isDebt: true },
   { label: 'Subscription', category: 'subscription', isDebt: true },
   { label: 'Utilities', category: 'utilities', isDebt: true },
   { label: 'Interest', category: 'interest', isDebt: true },
@@ -26,10 +29,6 @@ const CATEGORY_CHOICES: { label: string; category: TransactionCategory; isDebt: 
   { label: 'Debit Bill (Checking)', category: 'debit_bill', isDebt: false },
   { label: 'Debit Spending (Checking)', category: 'debit_spending', isDebt: false },
 ];
-
-function localDateInputValue(date = new Date()): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
 
 export function TransactionsScreen({
   debts,
@@ -41,8 +40,17 @@ export function TransactionsScreen({
   onUpdateTransaction,
   onDeleteTransaction,
   recurringBills = [],
+  obligationSchedules,
+  loanBillPairs = {},
+  householdTimeZone,
   onRecordBillPayment,
+  initialTransactionId,
+  initialSection = 'History',
+  onEditDismiss,
 }: {
+  initialTransactionId?: string | null;
+  initialSection?: string;
+  onEditDismiss?: () => void;
   debts: DebtItem[];
   transactions?: LedgerTransaction[];
   currencySymbol?: string;
@@ -52,9 +60,13 @@ export function TransactionsScreen({
   onUpdateTransaction?: (tx: LedgerTransaction) => unknown;
   onDeleteTransaction?: (txId: string) => unknown;
   recurringBills?: RecurringBill[];
-  onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly) => unknown;
+  obligationSchedules?: ObligationSchedules;
+  loanBillPairs?: Readonly<Record<string, string>>;
+  householdTimeZone?: string;
+  onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly, amount?: Money) => unknown;
 }) {
-  const [tab, setTab] = useState('History');
+  const [tab, setTab] = useState(initialSection);
+  const [scheduledMonthOffset, setScheduledMonthOffset] = useState(0);
   const [accountIdx, setAccountIdx] = useState(0); // 0 = All accounts, 1 = Debit/Checking, 2..N = debt accounts
   const [periodIdx, setPeriodIdx] = useState(0); // 0 = Current month, 1 = Previous month, 2 = All time
   const [typeIdx, setTypeIdx] = useState(0); // 0 = All Types, 1 = Payments, 2 = Charges/Fees, 3 = Debit Only
@@ -67,7 +79,7 @@ export function TransactionsScreen({
   const [newAmount, setNewAmount] = useState('');
   const [newCategoryIdx, setNewCategoryIdx] = useState(0);
   const [newAccountId, setNewAccountId] = useState(debts[0]?.id ?? '');
-  const [newDate, setNewDate] = useState(() => localDateInputValue());
+  const [newDate, setNewDate] = useState(() => currentHouseholdDate(householdTimeZone));
   const [newAppliesToDate, setNewAppliesToDate] = useState('');
   const [newPrincipal, setNewPrincipal] = useState('');
   const [newInterest, setNewInterest] = useState('');
@@ -75,10 +87,13 @@ export function TransactionsScreen({
   const [newFee, setNewFee] = useState('');
   const [savingTx, setSavingTx] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [datePickerMonth, setDatePickerMonth] = useState(() => localDateInputValue().slice(0, 7));
+  const [datePickerMonth, setDatePickerMonth] = useState(() => currentHouseholdMonth(householdTimeZone));
   const [formError, setFormError] = useState('');
   const [billError, setBillError] = useState('');
   const [pendingBillCycle, setPendingBillCycle] = useState<string | null>(null);
+  const [upcomingTarget, setUpcomingTarget] = useState<ScheduledObligationRow | null>(null);
+  const [upcomingBusy, setUpcomingBusy] = useState(false);
+  const [upcomingError, setUpcomingError] = useState('');
 
   // Edit Transaction Form State
   const [editingTx, setEditingTx] = useState<LedgerTransaction | null>(null);
@@ -96,10 +111,9 @@ export function TransactionsScreen({
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingTx, setDeletingTx] = useState(false);
 
-  const now = new Date();
-  const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const prevMonthStr = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
+  const todayStr = currentHouseholdDate(householdTimeZone);
+  const currentMonthStr = currentHouseholdMonth(householdTimeZone);
+  const prevMonthStr = getPreviousMonthString(currentMonthStr);
 
   const accountOptions = [
     { label: 'All accounts', id: 'all' },
@@ -111,6 +125,13 @@ export function TransactionsScreen({
     { value: 0, label: 'Current month', icon: 'calendar', subtitle: 'View transactions for this month' },
     { value: 1, label: 'Previous month', icon: 'calendar', subtitle: 'View transactions from last month' },
     { value: 2, label: 'All time', icon: 'calendar', subtitle: 'Lifetime transaction history' },
+  ];
+  const typeDropdownOptions: readonly DropdownOption<number>[] = [
+    { value: 0, label: 'All types' }, { value: 1, label: 'Payments' },
+    { value: 2, label: 'Charges and fees' }, { value: 3, label: 'Debit only' },
+  ];
+  const sortDropdownOptions: readonly DropdownOption<number>[] = [
+    { value: 0, label: 'Newest first', icon: 'sort' }, { value: 1, label: 'Oldest first', icon: 'sort' },
   ];
 
   const accountFilterDropdownOptions: readonly DropdownOption<number>[] = accountOptions.map((opt, idx) => ({
@@ -139,8 +160,8 @@ export function TransactionsScreen({
     { value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' },
     ...(selectedDebt
       ? [0, 1, 2].map(monthOffset => {
-          const monthDate = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-          const month = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
+          let month = currentMonthStr;
+          for (let offset = 0; offset < monthOffset; offset++) month = getNextMonthString(month);
           const cycleDay = selectedDebt.dueDay ?? Number(newDate.slice(-2));
           const date = resolveRecurringBillDate(month, cycleDay);
           const labelDate = new Date(`${date}T12:00:00`);
@@ -149,6 +170,52 @@ export function TransactionsScreen({
         })
       : []),
   ];
+
+  const upcomingObligation: PaymentObligation | null = upcomingTarget ? {
+    id: upcomingTarget.kind === 'debt' ? `minimum:${upcomingTarget.debt?.id ?? upcomingTarget.id}` : upcomingTarget.bill?.id ?? upcomingTarget.id,
+    kind: upcomingTarget.kind,
+    name: upcomingTarget.name,
+    dueDate: upcomingTarget.dueDate,
+    dueCycleMonth: upcomingTarget.dueCycleMonth,
+    requiredAmount: upcomingTarget.requiredAmount,
+    accountId: upcomingTarget.kind === 'debt' ? upcomingTarget.debt?.id : upcomingTarget.bill?.creditAccountId,
+    billId: upcomingTarget.bill?.id,
+    bill: upcomingTarget.bill,
+    debt: upcomingTarget.debt,
+  } : null;
+  const upcomingPaymentState = upcomingObligation ? getObligationPaymentState(upcomingObligation, transactions, currencyCode) : null;
+  const upcomingCandidates = upcomingObligation ? findUnassignedPaymentsForObligation(upcomingObligation, transactions) : [];
+
+  const matchUpcomingPayment = async (tx: LedgerTransaction) => {
+    if (!upcomingTarget || !upcomingObligation || !onUpdateTransaction || upcomingBusy) return;
+    setUpcomingBusy(true); setUpcomingError('');
+    try {
+      const billId = upcomingTarget.bill?.id;
+      const memo = billId ? (tx.memo?.includes(`[bill:${billId}]`) ? tx.memo : `${tx.memo ?? ''}${tx.memo ? ' ' : ''}[bill:${billId}]`) : tx.memo;
+      await onUpdateTransaction({ ...tx, appliesToDate: upcomingTarget.dueDate, accountId: tx.accountId ?? upcomingObligation.accountId ?? null, memo });
+      setUpcomingTarget(null);
+    } catch (error) { setUpcomingError(error instanceof Error ? error.message : 'Unable to match this payment.'); }
+    finally { setUpcomingBusy(false); }
+  };
+
+  const recordUpcomingPayment = async () => {
+    if (!upcomingTarget || !upcomingPaymentState || upcomingBusy) return;
+    const remaining = upcomingPaymentState.confirmedMatch.remainingAmount;
+    if (remaining.minorUnits <= 0 || upcomingPaymentState.status === 'pending_confirmation') {
+      setUpcomingError('This cycle is already satisfied or has a payment awaiting confirmation.');
+      return;
+    }
+    setUpcomingBusy(true); setUpcomingError('');
+    try {
+      if (upcomingTarget.kind === 'debt' && upcomingTarget.debt && onAddTransaction) {
+        await onAddTransaction(createDebtMinimumPaymentTransaction({ id: `tx:${Crypto.randomUUID()}`, debt: upcomingTarget.debt, today: todayStr, dueDate: upcomingTarget.dueDate, amount: remaining, createdAt: new Date().toISOString() }));
+      } else if (upcomingTarget.kind === 'bill' && upcomingTarget.bill && onRecordBillPayment) {
+        await onRecordBillPayment({ ...upcomingTarget.bill, amount: upcomingTarget.requiredAmount }, upcomingTarget.dueDate, remaining);
+      }
+      setUpcomingTarget(null);
+    } catch (error) { setUpcomingError(error instanceof Error ? error.message : 'Unable to record this payment.'); }
+    finally { setUpcomingBusy(false); }
+  };
 
   // Filter transactions
   const filtered = transactions.filter(tx => {
@@ -303,6 +370,17 @@ export function TransactionsScreen({
     setEditError('');
   };
 
+  useEffect(() => {
+    const target = transactions.find(tx => tx.id === initialTransactionId && tx.deletedAt === null);
+    if (target) handleOpenEdit(target);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTransactionId]);
+
+  useEffect(() => {
+    setTab(initialSection);
+    if (initialSection === 'Scheduled') setScheduledMonthOffset(0);
+  }, [initialSection]);
+
   const handleSaveEdit = async () => {
     if (!editingTx || savingEdit) return;
     setEditError('');
@@ -349,7 +427,7 @@ export function TransactionsScreen({
           );
         }
       }
-      setEditingTx(null);
+      setEditingTx(null); onEditDismiss?.();
     } catch (e) {
       const msg = (e as Error).message || 'Unable to save transaction';
       setEditError(msg);
@@ -379,7 +457,7 @@ export function TransactionsScreen({
           deletedAt: new Date().toISOString(),
         });
       }
-      setEditingTx(null);
+      setEditingTx(null); onEditDismiss?.();
     } catch (e) {
       const msg = (e as Error).message || 'Unable to delete transaction';
       setEditError(msg);
@@ -440,11 +518,11 @@ export function TransactionsScreen({
   return (
     <FinancialScreen
       title="Transactions"
-      segments={['History', 'Scheduled']}
+      segments={['History', 'Upcoming', 'Scheduled']}
       selected={tab}
       onSelect={nextTab => {
         setTab(nextTab);
-        if (nextTab === 'Scheduled') setShowAddForm(false);
+        if (nextTab !== 'History') setShowAddForm(false);
       }}
       onSettings={onSettings}
       onAdd={tab === 'History' && !showAddForm ? () => setShowAddForm(true) : undefined}
@@ -542,7 +620,7 @@ export function TransactionsScreen({
                         </View>
                       ));
                     })()}
-                    <Pressable accessibilityRole="button" onPress={() => { setNewDate(localDateInputValue()); setShowDatePicker(false); }} style={[ui.button, { alignSelf: 'center', marginTop: 8 }]}>
+                    <Pressable accessibilityRole="button" onPress={() => { setNewDate(todayStr); setShowDatePicker(false); }} style={[ui.button, { alignSelf: 'center', marginTop: 8 }]}>
                       <Text style={ui.buttonText}>Today</Text>
                     </Pressable>
                   </View>
@@ -641,41 +719,120 @@ export function TransactionsScreen({
         </Card>
       ) : null}
 
-      {tab === 'Scheduled' ? (
+      {tab === 'Upcoming' ? (
         <Card>
-          <Text style={ui.heading}>Upcoming recurring bills</Text>
-          <Text style={ui.text}>Bills stay unpaid until you confirm them. A confirmation records today as the transaction date and links it to the selected due cycle.</Text>
+          <Text style={ui.heading}>Upcoming and overdue</Text>
+          <Text style={ui.text}>Unpaid obligations due this month, plus genuine unpaid overdue cycles from earlier months.</Text>
           {!!billError ? <Text accessibilityRole="alert" style={ui.text}>{billError}</Text> : null}
           {(() => {
-            const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-            const nextMonthDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-            const nextMonth = `${nextMonthDate.getFullYear()}-${String(nextMonthDate.getMonth() + 1).padStart(2, '0')}`;
-            const upcoming = recurringBills.filter(bill => bill.active).flatMap(bill => [thisMonth, nextMonth].map(month => ({ bill, due: resolveRecurringBillDate(month, bill.dueDay) })))
-              .filter(item => !transactions.some(tx => tx.deletedAt === null && tx.source === 'recurring_bill' &&
-                (tx.id === `bill:${item.bill.id}:${item.due.slice(0, 7)}` || (tx.appliesToDate === item.due && tx.payee === item.bill.name))))
-              .sort((a, b) => a.due.localeCompare(b.due));
-            if (!upcoming.length) return <Text style={[ui.text, { marginTop: 8 }]}>No unpaid recurring bills are scheduled.</Text>;
-            return upcoming.map(({ bill, due }) => (
-              <View key={`${bill.id}:${due}`} style={[ui.divider, ui.row, { justifyContent: 'space-between', gap: 8 }]}>
+            const rows = getScheduledObligationRows({ debts, recurringBills, transactions, asOfDate: todayStr, currencyCode, schedules: obligationSchedules, loanBillPairs })
+              .filter(row => row.state.status !== 'paid' && (row.dueDate.slice(0, 7) === currentMonthStr || row.dueDate < todayStr));
+            const grouped = new Map<string, typeof rows>();
+            for (const row of rows) {
+              const month = row.dueCycleMonth;
+              grouped.set(month, [...(grouped.get(month) ?? []), row]);
+            }
+            if (!rows.length) return <Text style={[ui.text, { marginTop: 8 }]}>Nothing due this month or overdue.</Text>;
+            return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([month, monthRows]) => (
+              <View key={month} style={{ marginTop: 12 }}>
+                <Text style={[ui.heading, { marginBottom: 4 }]}>{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(new Date(`${month}-01T12:00:00`))}</Text>
+                {monthRows.map(row => {
+                  const { bill, debt, dueDate: due, state } = row;
+                  const match = state.confirmedMatch;
+                  const pending = state.status === 'pending_confirmation';
+                  const pastDue = due < todayStr;
+                  return <View key={row.id} style={[ui.divider, ui.row, { justifyContent: 'space-between', gap: 8 }]}>
+                    <View style={{ flex: 1 }}><Text style={ui.heading}>{row.kind === 'debt' ? `${debt?.name ?? row.name} minimum` : bill?.name ?? row.name}</Text><Text style={[ui.small, pastDue ? { color: '#FF9B82' } : null]}>{`${pastDue ? 'Past due since' : 'Due'} ${due} · ${match.isPartiallyPaid ? 'Partially paid' : pending ? 'Awaiting confirmation' : 'Unpaid'}`}</Text></View>
+                    <View style={{ alignItems: 'flex-end', gap: 5 }}><Text style={ui.value}>{formatCurrency(moneyToMajor(match.remainingAmount), currencySymbol)}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Open payment details for ${row.name}`} disabled={pending} onPress={() => { setUpcomingError(''); setUpcomingTarget(row); }} style={[ui.button, { backgroundColor: '#81DFD2' }]}><Text style={[ui.buttonText, { color: '#1B1E1C' }]}>{pending ? 'Awaiting confirmation' : 'Pay now'}</Text></Pressable></View>
+                  </View>;
+                })}
+              </View>
+            ));
+          })()}
+        </Card>
+      ) : tab === 'Scheduled' ? (
+        <Card>
+          <Text style={ui.heading}>Scheduled obligations</Text>
+          <Text style={ui.text}>Browse monthly recurring bills and debt minimums for the next 12 months. Payments are recorded today and linked to the due date.</Text>
+          {(() => {
+            let selectedMonth = currentMonthStr;
+            for (let index = 0; index < scheduledMonthOffset; index += 1) selectedMonth = getNextMonthString(selectedMonth);
+            return <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }]}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Previous scheduled month" disabled={scheduledMonthOffset === 0} onPress={() => setScheduledMonthOffset(value => Math.max(0, value - 1))} style={[ui.button, scheduledMonthOffset === 0 && { opacity: 0.45 }]}><Text style={ui.buttonText}>Previous</Text></Pressable>
+              <Text accessibilityRole="header" style={ui.heading}>{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(new Date(`${selectedMonth}-01T12:00:00`))}</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Next scheduled month" disabled={scheduledMonthOffset >= 11} onPress={() => setScheduledMonthOffset(value => Math.min(11, value + 1))} style={[ui.button, scheduledMonthOffset >= 11 && { opacity: 0.45 }]}><Text style={ui.buttonText}>Next</Text></Pressable>
+            </View>;
+          })()}
+          {!!billError ? <Text accessibilityRole="alert" style={ui.text}>{billError}</Text> : null}
+          {(() => {
+            const allRows = getScheduledObligationRows({
+              debts,
+              recurringBills,
+              transactions,
+              asOfDate: todayStr,
+              currencyCode,
+              schedules: obligationSchedules,
+              loanBillPairs,
+            });
+            let selectedMonth = currentMonthStr;
+            for (let index = 0; index < scheduledMonthOffset; index += 1) selectedMonth = getNextMonthString(selectedMonth);
+            const visibleRows = allRows.filter(row => row.dueCycleMonth === selectedMonth || (scheduledMonthOffset === 0 && row.dueDate < todayStr));
+            if (!visibleRows.length) return <Text style={[ui.text, { marginTop: 8 }]}>No scheduled obligations for this month.</Text>;
+            const grouped = new Map<string, typeof visibleRows>();
+            for (const row of visibleRows) grouped.set(row.dueCycleMonth, [...(grouped.get(row.dueCycleMonth) ?? []), row]);
+            return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([month, monthRows]) => <View key={month} style={{ marginTop: 8 }}>
+              <Text style={[ui.heading, { marginBottom: 4 }]}>{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(new Date(`${month}-01T12:00:00`))}</Text>
+              {monthRows.map(row => {
+              const { bill, debt, dueDate: due, state } = row;
+              const match = state.confirmedMatch;
+              const isPending = state.status === 'pending_confirmation';
+              const isPastDue = due < todayStr && state.status !== 'paid';
+              const busyKey = `${row.kind}:${row.kind === 'debt' ? debt?.id : bill?.id}:${due}`;
+              const displayName = row.kind === 'debt' ? `${debt?.name ?? row.name} minimum` : bill?.name ?? row.name;
+              const recordPayment = async () => {
+                setPendingBillCycle(busyKey);
+                setBillError('');
+                try {
+                  if (row.kind === 'debt' && debt && onAddTransaction) {
+                    await onAddTransaction(createDebtMinimumPaymentTransaction({
+                      id: `tx:${Crypto.randomUUID()}`, debt, today: todayStr, dueDate: due,
+                      amount: match.remainingAmount, createdAt: new Date().toISOString(),
+                    }));
+                  } else if (row.kind === 'bill' && bill) {
+                    await onRecordBillPayment?.(bill, due, match.remainingAmount);
+                  }
+                } catch (error) {
+                  setBillError(error instanceof Error ? error.message : 'Unable to record this payment.');
+                } finally {
+                  setPendingBillCycle(null);
+                }
+              };
+              return (
+              <View key={row.id} style={[ui.divider, ui.row, { justifyContent: 'space-between', gap: 8 }]}>
                 <View style={{ flex: 1 }}>
-                  <Text style={ui.heading}>{bill.name}</Text>
-                  <Text style={ui.small}>{`Due ${due} · ${bill.paymentMethod === 'credit' ? 'Charged to credit card' : 'Paid from checking'}`}</Text>
+                  <Text style={ui.heading}>{displayName}</Text>
+                  <Text style={ui.small}>{`${isPastDue ? 'Past due since ' : 'Due '}${due} · ${row.kind === 'debt' ? 'Minimum payment' : bill?.paymentMethod === 'credit' ? 'Charged to credit card' : 'Paid from checking'}`}</Text>
+                  <Text style={[ui.small, { color: match.isSatisfied ? '#73D882' : isPending ? '#F2C94C' : isPastDue ? '#FF9B82' : '#AAB3AD' }]}>
+                    {match.isSatisfied
+                      ? 'Paid'
+                      : isPending
+                        ? `Awaiting confirmation · ${formatCurrency(moneyToMajor(state.pendingAmount), currencySymbol)} pending`
+                        : match.isPartiallyPaid
+                          ? `Partially paid · ${formatCurrency(moneyToMajor(match.remainingAmount), currencySymbol)} left`
+                          : isPastDue ? 'Past due · Unpaid' : 'Unpaid'}
+                  </Text>
                 </View>
                 <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                  <Text style={ui.value}>{formatCurrency(moneyToMajor(bill.amount), currencySymbol)}</Text>
-                  <Pressable accessibilityRole="button" disabled={!onRecordBillPayment || pendingBillCycle === `${bill.id}:${due}`}
-                    onPress={async () => {
-                      const key = `${bill.id}:${due}`;
-                      setPendingBillCycle(key); setBillError('');
-                      try { await onRecordBillPayment?.(bill, due); }
-                      catch (error) { setBillError(error instanceof Error ? error.message : 'Unable to record this bill.'); }
-                      finally { setPendingBillCycle(null); }
-                    }} style={[ui.button, { backgroundColor: '#81DFD2' }]}>
-                    <Text style={[ui.buttonText, { color: '#1B1E1C' }]}>{pendingBillCycle === `${bill.id}:${due}` ? 'Saving…' : 'Record paid'}</Text>
+                  <Text style={ui.value}>{formatCurrency(moneyToMajor(row.requiredAmount), currencySymbol)}</Text>
+                  <Pressable accessibilityRole="button" disabled={(row.kind === 'debt' ? !onAddTransaction : !onRecordBillPayment) || match.isSatisfied || isPending || pendingBillCycle === busyKey}
+                    onPress={recordPayment} style={[ui.button, { backgroundColor: '#81DFD2' }]}>
+                    <Text style={[ui.buttonText, { color: '#1B1E1C' }]}>{pendingBillCycle === busyKey ? 'Saving…' : match.isSatisfied ? 'Paid' : isPending ? 'Awaiting confirmation' : match.isPartiallyPaid ? 'Record remaining' : 'Record paid'}</Text>
                   </Pressable>
                 </View>
               </View>
-            ));
+              );
+              })}
+            </View>);
           })()}
         </Card>
       ) : (
@@ -744,8 +901,7 @@ export function TransactionsScreen({
             </View>
           </Card>
 
-          <View style={ui.row}>
-            <View style={ui.inputWrap}>
+          <View style={ui.inputWrap}>
               <AppIcon name="search" size={16} color="#AAB3AD" />
               <TextInput
                 accessibilityLabel="Search transactions"
@@ -755,25 +911,10 @@ export function TransactionsScreen({
                 onChangeText={setSearch}
                 style={[ui.input, { borderWidth: 0, paddingHorizontal: 0, paddingVertical: 8 }]}
               />
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Filter by transaction type"
-              style={ui.button}
-              onPress={() => setTypeIdx((typeIdx + 1) % 4)}
-            >
-              <Text style={ui.buttonText}>{['All Types', 'Payments', 'Charges', 'Debit Only'][typeIdx]}</Text>
-              <AppIcon name="chevronDown" size={12} color="#AAB3AD" />
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Change sort order"
-              style={ui.button}
-              onPress={() => setSortAsc(!sortAsc)}
-            >
-              <AppIcon name="sort" size={14} color="#81DFD2" />
-              <Text style={ui.buttonText}>{sortAsc ? 'Oldest' : 'Newest'}</Text>
-            </Pressable>
+          </View>
+          <View style={[ui.row, { gap: 8 }]}>
+            <SelectDropdown value={typeIdx} options={typeDropdownOptions} onSelect={setTypeIdx} sheetTitle="Filter transaction type" style={{ flex: 1 }} />
+            <SelectDropdown value={Number(sortAsc)} options={sortDropdownOptions} onSelect={value => setSortAsc(value === 1)} sheetTitle="Sort transactions" style={{ flex: 1 }} />
           </View>
 
           {sorted.length === 0 ? (
@@ -863,8 +1004,35 @@ export function TransactionsScreen({
         </>
       )}
 
+      <Modal visible={upcomingTarget !== null} transparent animationType="slide" onRequestClose={() => setUpcomingTarget(null)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' }}>
+          <View accessibilityViewIsModal style={{ backgroundColor: '#191F1C', borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: '#313C36', padding: 18, maxHeight: '90%' }}>
+            <View style={[ui.row, { justifyContent: 'space-between', marginBottom: 12 }]}>
+              <View style={{ flex: 1 }}><Text style={ui.title}>{`Payment for ${upcomingTarget?.name ?? ''}`}</Text><Text style={ui.small}>{`Due ${upcomingTarget?.dueDate ?? ''}`}</Text></View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close payment details" onPress={() => setUpcomingTarget(null)} style={ui.button}><Text style={ui.buttonText}>X</Text></Pressable>
+            </View>
+            {!!upcomingError && <Text accessibilityRole="alert" style={[ui.small, { color: '#FF7A59', marginBottom: 8 }]}>{upcomingError}</Text>}
+            <View style={[ui.card, { padding: 12, marginBottom: 12 }]}>
+              <View style={[ui.row, { justifyContent: 'space-between' }]}><View><Text style={ui.small}>Required</Text><Text style={ui.heading}>{formatCurrency(moneyToMajor(upcomingTarget?.requiredAmount ?? makeMoney(currencyCode, 0)), currencySymbol)}</Text></View><View><Text style={ui.small}>Confirmed paid</Text><Text style={ui.heading}>{formatCurrency(moneyToMajor(upcomingPaymentState?.confirmedMatch.totalPaid ?? makeMoney(currencyCode, 0)), currencySymbol)}</Text></View><View><Text style={ui.small}>Remaining</Text><Text style={ui.value}>{formatCurrency(moneyToMajor(upcomingPaymentState?.confirmedMatch.remainingAmount ?? makeMoney(currencyCode, 0)), currencySymbol)}</Text></View></View>
+              {upcomingPaymentState?.pendingAmount.minorUnits ? <Text style={[ui.small, { color: '#F2C94C' }]}>{`${formatCurrency(moneyToMajor(upcomingPaymentState.pendingAmount), currencySymbol)} awaiting confirmation`}</Text> : null}
+            </View>
+            <ScrollView style={{ maxHeight: 290 }} keyboardShouldPersistTaps="handled">
+              <Text style={[ui.heading, { fontSize: 15, marginBottom: 4 }]}>Match a recorded payment</Text>
+              <Text style={[ui.small, { marginBottom: 8 }]}>Link an existing unassigned payment to this due cycle.</Text>
+              {upcomingCandidates.length ? upcomingCandidates.map(tx => <View key={tx.id} style={[ui.divider, ui.row, { justifyContent: 'space-between' }]}>
+                <View style={{ flex: 1 }}><Text style={ui.heading}>{tx.payee}</Text><Text style={ui.small}>{`${tx.date} · ${formatCurrency(moneyToMajor(tx.amount), currencySymbol)}`}</Text></View>
+                <Pressable accessibilityRole="button" accessibilityLabel={`Match payment from ${tx.payee}`} disabled={upcomingBusy || !onUpdateTransaction} onPress={() => void matchUpcomingPayment(tx)} style={ui.button}><Text style={ui.buttonText}>Match</Text></Pressable>
+              </View>) : <Text style={ui.small}>No unassigned payments are available to match.</Text>}
+            </ScrollView>
+            <Pressable accessibilityRole="button" accessibilityLabel="Record a new payment" disabled={upcomingBusy || !upcomingPaymentState || upcomingPaymentState.status === 'pending_confirmation' || upcomingPaymentState.confirmedMatch.remainingAmount.minorUnits <= 0} onPress={() => void recordUpcomingPayment()} style={[ui.button, { alignItems: 'center', marginTop: 12, backgroundColor: '#81DFD2' }]}>
+              <Text style={[ui.buttonText, { color: '#1B1E1C' }]}>{upcomingBusy ? 'Saving…' : `Record new payment${upcomingPaymentState ? ` (${formatCurrency(moneyToMajor(upcomingPaymentState.confirmedMatch.remainingAmount), currencySymbol)})` : ''}`}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
       {/* Edit Transaction Modal */}
-      <Modal visible={editingTx !== null} transparent animationType="slide" onRequestClose={() => setEditingTx(null)}>
+      <Modal visible={editingTx !== null} transparent animationType="slide" onRequestClose={() => { setEditingTx(null); onEditDismiss?.(); }}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' }}>
           <View style={{ backgroundColor: '#191F1C', borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: '#313C36', padding: 18, maxHeight: '90%' }}>
             <ScrollView showsVerticalScrollIndicator={false}>
@@ -873,9 +1041,9 @@ export function TransactionsScreen({
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="Close edit form"
-                  onPress={() => setEditingTx(null)}
+                  onPress={() => { setEditingTx(null); onEditDismiss?.(); }}
                 >
-                  <Text style={{ color: '#AAB3AD', fontSize: 18, fontWeight: 'bold' }}>✕</Text>
+                  <Text style={{ color: '#AAB3AD', fontSize: 18, fontWeight: 'bold' }}>X</Text>
                 </Pressable>
               </View>
 
@@ -1007,7 +1175,7 @@ export function TransactionsScreen({
                   <View style={[ui.row, { justifyContent: 'space-between', marginTop: 6 }]}>
                     <Text style={ui.heading}>{targetEditDebt.name}</Text>
                     <Text style={[ui.value, { fontSize: 13 }]}>
-                      {formatCurrency(editCurrentBal, currencySymbol)} → <Text style={{ color: editAfterBal <= editCurrentBal ? '#81DFD2' : '#E3A088' }}>{formatCurrency(editAfterBal, currencySymbol)}</Text>
+                      {formatCurrency(editCurrentBal, currencySymbol)} â†’ <Text style={{ color: editAfterBal <= editCurrentBal ? '#81DFD2' : '#E3A088' }}>{formatCurrency(editAfterBal, currencySymbol)}</Text>
                     </Text>
                   </View>
                 ) : (
@@ -1025,14 +1193,14 @@ export function TransactionsScreen({
                   style={[ui.button, { backgroundColor: '#81DFD2', justifyContent: 'center', minHeight: 44 }]}
                 >
                   <Text style={[ui.buttonText, { color: '#1B1E1C', fontWeight: 'bold' }]}>
-                    {savingEdit ? 'Saving…' : 'Save Changes'}
+                    {savingEdit ? 'Savingâ€¦' : 'Save Changes'}
                   </Text>
                 </Pressable>
 
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="Cancel edit"
-                  onPress={() => setEditingTx(null)}
+                  onPress={() => { setEditingTx(null); onEditDismiss?.(); }}
                   style={[ui.button, { justifyContent: 'center', minHeight: 40 }]}
                 >
                   <Text style={ui.buttonText}>Cancel</Text>
@@ -1046,7 +1214,7 @@ export function TransactionsScreen({
                   style={[ui.button, { backgroundColor: '#3D2520', borderColor: '#8B4F42', borderWidth: 1, justifyContent: 'center', minHeight: 44 }]}
                 >
                   <Text style={[ui.buttonText, { color: '#FF7A59', fontWeight: 'bold' }]}>
-                    {deletingTx ? 'Deleting…' : 'Delete transaction'}
+                    {deletingTx ? 'Deletingâ€¦' : 'Delete transaction'}
                   </Text>
                 </Pressable>
               </View>

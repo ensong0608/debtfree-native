@@ -361,3 +361,14 @@ test('T-024: Reconciled balance does not double-count same-day drift adjustment 
   assert.equal(resultWithSubsequent.totalCharges.minorUnits, 2500);
 });
 
+
+
+test('T-055-P: reconciliation net change uses allocated balance deltas', () => {
+  const payment = { id: 'loan-payment', accountId: 'loan', date: parseDateOnly('2026-11-01'), amount: makeMoney('USD', 10000), principalAmount: makeMoney('USD', 6000), category: 'payment', payee: 'Bank', source: 'manual', reconciled: false, createdAt: '2026-11-01T00:00:00Z', deletedAt: null };
+  const result = calculateReconciledBalance({ openingBalance: makeMoney('USD', 100000), transactions: [payment], accountId: 'loan', debtCategory: 'Auto loan' });
+  assert.equal(result.totalPayments.minorUnits, 10000);
+  assert.equal(result.netChange.minorUnits, -6000);
+  assert.equal(result.currentBalance.minorUnits - result.startingBalance.minorUnits, result.netChange.minorUnits);
+  const unallocated = calculateReconciledBalance({ openingBalance: makeMoney('USD', 100000), transactions: [{ ...payment, principalAmount: null }], accountId: 'loan', debtCategory: 'Auto loan' });
+  assert.equal(unallocated.netChange.minorUnits, 0);
+});

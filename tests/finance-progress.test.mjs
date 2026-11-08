@@ -112,8 +112,8 @@ test('T-027: calculateActivitySummary aggregates payments, interest, fees, and n
   assert.equal(summary.totalAdjustments, 12.5);
   // Charges: 45 interest + 12.50 adjustment = 57.50. Payments: 200. Net change = 57.50 - 200 = -142.50
   assert.equal(summary.netBalanceChange, -142.5);
-  assert.equal(summary.debtPaidDown, 142.5);
-  assert.equal(summary.accountsPaidOffCount, 0);
+  assert.equal(summary.debtPaidDown, 200);
+  assert.equal(summary.accountsPaidOffCount, null);
   assert.equal(summary.transactionsCount, 3);
 });
 
@@ -176,19 +176,11 @@ test('T-027: calculateMilestones rewards real debt reduction and excludes reconc
   assert.equal(firstPayment.status, 'completed');
   assert.equal(firstPayment.currentValue, 1);
 
-  const firstDebtCleared = milestones.find(m => m.id === 'first_debt_cleared');
-  assert.equal(firstDebtCleared.status, 'completed');
-  assert.equal(firstDebtCleared.currentValue, 1); // card-1 is at 0 balance
-
+  assert.equal(milestones.find(m => m.id === 'first_debt_cleared').status, 'locked');
   const first1000 = milestones.find(m => m.id === 'first_1000');
-  // Only the $500 payment counts, the $250 reconciliation drift is strictly excluded!
   assert.equal(first1000.currentValue, 500);
   assert.equal(first1000.status, 'in_progress');
-  assert.equal(first1000.percent, 50);
-
-  const progress25 = milestones.find(m => m.id === 'progress_25');
-  // Starting debt = 1000 + 4000 = 5000. Current = 0 + 2500 = 2500. Reduction = 50%
-  assert.equal(progress25.status, 'completed');
+  assert.equal(milestones.find(m => m.id === 'progress_25').status, 'locked');
 });
 
 test('T-027: calculateAccountActivities breaks down activity per account', () => {
@@ -222,4 +214,45 @@ test('T-027: calculateAccountActivities breaks down activity per account', () =>
   assert.equal(breakdown[0].payments, 100);
   assert.equal(breakdown[0].charges, 0);
   assert.equal(breakdown[0].transactionCount, 1);
+});
+
+
+test('T-055-P: recorded evidence stays distinct from snapshots, refunds and pending activity', () => {
+  const debt = { id: 'a', name: 'Loan', category: 'Auto loan', balance: 0, originalBalance: 1000, creditLimit: null };
+  const tx = (id, date, category, amount, extra = {}) => ({ id, accountId: 'a', date: parseDateOnly(date), amount: makeMoney('USD', amount), category, payee: 'Bank', source: 'manual', reconciled: false, createdAt: date + 'T00:00:00Z', deletedAt: null, ...extra });
+  const entries = [tx('p', '2026-10-31', 'payment', 10000, { principalAmount: makeMoney('USD', 6000) }), tx('u', '2026-11-01', 'payment', 20000), tx('r', '2026-11-02', 'refund', 3000), tx('c', '2026-11-03', 'credit_adjustment', 7000, { source: 'reconciliation' }), tx('pending', '2026-11-04', 'payment', 90000, { isPending: true })];
+  const summary = period => calculateActivitySummary({ debts: [debt], transactions: entries, period, today: parseDateOnly('2026-11-15') });
+  assert.equal(summary('previous_month').principalReduction, 60);
+  assert.equal(summary('previous_month').accountsPaidOffCount, null);
+  assert.equal(summary('current_month').totalPayments, 200);
+  assert.equal(summary('current_month').principalReduction, 0);
+  assert.equal(summary('current_month').netBalanceChange, -100);
+  assert.equal(summary('current_month').accountsPaidOffCount, null);
+  assert.equal(summary('lifetime').principalReduction, 60);
+  const milestones = calculateMilestones({ debts: [debt], transactions: entries });
+  assert.equal(milestones.find(m => m.id === 'first_1000').currentValue, 60);
+  assert.equal(milestones.find(m => m.id === 'first_payment').status, 'completed');
+  assert.equal(calculateMilestones({ debts: [debt], transactions: entries.slice(2) }).find(m => m.id === 'first_payment').status, 'in_progress');
+});
+
+
+test('T-055-P: payment reduction follows account policy and current utilization is not a payoff event', () => {
+  const debts = [
+    { id: 'card', name: 'Card', category: 'Credit card', balance: 0, originalBalance: 2000, creditLimit: 1000 },
+    { id: 'loan', name: 'Loan', category: 'Personal loan', balance: 0, originalBalance: 2000, creditLimit: null },
+    { id: 'auto', name: 'Auto', category: 'Auto loan', balance: 0, originalBalance: 2000, creditLimit: null },
+  ];
+  const tx = (id, accountId, category, amount, extra = {}) => ({ id, accountId, category, amount: makeMoney('USD', amount), date: parseDateOnly('2026-11-01'), payee: 'Bank', source: 'manual', reconciled: false, createdAt: '2026-11-01T00:00:00Z', deletedAt: null, ...extra });
+  const transactions = [tx('card-payment', 'card', 'payment', 40000), tx('loan-payment', 'loan', 'payment', 70000, { principalAmount: makeMoney('USD', 30000) }), tx('auto-payment', 'auto', 'payment', 90000), tx('refund', 'card', 'refund', 50000), tx('correction', 'card', 'credit_adjustment', 90000, { source: 'reconciliation' })];
+  const summary = calculateActivitySummary({ debts, transactions, period: 'lifetime', today: parseDateOnly('2026-11-15') });
+  assert.equal(summary.totalPayments, 2000);
+  assert.equal(summary.debtPaidDown, 700);
+  assert.equal(summary.netBalanceChange, -2100);
+  const milestones = calculateMilestones({ debts, transactions });
+  assert.equal(milestones.length, 8);
+  assert.equal(milestones.find(m => m.id === 'first_1000').currentValue, 700);
+  assert.equal(milestones.find(m => m.id === 'first_debt_cleared').status, 'locked');
+  assert.match(milestones.find(m => m.id === 'progress_100').description, /coverage/);
+  assert.equal(milestones.find(m => m.id === 'credit_util_30').status, 'completed');
+  assert.match(milestones.find(m => m.id === 'credit_util_30').description, /Current-state/);
 });

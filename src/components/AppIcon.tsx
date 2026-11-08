@@ -1,4 +1,5 @@
-import { View, type StyleProp, type ViewStyle } from 'react-native';
+import { type StyleProp, type ViewStyle } from 'react-native';
+import { View, appearanceColor, useNativeAppearance } from './NativeAppearance';
 import Svg, { Circle, Path, Rect } from 'react-native-svg';
 
 export type NavigationTabIconName = 'home' | 'debt' | 'transactions' | 'budget' | 'progress';
@@ -56,6 +57,7 @@ export function AppIcon({
   selected = false,
   style,
 }: AppIconProps) {
+  const { isLight } = useNativeAppearance();
   return (
     <View
       style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, style]}
@@ -65,7 +67,7 @@ export function AppIcon({
       pointerEvents="none"
     >
       <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" accessible={false}>
-        {renderIconContent(name, color, selected)}
+        {renderIconContent(name, appearanceColor(color, isLight), selected)}
       </Svg>
     </View>
   );

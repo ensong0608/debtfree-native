@@ -10,6 +10,8 @@ import {
 import {
   type RecurringBill,
   createConfirmedRecurringBillTransaction,
+  executeRecurringBillSave,
+  executeRecurringBillRemoval,
 } from './recurring-bills';
 import {
   persistTransaction,
@@ -21,8 +23,8 @@ import {
   type FinanceMutationResult,
   type FinanceSyncStatus,
 } from '../finance-storage';
-import { makeMoney, moneyFromMajor, moneyToMajor, addMoney } from './money';
-import { parseDateOnly, type DateOnly } from './calendar';
+import { makeMoney, moneyFromMajor, moneyToMajor, addMoney, type Money } from './money';
+import { currentHouseholdDate, type DateOnly } from './calendar';
 import { formatCurrency, type DebtItem, type UserOnboardingData } from '../onboarding-domain';
 import { cacheConfirmedDebts } from '../onboarding-storage';
 
@@ -119,6 +121,7 @@ export async function executeReconcileDebt(params: {
   currencySymbol: string;
   currentTransactions: LedgerTransaction[];
   currentAnchors: ReconciliationAnchor[];
+  householdTimeZone?: string;
 }): Promise<ReconcileCommandResult> {
   const {
     session,
@@ -130,14 +133,14 @@ export async function executeReconcileDebt(params: {
     currencySymbol,
     currentTransactions,
     currentAnchors,
+    householdTimeZone,
   } = params;
 
   const oldMoney = moneyFromMajor(item.balance, currencyCode);
   const verifiedMoney = moneyFromMajor(verifiedBalance, currencyCode);
   const driftMinor = verifiedMoney.minorUnits - oldMoney.minorUnits;
   const verifiedMajor = moneyToMajor(verifiedMoney);
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const todayDate = parseDateOnly(todayStr);
+  const todayDate = currentHouseholdDate(householdTimeZone);
 
   let nextTransactions = currentTransactions;
   let adjTx: LedgerTransaction | null = null;
@@ -239,14 +242,19 @@ export async function executeRecordBillPayment(params: {
   onboardingData: UserOnboardingData;
   bill: RecurringBill;
   dueCycle: DateOnly;
+  amount?: Money;
   currencyCode: string;
   currentTransactions: LedgerTransaction[];
+  householdTimeZone?: string;
 }): Promise<TransactionCommandResult> {
-  const { session, onboardingData, bill, dueCycle, currencyCode, currentTransactions } = params;
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const todayDate = parseDateOnly(todayStr);
+  const { session, onboardingData, bill, dueCycle, amount, currencyCode, currentTransactions, householdTimeZone } = params;
+  const todayDate = currentHouseholdDate(householdTimeZone);
 
-  const tx = createConfirmedRecurringBillTransaction({ bill, dueCycle, actualDate: todayDate });
+  const stableId = `bill:${bill.id}:${dueCycle}`;
+  const transactionId = currentTransactions.some(existing => existing.id === stableId)
+    ? `${stableId}:${Crypto.randomUUID()}`
+    : stableId;
+  const tx = createConfirmedRecurringBillTransaction({ bill, dueCycle, actualDate: todayDate, amount, transactionId });
 
   return executeAddTransaction({
     session,
@@ -264,17 +272,11 @@ export async function executeAddRecurringBill(params: {
   currentBills: RecurringBill[];
 }): Promise<{ bills: RecurringBill[]; syncResult: FinanceMutationResult<RecurringBill> }> {
   const { session, userId, bill, currentBills } = params;
-  const nextBills = [bill, ...currentBills];
-  const syncResult = await persistRecurringBill({
-    session,
-    userId,
-    bill,
-    allBills: nextBills,
-  });
-  if (syncResult.failureKind === 'rejected') {
-    throw syncResult.error ?? new Error('Recurring bill creation was rejected by server.');
-  }
-  return { bills: nextBills, syncResult };
+  return executeRecurringBillSave({ session, userId, bill, currentBills,
+    storage: {
+      persist: args => persistRecurringBill({ session: args.session as Session | null, userId: args.userId, bill: args.bill, currentBills: args.currentBills }),
+      remove: args => deleteRecurringBill({ session: args.session as Session | null, userId: args.userId, billId: args.billId, currentBills: args.currentBills }),
+    } }) as Promise<{ bills: RecurringBill[]; syncResult: FinanceMutationResult<RecurringBill> }>;
 }
 
 export async function executeDeleteRecurringBill(params: {
@@ -284,17 +286,11 @@ export async function executeDeleteRecurringBill(params: {
   currentBills: RecurringBill[];
 }): Promise<{ bills: RecurringBill[]; syncResult: FinanceMutationResult<string> }> {
   const { session, userId, billId, currentBills } = params;
-  const nextBills = currentBills.filter(b => b.id !== billId);
-  const syncResult = await deleteRecurringBill({
-    session,
-    userId,
-    billId,
-    allBills: currentBills,
-  });
-  if (syncResult.failureKind === 'rejected') {
-    throw syncResult.error ?? new Error('Recurring bill deletion was rejected by server.');
-  }
-  return { bills: nextBills, syncResult };
+  return executeRecurringBillRemoval({ session, userId, billId, currentBills,
+    storage: {
+      persist: args => persistRecurringBill({ session: args.session as Session | null, userId: args.userId, bill: args.bill, currentBills: args.currentBills }),
+      remove: args => deleteRecurringBill({ session: args.session as Session | null, userId: args.userId, billId: args.billId, currentBills: args.currentBills }),
+    } }) as Promise<{ bills: RecurringBill[]; syncResult: FinanceMutationResult<string> }>;
 }
 
 export async function executeUpdateTransaction(params: {

@@ -1,0 +1,1184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DebtFree — Complete Full-Page Side-by-Side Visual Comparison</title>
+<style>
+  :root {
+    --bg-canvas: #090B0A;
+    --bg-surface: #121614;
+    --border-subtle: #222A25;
+    --border-focus: #35423B;
+    --text-primary: #F3F6F4;
+    --text-secondary: #9DA8A1;
+    --text-tertiary: #6E7972;
+    --mint-accent: #76DCB9;
+    --positive: #86E3B8;
+    --warning: #F5C563;
+    --danger: #FF7B6B;
+    --font-stack: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font-stack);
+    background: transparent;
+    color: var(--text-primary);
+    line-height: 1.45;
+    padding: 10px 0 24px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .audit-header {
+    background: linear-gradient(180deg, #161D19 0%, #101412 100%);
+    border: 1px solid var(--border-subtle);
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  }
+  .audit-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(118, 220, 185, 0.12);
+    border: 1px solid rgba(118, 220, 185, 0.3);
+    color: var(--mint-accent);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .audit-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: #FFFFFF;
+    letter-spacing: -0.03em;
+    margin-bottom: 6px;
+  }
+  .audit-subtitle {
+    font-size: 14px;
+    color: var(--text-secondary);
+    max-width: 680px;
+  }
+
+  /* Screen Switcher Nav Tabs */
+  .screen-nav {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    margin-bottom: 20px;
+  }
+  .nav-btn {
+    padding: 8px 16px;
+    border-radius: 10px;
+    background: #141816;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+  }
+  .nav-btn.active, .nav-btn:hover {
+    background: #1C2721;
+    border-color: var(--mint-accent);
+    color: #FFFFFF;
+  }
+
+  .screen-pane {
+    display: none;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .screen-pane.active {
+    display: flex;
+  }
+
+  /* Comparison Grid */
+  .comparison-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 760px) {
+    .comparison-grid { grid-template-columns: 1fr; }
+  }
+
+  .device-col {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .device-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 4px;
+  }
+  .tag-label {
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .tag-before { color: #A6AFA9; }
+  .tag-after { color: var(--mint-accent); }
+  .tag-desc { font-size: 11px; color: var(--text-tertiary); }
+
+  /* Full Phone Frame Container */
+  .phone-canvas {
+    border-radius: 36px;
+    border: 4px solid #232B26;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 48px rgba(0,0,0,0.6);
+    overflow: hidden;
+  }
+  .phone-before { background: #1F201F; }
+  .phone-after { background: #0C0E0D; border-color: #2D3932; }
+
+  /* Device Status Bar */
+  .phone-status-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 18px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #8C9990;
+  }
+  .phone-body {
+    padding: 10px 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* Shared App Tab Bar */
+  .phone-tabbar {
+    display: flex;
+    justify-content: space-around;
+    padding: 10px 6px 14px;
+    border-top: 1px solid #353D38;
+    background: #242926;
+  }
+  .phone-tabbar.after {
+    border-top: 1px solid #222A25;
+    background: #101412;
+  }
+  .tab-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    font-size: 9px;
+    color: #AAB3AD;
+    font-weight: 600;
+  }
+  .tab-item.active { color: #81DFD2; font-weight: 700; }
+  .tab-item.active-after { color: var(--mint-accent); font-weight: 700; }
+
+  /* Before Styles */
+  .card-before {
+    background: #272D2A;
+    border: 1px solid #37413B;
+    border-radius: 16px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.16);
+  }
+  .badge-before {
+    background: #31534D;
+    color: #81DFD2;
+    padding: 2px 6px;
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  /* After Styles */
+  .card-after {
+    background: #141816;
+    border: 1px solid #222A25;
+    border-radius: 18px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .hero-after {
+    background: radial-gradient(120% 120% at 50% 0%, #1A2621 0%, #121815 100%);
+    border: 1px solid #2B3831;
+    border-radius: 20px;
+    padding: 18px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.3);
+    position: relative;
+  }
+  .hero-after::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 15%; right: 15%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(118, 220, 185, 0.6), transparent);
+  }
+
+  /* Spec Card */
+  .spec-card {
+    background: #111513;
+    border: 1px solid var(--border-subtle);
+    border-radius: 16px;
+    padding: 18px;
+  }
+  .spec-title {
+    font-size: 15px;
+    font-weight: 800;
+    color: #FFFFFF;
+    margin-bottom: 10px;
+  }
+  .spec-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 1fr;
+    gap: 10px;
+    font-size: 12px;
+    padding: 10px 0;
+    border-top: 1px solid #1C2420;
+  }
+  .spec-row:first-of-type { border-top: none; }
+  .spec-feature { font-weight: 700; color: #FFFFFF; }
+  .flaw-text { color: #FFA192; }
+  .fix-text { color: var(--mint-accent); }
+</style>
+</head>
+<body>
+
+  <div class="audit-header">
+    <div class="audit-badge">Complete Full-Screen Mockups</div>
+    <h1 class="audit-title">DebtFree — Full-Page Before vs After Visual Audit</h1>
+    <p class="audit-subtitle">
+      Complete edge-to-edge mobile views showing the entire screen experience from top app bar to bottom navigation tab bar for all 5 core app screens.
+    </p>
+  </div>
+
+  <!-- Screen Navigation -->
+  <div class="screen-nav">
+    <button class="nav-btn active" onclick="showScreen('screen-home')">1. Home Screen (Full View)</button>
+    <button class="nav-btn" onclick="showScreen('screen-debt')">2. Debt Screen (Full View)</button>
+    <button class="nav-btn" onclick="showScreen('screen-transactions')">3. Transactions (Full View)</button>
+    <button class="nav-btn" onclick="showScreen('screen-budget')">4. Budget (Full View)</button>
+    <button class="nav-btn" onclick="showScreen('screen-progress')">5. Progress (Full View)</button>
+  </div>
+
+  <!-- =========================================================================
+       SCREEN 1: HOME (FULL VIEW)
+       ========================================================================= -->
+  <div id="screen-home" class="screen-pane active">
+    <div class="comparison-grid">
+
+      <!-- BEFORE (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-before">Home: Current (Before)</span>
+          <span class="tag-desc">Charcoal #1F201F · Stacked Box Fatigue</span>
+        </div>
+        <div class="phone-canvas phone-before">
+          <!-- Status Bar -->
+          <div class="phone-status-bar">
+            <span>9:41</span>
+            <span>5G 100%</span>
+          </div>
+          <!-- Body -->
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #353D38; padding-bottom: 8px;">
+              <span style="font-size: 16px; font-weight: 800; color: #FFF;">Debt<span style="color:#81DFD2">Free</span></span>
+              <div style="display: flex; gap: 8px;">
+                <span style="background: #31534D; color: #81DFD2; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700;">Edit Setup</span>
+                <span style="width: 24px; height: 24px; border-radius: 6px; background: #2D3531; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #81DFD2;">⚙</span>
+              </div>
+            </div>
+            <!-- Greeting -->
+            <div>
+              <div style="font-size: 20px; font-weight: 700; color: #F9F9F6;">Hi, Jordan</div>
+              <div style="font-size: 12px; color: #B5BDB7;">Your debt-free journey</div>
+            </div>
+            <!-- Card 1: Estimated Date -->
+            <div class="card-before">
+              <span style="font-size: 10px; color: #AAB3AD;">Estimated debt-free date</span>
+              <span style="font-size: 22px; font-weight: 700; color: #81DFD2;">October 2029</span>
+            </div>
+            <!-- Card 2: Debt Snapshot -->
+            <div class="card-before">
+              <div style="background: #1F201F; border: 1px solid #3C443F; padding: 6px 10px; border-radius: 6px; display: flex; justify-content: space-between; font-size: 11px; color: #F9F9F6;">
+                <span>Cards & Loans</span><span>▼</span>
+              </div>
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <div style="width: 72px; height: 72px; border-radius: 50%; border: 7px solid #81DFD2; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; color: #FFF;">32%</div>
+                <div style="flex: 1; font-size: 11px; color: #AAB3AD; display: flex; flex-direction: column; gap: 3px;">
+                  <span>3 accounts</span>
+                  <span>Balance change</span>
+                  <span style="font-size: 15px; font-weight: 700; color: #81DFD2;">-$3,450.00</span>
+                  <div style="border-top: 1px solid #37413B; padding-top: 3px; color: #FFF;">Balance: $18,650.00</div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 3: Payoff Strategy -->
+            <div class="card-before">
+              <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: #FFF;">
+                <span>Payoff strategy</span><span style="color: #81DFD2; font-size: 11px;">See all →</span>
+              </div>
+              <span style="font-size: 11px; color: #AAB3AD;">Avalanche · Active debt accounts</span>
+              <div style="border-top: 1px solid #37413B; padding-top: 6px; display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <span class="badge-before">#1</span>
+                  <div>
+                    <div style="font-size: 12px; font-weight: 700; color: #FFF;">Discover It</div>
+                    <div style="font-size: 10px; color: #AAB3AD;">24.99% APR · $4,200.00</div>
+                  </div>
+                </div>
+                <div style="text-align: right;">
+                  <div style="font-size: 13px; font-weight: 700; color: #81DFD2;">$420.00/mo</div>
+                  <div style="font-size: 9px; color: #AAB3AD;">Dec 2026</div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 4: Recent Activity -->
+            <div class="card-before">
+              <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: #FFF;">
+                <span>Recent activity</span><span style="color: #81DFD2; font-size: 11px;">See all →</span>
+              </div>
+              <div style="border-top: 1px solid #37413B; padding-top: 6px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div style="font-size: 12px; font-weight: 700; color: #FFF;">Discover Card Payment</div>
+                  <div style="font-size: 10px; color: #AAB3AD;">Nov 4 · payment</div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: #81DFD2;">-$350.00</div>
+              </div>
+            </div>
+            <!-- Card 5: Upcoming Bills -->
+            <div class="card-before">
+              <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: #FFF;">
+                <span>Upcoming recurring bills</span><span style="color: #81DFD2; font-size: 11px;">See all →</span>
+              </div>
+              <div style="border-top: 1px solid #37413B; padding-top: 6px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div style="font-size: 12px; font-weight: 700; color: #FFF;">Electric Bill</div>
+                  <div style="font-size: 10px; color: #FF7A59;">Due Nov 15 · Unpaid</div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: #FFF;">$125.00</div>
+              </div>
+            </div>
+          </div>
+          <!-- Tab Bar -->
+          <div class="phone-tabbar">
+            <div class="tab-item active"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-after">Home: Redesign (After)</span>
+          <span class="tag-desc">Obsidian #0C0E0D · Copilot & Apple Wallet Inspired</span>
+        </div>
+        <div class="phone-canvas phone-after">
+          <!-- Status Bar -->
+          <div class="phone-status-bar">
+            <span>9:41</span>
+            <span>5G 100%</span>
+          </div>
+          <!-- Body -->
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 4px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <div style="width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg, #1C2B24 0%, #111A15 100%); border: 1px solid #283C32; display: flex; align-items: center; justify-content: center; color: var(--mint-accent); font-size: 13px; font-weight: 800;">⚡</div>
+                <span style="font-size: 16px; font-weight: 800; color: #FFF; letter-spacing: -0.02em;">Debt<span style="color: var(--mint-accent)">Free</span></span>
+              </div>
+              <div style="width: 28px; height: 28px; border-radius: 8px; background: #151A17; border: 1px solid #232D27; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #9AA8A0;">⚙</div>
+            </div>
+            <!-- Unified Hero KPI -->
+            <div class="hero-after">
+              <div style="font-size: 11px; font-weight: 700; color: #8A978E; text-transform: uppercase; letter-spacing: 0.04em;">Overview · Hi Jordan</div>
+              <div style="font-size: 11px; color: #8C9990; margin-top: 4px;">Estimated Debt-Free</div>
+              <div style="font-size: 28px; font-weight: 800; color: #FFF; letter-spacing: -0.03em; line-height: 1.15;">October 2029</div>
+              <div style="margin-top: 6px; display: inline-flex; align-items: center; gap: 4px; background: rgba(134, 227, 184, 0.15); color: #86E3B8; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700;">
+                ▲ 14 Months Ahead of Minimums
+              </div>
+            </div>
+            <!-- Debt Snapshot -->
+            <div class="card-after">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 13px; font-weight: 700; color: #FFF;">Debt Snapshot</span>
+                <div style="display: flex; background: #0A0D0B; border: 1px solid #1C2420; border-radius: 8px; padding: 2px; font-size: 10px;">
+                  <span style="background: #1C2420; color: #FFF; padding: 3px 8px; border-radius: 6px; font-weight: 700;">Cards & Loans</span>
+                  <span style="color: #7A877F; padding: 3px 8px;">All</span>
+                </div>
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="position: relative; width: 72px; height: 72px; border-radius: 50%; border: 6px solid #1C2420; border-top-color: var(--mint-accent); border-right-color: var(--mint-accent); display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                  <span style="font-size: 16px; font-weight: 800; color: #FFF;">32%</span>
+                  <span style="font-size: 7px; color: #728078; text-transform: uppercase;">Paid Off</span>
+                </div>
+                <div style="flex: 1; text-align: right; display: flex; flex-direction: column; gap: 4px;">
+                  <div style="font-size: 10px; color: #7A8780; text-transform: uppercase; font-weight: 600;">Remaining Balance</div>
+                  <div style="font-size: 20px; font-weight: 800; color: #FFF; letter-spacing: -0.02em;">$18,650.00</div>
+                  <div style="border-top: 1px solid #1C2420; padding-top: 4px; display: flex; justify-content: flex-end; gap: 10px; font-size: 11px;">
+                    <span style="color: var(--positive); font-weight: 700;">+$3,450 paid</span>
+                    <span style="color: #79877F;">3 accounts</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Payoff Priority -->
+            <div class="card-after">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <span style="font-size: 13px; font-weight: 700; color: #FFF;">Payoff Priority</span>
+                  <div style="font-size: 10px; color: #7D8B83;">Targeting highest APR first</div>
+                </div>
+                <span style="font-size: 11px; font-weight: 700; color: var(--mint-accent);">See all →</span>
+              </div>
+              <div style="border-top: 1px solid #1C2420; padding-top: 8px; display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <div style="width: 22px; height: 22px; border-radius: 50%; background: #1C2420; border: 1px solid #2B372F; color: var(--mint-accent); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800;">1</div>
+                  <div>
+                    <div style="font-size: 13px; font-weight: 700; color: #FFF;">Discover It</div>
+                    <div style="font-size: 10px; color: #79877F;">24.99% APR · $4,200</div>
+                  </div>
+                </div>
+                <div style="text-align: right;">
+                  <div style="font-size: 13px; font-weight: 700; color: #FFF;">$420.00<span style="font-size: 10px; color:#79877F;">/mo</span></div>
+                  <div style="font-size: 10px; color: var(--mint-accent);">Payoff Dec 2026</div>
+                </div>
+              </div>
+            </div>
+            <!-- Recent Activity -->
+            <div class="card-after">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 13px; font-weight: 700; color: #FFF;">Recent Activity</span>
+                <span style="font-size: 11px; font-weight: 700; color: var(--mint-accent);">History →</span>
+              </div>
+              <div style="border-top: 1px solid #1C2420; padding-top: 8px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div style="display: flex; align-items: center; gap: 5px;">
+                    <span style="font-size: 12px; font-weight: 700; color: #FFF;">Discover Card Payment</span>
+                    <span style="background: rgba(245, 197, 99, 0.12); border: 1px solid rgba(245, 197, 99, 0.3); color: var(--warning); font-size: 8px; padding: 1px 4px; border-radius: 3px; font-weight: 700;">Pending</span>
+                  </div>
+                  <div style="font-size: 10px; color: #728078;">Nov 4 · Debt Paydown</div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: var(--positive); text-align: right;">-$350.00</div>
+              </div>
+            </div>
+            <!-- Upcoming Bills (Quiet Alert) -->
+            <div class="card-after">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 13px; font-weight: 700; color: #FFF;">Upcoming Obligations</span>
+                <span style="font-size: 11px; font-weight: 700; color: var(--mint-accent);">Calendar →</span>
+              </div>
+              <div style="border-top: 1px solid #1C2420; padding-top: 8px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div style="font-size: 12px; font-weight: 700; color: #FFF;">Electric Bill</div>
+                  <div style="font-size: 10px; color: #728078;">Due Nov 15 · <span style="color: #F08B78;">Unpaid</span></div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: #FFF;">$125.00</div>
+              </div>
+            </div>
+          </div>
+          <!-- Tab Bar -->
+          <div class="phone-tabbar after">
+            <div class="tab-item active-after"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <!-- Spec Card -->
+    <div class="spec-card">
+      <div class="spec-title">Home Screen: Full-View Audit & Polish Highlights</div>
+      <div class="spec-row">
+        <div class="spec-feature">Hero Milestone</div>
+        <div class="flaw-text">Disconnected greeting text separated from isolated date box; no emotional context.</div>
+        <div class="fix-text">Unified radial hero container with bold 28px payoff date and motivation pill.</div>
+      </div>
+      <div class="spec-row">
+        <div class="spec-feature">Container Fatigue</div>
+        <div class="flaw-text">Five identical charcoal cards stacked vertically with heavy borders.</div>
+        <div class="fix-text">Hierarchical surfaces: Elevated Hero, quiet hairline secondary cards, inset dividers.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       SCREEN 2: DEBT (FULL VIEW)
+       ========================================================================= -->
+  <div id="screen-debt" class="screen-pane">
+    <div class="comparison-grid">
+
+      <!-- BEFORE (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-before">Debt: Current (Before)</span>
+          <span class="tag-desc">Fixed 300px Graph · Saturated Rows</span>
+        </div>
+        <div class="phone-canvas phone-before">
+          <div class="phone-status-bar"><span>9:41</span><span>5G 100%</span></div>
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #353D38; padding-bottom: 8px;">
+              <span style="font-size: 18px; font-weight: 800; color: #FFF;">Debts</span>
+              <span style="width: 24px; height: 24px; border-radius: 6px; background: #2D3531; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #81DFD2;">⚙</span>
+            </div>
+            <!-- Filter Segments -->
+            <div style="display: flex; gap: 4px; background: #101411; padding: 4px; border-radius: 8px;">
+              <div style="flex:1; background: #31534D; color:#81DFD2; font-size:10px; text-align:center; padding:4px; border-radius:6px; font-weight:700;">Cards & Loans</div>
+              <div style="flex:1; color:#AAB3AD; font-size:10px; text-align:center; padding:4px;">Home & Auto</div>
+              <div style="flex:1; color:#AAB3AD; font-size:10px; text-align:center; padding:4px;">All</div>
+            </div>
+            <!-- Search & Sort -->
+            <div style="display: flex; gap: 6px;">
+              <div style="flex:1; background: #272D2A; border: 1px solid #37413B; padding: 6px 10px; border-radius: 8px; font-size: 11px; color: #6E7571;">Search...</div>
+              <div style="background: #272D2A; border: 1px solid #37413B; padding: 6px 8px; border-radius: 8px; font-size: 11px; color: #81DFD2;">Sort: APR ▼</div>
+            </div>
+            <!-- Sparkline Card -->
+            <div class="card-before">
+              <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: #FFF;">
+                <span>Balance history</span><span class="badge-before">SPARKLINE</span>
+              </div>
+              <svg width="100%" height="45" viewBox="0 0 200 45">
+                <path d="M 10 35 L 70 28 L 130 18 L 190 10" fill="none" stroke="#81DFD2" stroke-width="2" />
+                <circle cx="10" cy="35" r="3" fill="#81DFD2" /><circle cx="70" cy="28" r="3" fill="#81DFD2" />
+                <circle cx="130" cy="18" r="3" fill="#81DFD2" /><circle cx="190" cy="10" r="3" fill="#81DFD2" />
+              </svg>
+              <div style="font-size: 10px; color: #AAB3AD;">2 statement records logged</div>
+            </div>
+            <!-- Debt Account Card 1 -->
+            <div class="card-before">
+              <div style="display: flex; justify-content: space-between;">
+                <div>
+                  <div style="font-size: 13px; font-weight: 700; color: #FFF;">Discover It</div>
+                  <div style="font-size: 10px; color: #AAB3AD;">Credit card · 24.99% APR</div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: #81DFD2;">$4,200.00</div>
+              </div>
+              <div style="background: #353D38; height: 4px; border-radius: 2px;">
+                <div style="background: #81DFD2; width: 45%; height: 100%; border-radius: 2px;"></div>
+              </div>
+            </div>
+            <!-- Debt Account Card 2 -->
+            <div class="card-before">
+              <div style="display: flex; justify-content: space-between;">
+                <div>
+                  <div style="font-size: 13px; font-weight: 700; color: #FFF;">Chase Freedom</div>
+                  <div style="font-size: 10px; color: #AAB3AD;">Credit card · 19.24% APR</div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: #81DFD2;">$6,150.00</div>
+              </div>
+              <div style="background: #353D38; height: 4px; border-radius: 2px;">
+                <div style="background: #81DFD2; width: 30%; height: 100%; border-radius: 2px;"></div>
+              </div>
+            </div>
+          </div>
+          <div class="phone-tabbar">
+            <div class="tab-item"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item active"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-after">Debt: Redesign (After)</span>
+          <span class="tag-desc">Responsive SVG Area Chart · Clear Minimums</span>
+        </div>
+        <div class="phone-canvas phone-after">
+          <div class="phone-status-bar"><span>9:41</span><span>5G 100%</span></div>
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 4px;">
+              <span style="font-size: 20px; font-weight: 800; color: #FFF; letter-spacing: -0.02em;">Debt Accounts</span>
+              <div style="display: flex; gap: 8px;">
+                <div style="background: var(--mint-accent); color: #0C0E0D; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 8px;">+ Add Debt</div>
+                <div style="width: 28px; height: 28px; border-radius: 8px; background: #151A17; border: 1px solid #232D27; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #9AA8A0;">⚙</div>
+              </div>
+            </div>
+            <!-- Segmented Pill Track -->
+            <div style="display: flex; background: #0A0D0B; border: 1px solid #1E2621; border-radius: 10px; padding: 2px;">
+              <div style="flex:1; background: #1C2420; color: #FFF; font-size:11px; text-align:center; padding:6px 0; border-radius:8px; font-weight:700;">Cards & Loans</div>
+              <div style="flex:1; color:#7A8780; font-size:11px; text-align:center; padding:6px 0;">Home & Auto</div>
+              <div style="flex:1; color:#7A8780; font-size:11px; text-align:center; padding:6px 0;">All Debts</div>
+            </div>
+            <!-- Search & Filter Controls -->
+            <div style="display: flex; gap: 8px;">
+              <div style="flex:1; background: #141816; border: 1px solid #222A25; border-radius: 10px; padding: 7px 12px; font-size: 11px; color: #728078;">
+                🔍 Search accounts...
+              </div>
+              <div style="background: #141816; border: 1px solid #222A25; border-radius: 10px; padding: 7px 12px; font-size: 11px; color: #FFF; font-weight: 600;">
+                Sort: APR ▾
+              </div>
+            </div>
+            <!-- Fluid Gradient Area Chart -->
+            <div class="card-after">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 13px; font-weight: 700; color: #FFF;">Verified Statement Trajectory</span>
+                <span style="font-size: 10px; color: var(--mint-accent); font-weight: 600;">2 Statements</span>
+              </div>
+              <svg width="100%" height="55" viewBox="0 0 200 55">
+                <defs>
+                  <linearGradient id="areaG3" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#76DCB9" stop-opacity="0.25" />
+                    <stop offset="100%" stop-color="#76DCB9" stop-opacity="0.0" />
+                  </linearGradient>
+                </defs>
+                <path d="M 10 45 L 70 34 L 130 22 L 190 10 L 190 55 L 10 55 Z" fill="url(#areaG3)" />
+                <path d="M 10 45 L 70 34 L 130 22 L 190 10" fill="none" stroke="#76DCB9" stroke-width="2.5" stroke-linecap="round" />
+                <circle cx="10" cy="45" r="3.5" fill="#141816" stroke="#76DCB9" stroke-width="2" />
+                <circle cx="190" cy="10" r="4.5" fill="#76DCB9" />
+              </svg>
+              <div style="display: flex; justify-content: space-between; font-size: 9px; color: #728078;">
+                <span>Aug ($5.2k)</span><span>Nov (Now: $4.2k)</span>
+              </div>
+            </div>
+            <!-- Redesigned Debt Card 1 -->
+            <div class="card-after">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                <div>
+                  <span style="font-size: 14px; font-weight: 700; color: #FFF;">Discover It</span>
+                  <div style="font-size: 11px; color: #79877F;">Revolving Credit · 24.99% APR</div>
+                </div>
+                <div style="text-align: right;">
+                  <div style="font-size: 15px; font-weight: 800; color: #FFF;">$4,200.00</div>
+                  <div style="font-size: 10px; color: var(--positive); font-weight: 600;">Min $95/mo</div>
+                </div>
+              </div>
+              <div style="border-top: 1px solid #1C2420; padding-top: 6px; display: flex; justify-content: space-between; font-size: 10px;">
+                <span style="color: #79877F;">Estimated Payoff</span>
+                <span style="color: var(--mint-accent); font-weight: 700;">December 2026</span>
+              </div>
+            </div>
+            <!-- Redesigned Debt Card 2 -->
+            <div class="card-after">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                <div>
+                  <span style="font-size: 14px; font-weight: 700; color: #FFF;">Chase Freedom</span>
+                  <div style="font-size: 11px; color: #79877F;">Revolving Credit · 19.24% APR</div>
+                </div>
+                <div style="text-align: right;">
+                  <div style="font-size: 15px; font-weight: 800; color: #FFF;">$6,150.00</div>
+                  <div style="font-size: 10px; color: var(--positive); font-weight: 600;">Min $160/mo</div>
+                </div>
+              </div>
+              <div style="border-top: 1px solid #1C2420; padding-top: 6px; display: flex; justify-content: space-between; font-size: 10px;">
+                <span style="color: #79877F;">Estimated Payoff</span>
+                <span style="color: var(--mint-accent); font-weight: 700;">August 2028</span>
+              </div>
+            </div>
+          </div>
+          <div class="phone-tabbar after">
+            <div class="tab-item"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item active-after"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="spec-card">
+      <div class="spec-title">Debt Screen: Full-View Audit & Polish Highlights</div>
+      <div class="spec-row">
+        <div class="spec-feature">Chart Sizing</div>
+        <div class="flaw-text">Fixed 300px width distorts on responsive viewports; meaningless "SPARKLINE" tag.</div>
+        <div class="fix-text">Fluid SVG width with soft gradient wash and chronological statement anchor points.</div>
+      </div>
+      <div class="spec-row">
+        <div class="spec-feature">Metadata Display</div>
+        <div class="flaw-text">Omits essential minimum payment; card balances rendered in saturated teal.</div>
+        <div class="fix-text">High-contrast white balances with clear 2-column APR and minimum payment rows.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       SCREEN 3: TRANSACTIONS (FULL VIEW)
+       ========================================================================= -->
+  <div id="screen-transactions" class="screen-pane">
+    <div class="comparison-grid">
+
+      <!-- BEFORE (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-before">Transactions: Current (Before)</span>
+          <span class="tag-desc">Cluttered Dropdowns · Teal Numbers</span>
+        </div>
+        <div class="phone-canvas phone-before">
+          <div class="phone-status-bar"><span>9:41</span><span>5G 100%</span></div>
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #353D38; padding-bottom: 8px;">
+              <span style="font-size: 18px; font-weight: 800; color: #FFF;">Transactions</span>
+              <span style="width: 24px; height: 24px; border-radius: 6px; background: #2D3531; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #81DFD2;">⚙</span>
+            </div>
+            <!-- Segments -->
+            <div style="display: flex; gap: 4px; background: #101411; padding: 4px; border-radius: 8px;">
+              <div style="flex:1; background: #31534D; color:#81DFD2; font-size:10px; text-align:center; padding:4px; border-radius:6px; font-weight:700;">History</div>
+              <div style="flex:1; color:#AAB3AD; font-size:10px; text-align:center; padding:4px;">Upcoming</div>
+              <div style="flex:1; color:#AAB3AD; font-size:10px; text-align:center; padding:4px;">Scheduled</div>
+            </div>
+            <!-- 4 Dropdowns stacked -->
+            <div style="display: flex; gap: 4px; overflow-x: auto;">
+              <div style="background: #272D2A; border: 1px solid #37413B; color: #FFF; font-size: 10px; padding: 4px 6px; border-radius: 6px;">All accounts ▼</div>
+              <div style="background: #272D2A; border: 1px solid #37413B; color: #FFF; font-size: 10px; padding: 4px 6px; border-radius: 6px;">This month ▼</div>
+              <div style="background: #272D2A; border: 1px solid #37413B; color: #FFF; font-size: 10px; padding: 4px 6px; border-radius: 6px;">All types ▼</div>
+            </div>
+            <!-- Ledger Cards -->
+            <div class="card-before">
+              <div style="display: flex; justify-content: space-between;">
+                <div>
+                  <div style="display: flex; gap: 4px; align-items: center;">
+                    <span style="font-size: 12px; font-weight: 700; color: #FFF;">Chase Card Payment</span>
+                    <span style="background: #38321E; border: 1px solid #F2C94C; color: #F2C94C; font-size: 8px; padding: 1px 4px; border-radius: 4px;">Pending</span>
+                  </div>
+                  <div style="font-size: 10px; color: #AAB3AD;">2026-11-05 · payment</div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: #81DFD2;">-$250.00</div>
+              </div>
+              <div style="border-top: 1px solid #37413B; padding-top: 6px; display: flex; justify-content: space-between;">
+                <div>
+                  <span style="font-size: 12px; font-weight: 700; color: #FFF;">Target Grocery</span>
+                  <div style="font-size: 10px; color: #AAB3AD;">2026-11-03 · purchase</div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: #E3A088;">+$84.20</div>
+              </div>
+              <div style="border-top: 1px solid #37413B; padding-top: 6px; display: flex; justify-content: space-between;">
+                <div>
+                  <span style="font-size: 12px; font-weight: 700; color: #FFF;">Electric Utility</span>
+                  <div style="font-size: 10px; color: #AAB3AD;">2026-10-28 · debit_bill</div>
+                </div>
+                <div style="font-size: 13px; font-weight: 700; color: #E3A088;">+$115.00</div>
+              </div>
+            </div>
+          </div>
+          <div class="phone-tabbar">
+            <div class="tab-item"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item active"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-after">Transactions: Redesign (After)</span>
+          <span class="tag-desc">Hairline Rhythm · Clear Credit/Debit Semantics</span>
+        </div>
+        <div class="phone-canvas phone-after">
+          <div class="phone-status-bar"><span>9:41</span><span>5G 100%</span></div>
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 4px;">
+              <span style="font-size: 20px; font-weight: 800; color: #FFF; letter-spacing: -0.02em;">Ledger</span>
+              <div style="display: flex; gap: 8px;">
+                <div style="background: var(--mint-accent); color: #0C0E0D; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 8px;">+ Add Transaction</div>
+                <div style="width: 28px; height: 28px; border-radius: 8px; background: #151A17; border: 1px solid #232D27; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #9AA8A0;">⚙</div>
+              </div>
+            </div>
+            <!-- Segmented Pill Track -->
+            <div style="display: flex; background: #0A0D0B; border: 1px solid #1E2621; border-radius: 10px; padding: 2px;">
+              <div style="flex:1; background: #1C2420; color: #FFF; font-size:11px; text-align:center; padding:6px 0; border-radius:8px; font-weight:700;">History</div>
+              <div style="flex:1; color:#7A8780; font-size:11px; text-align:center; padding:6px 0;">Upcoming</div>
+              <div style="flex:1; color:#7A8780; font-size:11px; text-align:center; padding:6px 0;">Scheduled</div>
+            </div>
+            <!-- Search & Filters -->
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <div style="flex:1; background: #141816; border: 1px solid #222A25; border-radius: 10px; padding: 8px 12px; font-size: 11px; color: #728078;">
+                🔍 Search payees or accounts...
+              </div>
+              <div style="background: #141816; border: 1px solid #222A25; border-radius: 10px; padding: 8px 12px; font-size: 11px; color: #FFF; font-weight: 600;">
+                Filters ⚡
+              </div>
+            </div>
+            <!-- Hairline Ledger Card -->
+            <div class="card-after">
+              <!-- Item 1 -->
+              <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 0;">
+                <div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 13px; font-weight: 700; color: #FFF;">Chase Card Payment</span>
+                    <span style="background: rgba(245, 197, 99, 0.12); border: 1px solid rgba(245, 197, 99, 0.3); color: var(--warning); font-size: 9px; padding: 1px 5px; border-radius: 4px; font-weight: 700;">Pending</span>
+                  </div>
+                  <div style="font-size: 10px; color: #728078;">Nov 5 · Debt Paydown</div>
+                </div>
+                <div style="font-size: 14px; font-weight: 700; color: var(--positive); text-align: right;">-$250.00</div>
+              </div>
+              <!-- Item 2 -->
+              <div style="border-top: 1px solid #1C2420; padding-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <span style="font-size: 13px; font-weight: 700; color: #FFF;">Target Grocery</span>
+                  <div style="font-size: 10px; color: #728078;">Nov 3 · Single Purchase</div>
+                </div>
+                <div style="font-size: 14px; font-weight: 700; color: #F08B78; text-align: right;">+$84.20</div>
+              </div>
+              <!-- Item 3 -->
+              <div style="border-top: 1px solid #1C2420; padding-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <span style="font-size: 13px; font-weight: 700; color: #FFF;">Electric Utility</span>
+                  <div style="font-size: 10px; color: #728078;">Oct 28 · Checking Debit Bill</div>
+                </div>
+                <div style="font-size: 14px; font-weight: 700; color: #F08B78; text-align: right;">+$115.00</div>
+              </div>
+            </div>
+          </div>
+          <div class="phone-tabbar after">
+            <div class="tab-item"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item active-after"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="spec-card">
+      <div class="spec-title">Transactions Screen: Full-View Audit & Polish Highlights</div>
+      <div class="spec-row">
+        <div class="spec-feature">Filter Controls</div>
+        <div class="flaw-text">Four stacked dropdown selectors eat vertical space above the fold.</div>
+        <div class="fix-text">Full-width search bar paired with a single unified 44px modal filter trigger.</div>
+      </div>
+      <div class="spec-row">
+        <div class="spec-feature">Ledger Direction</div>
+        <div class="flaw-text">Teal used for amounts makes debt reduction payments indistinguishable from general UI.</div>
+        <div class="fix-text">Semantic green (#86E3B8) for paydowns, coral (#F08B78) for charges, quiet amber pending tags.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       SCREEN 4: BUDGET (FULL VIEW)
+       ========================================================================= -->
+  <div id="screen-budget" class="screen-pane">
+    <div class="comparison-grid">
+
+      <!-- BEFORE (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-before">Budget: Current (Before)</span>
+          <span class="tag-desc">Stacked Metric Cards · Monolithic Bars</span>
+        </div>
+        <div class="phone-canvas phone-before">
+          <div class="phone-status-bar"><span>9:41</span><span>5G 100%</span></div>
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #353D38; padding-bottom: 8px;">
+              <span style="font-size: 18px; font-weight: 800; color: #FFF;">Budget</span>
+              <span style="width: 24px; height: 24px; border-radius: 6px; background: #2D3531; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #81DFD2;">⚙</span>
+            </div>
+            <!-- Month Selector -->
+            <div style="display: flex; justify-content: space-between; align-items: center; background: #272D2A; border: 1px solid #37413B; padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #FFF;">
+              <span>‹</span><span>November 2026</span><span>›</span>
+            </div>
+            <!-- Net Cashflow Card -->
+            <div class="card-before">
+              <span style="font-size: 10px; color: #AAB3AD;">Monthly net cashflow</span>
+              <div style="font-size: 18px; font-weight: 700; color: #81DFD2;">+$1,240.00</div>
+              <div style="font-size: 9px; color: #AAB3AD;">Income $5,200 · Bills $1,850 · Min Debt $1,110</div>
+            </div>
+            <!-- Obligation breakdown -->
+            <div class="card-before">
+              <span style="font-size: 12px; font-weight: 700; color: #FFF;">Obligation breakdown</span>
+              <div style="margin-top: 4px;">
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: #FFF;">
+                  <span>Housing & Rent</span><span>$1,400</span>
+                </div>
+                <div style="background: #353D38; height: 5px; border-radius: 3px; margin: 2px 0 6px;">
+                  <div style="background: #81DFD2; width: 60%; height: 100%;"></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: #FFF;">
+                  <span>Utilities</span><span>$240</span>
+                </div>
+                <div style="background: #353D38; height: 5px; border-radius: 3px;">
+                  <div style="background: #81DFD2; width: 25%; height: 100%;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="phone-tabbar">
+            <div class="tab-item"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item active"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-after">Budget: Redesign (After)</span>
+          <span class="tag-desc">Allocation Flow · Discretionary Buffer</span>
+        </div>
+        <div class="phone-canvas phone-after">
+          <div class="phone-status-bar"><span>9:41</span><span>5G 100%</span></div>
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 4px;">
+              <span style="font-size: 20px; font-weight: 800; color: #FFF; letter-spacing: -0.02em;">Budget & Cashflow</span>
+              <div style="display: flex; gap: 8px;">
+                <div style="background: var(--mint-accent); color: #0C0E0D; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 8px;">+ Add Bill</div>
+                <div style="width: 28px; height: 28px; border-radius: 8px; background: #151A17; border: 1px solid #232D27; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #9AA8A0;">⚙</div>
+              </div>
+            </div>
+            <!-- Month Selector Pill -->
+            <div style="display: flex; justify-content: space-between; align-items: center; background: #141816; border: 1px solid #222A25; padding: 6px 14px; border-radius: 10px; font-size: 12px; color: #FFF; font-weight: 600;">
+              <span style="color: #728078; cursor: pointer;">‹</span><span>November 2026</span><span style="color: #728078; cursor: pointer;">›</span>
+            </div>
+            <!-- Cashflow Hero -->
+            <div class="hero-after">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <div style="font-size: 10px; color: #8A978E; text-transform: uppercase; font-weight: 700;">Discretionary Leftover</div>
+                  <div style="font-size: 24px; font-weight: 800; color: #FFF;">$1,240.00</div>
+                </div>
+                <div style="text-align: right;">
+                  <div style="font-size: 9px; color: #8A978E;">Total Income</div>
+                  <div style="font-size: 13px; font-weight: 700; color: #FFF;">$5,200/mo</div>
+                </div>
+              </div>
+              <div style="display: flex; height: 7px; border-radius: 4px; overflow: hidden; margin-top: 10px; background: #222B26;">
+                <div style="background: #F08B78; width: 35%;"></div>
+                <div style="background: var(--mint-accent); width: 25%;"></div>
+                <div style="background: #86E3B8; width: 40%;"></div>
+              </div>
+              <div style="display: flex; justify-content: space-between; font-size: 9px; color: #728078; margin-top: 4px;">
+                <span>Bills $1,850</span><span>Debt $1,110</span><span style="color: #86E3B8; font-weight: 700;">Free $1,240</span>
+              </div>
+            </div>
+            <!-- Category Envelopes -->
+            <div class="card-after">
+              <span style="font-size: 13px; font-weight: 700; color: #FFF;">Category Envelopes</span>
+              <div style="display: flex; flex-direction: column; gap: 8px; font-size: 11px;">
+                <div>
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                    <span style="color: #FFF; font-weight: 600;">Housing & Rent</span>
+                    <span style="color: #FFF; font-weight: 700;">$1,400.00</span>
+                  </div>
+                  <div style="background: #1C2420; height: 5px; border-radius: 3px;">
+                    <div style="background: #F08B78; width: 85%; height: 100%; border-radius: 3px;"></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                    <span style="color: #FFF; font-weight: 600;">Utilities</span>
+                    <span style="color: #FFF; font-weight: 700;">$240.00</span>
+                  </div>
+                  <div style="background: #1C2420; height: 5px; border-radius: 3px;">
+                    <div style="background: var(--mint-accent); width: 45%; height: 100%; border-radius: 3px;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="phone-tabbar after">
+            <div class="tab-item"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item active-after"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="spec-card">
+      <div class="spec-title">Budget Screen: Full-View Audit & Polish Highlights</div>
+      <div class="spec-row">
+        <div class="spec-feature">Allocation Bar</div>
+        <div class="flaw-text">Single net number fails to illustrate the split between fixed bills and debt snowball.</div>
+        <div class="fix-text">Multi-segment horizontal allocation bar visualizing Bills, Debt Payoff, and Discretionary Buffer.</div>
+      </div>
+      <div class="spec-row">
+        <div class="spec-feature">Category Bars</div>
+        <div class="flaw-text">Monolithic teal bars fail to communicate envelope budget health or risk.</div>
+        <div class="fix-text">Semantic progress bars (mint under-budget, amber warning at 80%, coral at limit).</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       SCREEN 5: PROGRESS (FULL VIEW)
+       ========================================================================= -->
+  <div id="screen-progress" class="screen-pane">
+    <div class="comparison-grid">
+
+      <!-- BEFORE (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-before">Progress: Current (Before)</span>
+          <span class="tag-desc">Crowded Row · Clamped 100% Gauge</span>
+        </div>
+        <div class="phone-canvas phone-before">
+          <div class="phone-status-bar"><span>9:41</span><span>5G 100%</span></div>
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #353D38; padding-bottom: 8px;">
+              <span style="font-size: 18px; font-weight: 800; color: #FFF;">Progress</span>
+              <span style="width: 24px; height: 24px; border-radius: 6px; background: #2D3531; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #81DFD2;">⚙</span>
+            </div>
+            <!-- Segments -->
+            <div style="display: flex; gap: 4px; background: #101411; padding: 4px; border-radius: 8px;">
+              <div style="flex:1; background: #31534D; color:#81DFD2; font-size:10px; text-align:center; padding:4px; border-radius:6px; font-weight:700;">Overview</div>
+              <div style="flex:1; color:#AAB3AD; font-size:10px; text-align:center; padding:4px;">Utilization</div>
+              <div style="flex:1; color:#AAB3AD; font-size:10px; text-align:center; padding:4px;">Milestones</div>
+            </div>
+            <!-- Snapshot Ring Card -->
+            <div class="card-before">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <div style="flex:1;">
+                  <div style="font-size: 9px; color: #AAB3AD;">BALANCE SNAPSHOT</div>
+                  <div style="font-size: 13px; font-weight: 700; color: #FFF;">32% below reference balances</div>
+                  <div style="font-size: 10px; color: #AAB3AD;">$18,650 current balance</div>
+                </div>
+                <div style="width: 50px; height: 50px; border-radius: 50%; border: 5px solid #81DFD2; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #FFF;">32%</div>
+              </div>
+            </div>
+            <!-- Milestones Card -->
+            <div class="card-before">
+              <span style="font-size: 12px; font-weight: 700; color: #FFF;">Milestones</span>
+              <div style="border-top: 1px solid #37413B; padding-top: 6px;">
+                <div style="font-size: 11px; font-weight: 700; color: #81DFD2;">First Payoff Achieved</div>
+                <div style="font-size: 9px; color: #AAB3AD;">Completed</div>
+              </div>
+              <div style="border-top: 1px solid #37413B; padding-top: 6px;">
+                <div style="font-size: 11px; font-weight: 700; color: #FFF;">Halfway Free</div>
+                <div style="font-size: 9px; color: #6E7571;">UNAVAILABLE</div>
+              </div>
+            </div>
+          </div>
+          <div class="phone-tabbar">
+            <div class="tab-item"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item active"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER (FULL VIEW) -->
+      <div class="device-col">
+        <div class="device-header">
+          <span class="tag-label tag-after">Progress: Redesign (After)</span>
+          <span class="tag-desc">Clean Velocity Metrics · Earned Badges</span>
+        </div>
+        <div class="phone-canvas phone-after">
+          <div class="phone-status-bar"><span>9:41</span><span>5G 100%</span></div>
+          <div class="phone-body">
+            <!-- App Bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 4px;">
+              <span style="font-size: 20px; font-weight: 800; color: #FFF; letter-spacing: -0.02em;">Progress & Goals</span>
+              <div style="width: 28px; height: 28px; border-radius: 8px; background: #151A17; border: 1px solid #232D27; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #9AA8A0;">⚙</div>
+            </div>
+            <!-- Segmented Pill Track -->
+            <div style="display: flex; background: #0A0D0B; border: 1px solid #1E2621; border-radius: 10px; padding: 2px;">
+              <div style="flex:1; background: #1C2420; color: #FFF; font-size:11px; text-align:center; padding:6px 0; border-radius:8px; font-weight:700;">Overview</div>
+              <div style="flex:1; color:#7A8780; font-size:11px; text-align:center; padding:6px 0;">Utilization</div>
+              <div style="flex:1; color:#7A8780; font-size:11px; text-align:center; padding:6px 0;">Milestones</div>
+            </div>
+            <!-- Payoff Progress Card -->
+            <div class="card-after">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                  <span style="font-size: 10px; color: #7A8780; text-transform: uppercase; font-weight: 700;">Overall Payoff Progress</span>
+                  <div style="font-size: 24px; font-weight: 800; color: #FFF; letter-spacing: -0.02em;">32% Complete</div>
+                  <div style="font-size: 11px; color: var(--positive); font-weight: 600;">$3,450 principal paid to date</div>
+                </div>
+                <div style="width: 58px; height: 58px; border-radius: 50%; border: 5px solid var(--mint-accent); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; color: #FFF;">
+                  32%
+                </div>
+              </div>
+            </div>
+            <!-- Milestones Card -->
+            <div class="card-after">
+              <span style="font-size: 13px; font-weight: 700; color: #FFF;">Payoff Milestones</span>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <div style="width: 22px; height: 22px; border-radius: 50%; background: #1B352B; border: 1px solid #35463D; display: flex; align-items: center; justify-content: center; color: var(--mint-accent); font-size: 11px; font-weight: 800;">✓</div>
+                  <div style="flex: 1;">
+                    <div style="font-size: 12px; font-weight: 700; color: #FFF;">First Account Eliminated</div>
+                    <div style="font-size: 10px; color: var(--positive);">Earned Oct 15, 2026</div>
+                  </div>
+                </div>
+                <div style="border-top: 1px solid #1C2420; padding-top: 8px; display: flex; align-items: center; gap: 8px;">
+                  <div style="width: 22px; height: 22px; border-radius: 50%; background: #161C19; border: 1px solid #232D27; display: flex; align-items: center; justify-content: center; color: #7A8780; font-size: 10px; font-weight: 700;">2</div>
+                  <div style="flex: 1;">
+                    <div style="font-size: 12px; font-weight: 700; color: #FFF;">Debt Free Under $10k</div>
+                    <div style="font-size: 10px; color: #7A8780;">In Progress · 65% remaining</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="phone-tabbar after">
+            <div class="tab-item"><span>🏠</span><span>Home</span></div>
+            <div class="tab-item"><span>💳</span><span>Debt</span></div>
+            <div class="tab-item"><span>⇄</span><span>Transactions</span></div>
+            <div class="tab-item"><span>📊</span><span>Budget</span></div>
+            <div class="tab-item active-after"><span>📈</span><span>Progress</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="spec-card">
+      <div class="spec-title">Progress Screen: Full-View Audit & Polish Highlights</div>
+      <div class="spec-row">
+        <div class="spec-feature">Ring Gauge</div>
+        <div class="flaw-text">Thick 9px stroke squeezed beside wordy copy; clamps at 100% hiding over-limit credit.</div>
+        <div class="fix-text">7px refined stroke, uncapped utilization percentages, and clean stat alignment.</div>
+      </div>
+      <div class="spec-row">
+        <div class="spec-feature">Milestone Badges</div>
+        <div class="flaw-text">Harsh "UNAVAILABLE" tag confuses future unlocks with system errors.</div>
+        <div class="fix-text">Progressive unlock markers (Earned checkmark, In-Progress progress bar, Locked with goal).</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function showScreen(screenId) {
+      document.querySelectorAll('.screen-pane').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById(screenId).classList.add('active');
+      event.target.classList.add('active');
+    }
+  </script>
+
+</body>
+</html>

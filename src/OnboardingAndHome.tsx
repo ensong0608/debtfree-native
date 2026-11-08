@@ -47,8 +47,10 @@ import {
 } from './onboarding-domain';
 import {
   deleteUserDebt,
+  loadUserOnboardingData,
   requestNativeNotificationPermission,
   saveUserOnboardingData,
+  saveUserOnboardingSettingsPatch,
   upsertUserDebt,
 } from './onboarding-storage';
 import { assertCurrencyChangeAllowed } from './debt-storage-domain';
@@ -62,14 +64,31 @@ import {
   executeReconcileDebt,
   executeRecordBillPayment,
   executeAddRecurringBill,
+  executeDeleteRecurringBill,
 } from './finance/finance-commands';
 import { type LedgerTransaction, type ReconciliationAnchor } from './finance/ledger';
-import { type RecurringBill } from './finance/recurring-bills';
-import { makeMoney } from './finance/money';
-import { parseDateOnly, type DateOnly } from './finance/calendar';
+import { createRecurringBillDeletionPreview, type RecurringBill } from './finance/recurring-bills';
+import { createOnboardingLoanBill, onboardingLoanBillSaveAction, withoutDeletedBillPairings, withoutDeletedDebtPairing, withoutIncompatibleDebtPairing } from './finance/loan-bill-pairing';
+import { parseMoney, moneyToMajor, type Money } from './finance/money';
+import { type DateOnly, currentHouseholdDate } from './finance/calendar';
+import {
+  confirmObligationPaidToday,
+  obligationFirstDueDate,
+  prepareObligationEditorSchedule,
+  shouldAskPaidToday,
+  saveObligationEditorSchedule,
+  removeObligationEditorSchedule,
+} from './finance/obligation-editor';
+import { getObligationCycle, obligationScheduleKey } from './finance/obligation-schedule';
+import type { ObligationSchedule, ObligationScheduleKey } from './finance/obligation-schedule';
 import {
   loadFinanceRecords,
 } from './finance-storage';
+import {
+  PROTOTYPE_RECURRING_BILLS,
+  PROTOTYPE_TRANSACTIONS,
+  PROTOTYPE_RECONCILIATION_ANCHORS,
+} from './finance/prototype-loader';
 
 type Props = {
   session: Session | null;
@@ -240,6 +259,7 @@ export function DebtFreeFlow({
   const [editingDebtId, setEditingDebtId] = useState<string | null>(null);
   // Keep a new debt's identity stable across failed/uncertain saves and retries.
   const draftDebtIdRef = useRef<string | null>(null);
+  const draftDebtPaidTodayRef = useRef<Record<string, boolean>>({});
   const [showDebtForm, setShowDebtForm] = useState(false);
   const [debtCategory, setDebtCategory] = useState<DebtCategory>('Credit card');
   const [debtName, setDebtName] = useState('');
@@ -249,6 +269,9 @@ export function DebtFreeFlow({
   const [debtMinimum, setDebtMinimum] = useState('');
   const [debtDueDay, setDebtDueDay] = useState('');
   const [debtCreditLimit, setDebtCreditLimit] = useState('');
+  const [onboardingBillRecovery, setOnboardingBillRecovery] = useState<
+    null | 'needed' | 'loading' | 'pending' | 'confirmed' | 'retry' | 'conflict' | 'error'
+  >(null);
 
   // Onboarding Step 4 (Payoff strategy) extra monthly payment input
   const [extraPaymentInput, setExtraPaymentInput] = useState(() =>
@@ -265,98 +288,27 @@ export function DebtFreeFlow({
   const currencyCode = currency.code;
 
   // Transactions, Recurring Bills, and Reconciliation State (T-024, T-025, T-026)
-  const [transactions, setTransactions] = useState<LedgerTransaction[]>(() => {
-    const firstDebt = onboardingData?.debts.find(d => d.category === 'Credit card') ?? onboardingData?.debts[0];
-    const initial: LedgerTransaction[] = [];
-    if (firstDebt) {
-      initial.push({
-        id: 'tx-init-1',
-        accountId: firstDebt.id,
-        date: parseDateOnly('2026-11-01'),
-        amount: makeMoney(currencyCode, 20000),
-        category: 'payment',
-        payee: 'Monthly Card Payment',
-        memo: 'Payment from checking account',
-        source: 'manual',
-        reconciled: true,
-        createdAt: '2026-11-01T12:00:00.000Z',
-        deletedAt: null,
-      });
-      initial.push({
-        id: 'tx-init-3',
-        accountId: firstDebt.id,
-        date: parseDateOnly('2026-11-04'),
-        amount: makeMoney(currencyCode, 2199),
-        category: 'subscription',
-        payee: 'Streaming Subscription',
-        memo: 'Auto-charged to credit card (+debt)',
-        source: 'recurring_bill',
-        reconciled: false,
-        createdAt: '2026-11-04T08:00:00.000Z',
-        deletedAt: null,
-      });
-    }
-    initial.push({
-      id: 'tx-init-2',
-      accountId: null,
-      date: parseDateOnly('2026-11-02'),
-      amount: makeMoney(currencyCode, 6500),
-      category: 'debit_bill',
-      payee: 'Home Internet (Fiber)',
-      memo: 'Paid via checking debit ($0 debt impact)',
-      source: 'recurring_bill',
-      reconciled: false,
-      createdAt: '2026-11-02T09:00:00.000Z',
-      deletedAt: null,
-    });
-    return initial;
-  });
+  const isPrototypeHousehold = onboardingData?.householdId === 'hh-papi-mama' || onboardingData?.userId === 'test-user-preview';
+
+  const [transactions, setTransactions] = useState<LedgerTransaction[]>(() =>
+    isPrototypeHousehold ? PROTOTYPE_TRANSACTIONS : [],
+  );
 
   const [recurringBills, setRecurringBills] = useState<RecurringBill[]>(() => {
-    const firstDebt = onboardingData?.debts.find(d => d.category === 'Credit card') ?? onboardingData?.debts[0];
-    const bills: RecurringBill[] = [
-      {
-        id: 'rb-util-1',
-        name: 'Electric & Gas Utility',
-        category: 'utilities',
-        amount: makeMoney(currencyCode, 14250),
-        dueDay: 14,
-        paymentMethod: 'debit',
-        autoPost: true,
-        active: true,
-        createdAt: '2026-01-01T00:00:00.000Z',
-      },
-      {
-        id: 'rb-util-2',
-        name: 'Home Internet',
-        category: 'utilities',
-        amount: makeMoney(currencyCode, 6500),
-        dueDay: 2,
-        paymentMethod: 'debit',
-        autoPost: true,
-        active: true,
-        createdAt: '2026-01-01T00:00:00.000Z',
-      },
-    ];
-    if (firstDebt) {
-      bills.push({
-        id: 'rb-sub-1',
-        name: 'Streaming Subscription',
-        category: 'subscription',
-        amount: makeMoney(currencyCode, 2199),
-        dueDay: 4,
-        paymentMethod: 'credit',
-        creditAccountId: firstDebt.id,
-        autoPost: true,
-        active: true,
-        createdAt: '2026-01-01T00:00:00.000Z',
-      });
-    }
-    return bills;
+    return isPrototypeHousehold ? PROTOTYPE_RECURRING_BILLS : [];
   });
 
-  const [reconciliationAnchors, setReconciliationAnchors] = useState<ReconciliationAnchor[]>([]);
+  const [reconciliationAnchors, setReconciliationAnchors] = useState<ReconciliationAnchor[]>(() => {
+    if (isPrototypeHousehold) {
+      return PROTOTYPE_RECONCILIATION_ANCHORS;
+    }
+    return [];
+  });
   const [verifiedFinanceScope, setVerifiedFinanceScope] = useState('');
+  const [reloadFeedback, setReloadFeedback] = useState<{
+    kind: 'success' | 'warning' | 'error';
+    message: string;
+  } | null>(null);
   const financeRecordsVerified = verifiedFinanceScope === `${session?.user?.id ?? 'offline'}:${onboardingData?.userId ?? 'none'}:${currencyCode}`;
 
   // Load finance records from remote/cache on session/user ready
@@ -369,20 +321,96 @@ export function DebtFreeFlow({
       currency: currencyCode,
     }).then(records => {
       if (isCancelled) return;
-      if (records.syncStatus === 'synced') {
-        setVerifiedFinanceScope(`${session?.user?.id ?? 'offline'}:${onboardingData.userId}:${currencyCode}`);
+      if (records.syncStatus === 'synced' || records.syncStatus === 'cached_offline') {
+        const completeSnapshot = records.snapshotStatus === 'authoritative';
+        setVerifiedFinanceScope(completeSnapshot ? `${session?.user?.id ?? 'offline'}:${onboardingData.userId}:${currencyCode}` : '');
+        if (records.snapshotStatus === 'authoritative') {
+          setReloadFeedback(null);
+        } else if (records.snapshotStatus === 'authoritative_with_pending_writes') {
+          setReloadFeedback({ kind: 'warning', message: 'Server records loaded. Some local financial changes are still awaiting confirmation.' });
+        } else {
+          setReloadFeedback({
+            kind: records.error ? 'error' : 'warning',
+            message: records.error
+              ? 'Unable to verify with the server. Showing saved data from this device.'
+              : 'Showing saved offline data. This financial snapshot is not verified against the server.',
+          });
+        }
+        if (isPrototypeHousehold) {
+          if (records.transactions.length > 0) setTransactions(records.transactions);
+          if (records.recurringBills.length > 0) setRecurringBills(records.recurringBills);
+          if (records.reconciliationAnchors.length > 0) setReconciliationAnchors(records.reconciliationAnchors);
+        } else {
+          setTransactions(records.transactions);
+          setRecurringBills(records.recurringBills);
+          setReconciliationAnchors(records.reconciliationAnchors);
+        }
+      }
+    }).catch(() => {
+      if (!isCancelled) setReloadFeedback({ kind: 'error', message: 'Unable to load financial records. Existing data remains on this device.' });
+    });
+    return () => { isCancelled = true; };
+  }, [session, onboardingData?.userId, currencyCode, isPrototypeHousehold]);
+
+  const [reloading, setReloading] = useState(false);
+  const handleReloadAppData = async () => {
+    if (!onboardingData || reloading) return;
+    setReloading(true);
+    setVerifiedFinanceScope('');
+    setLocalError('');
+    setReloadFeedback(null);
+    try {
+      let refreshedData = onboardingData;
+      let settingsError: Error | null = null;
+      if (session) {
+        try {
+          refreshedData = await loadUserOnboardingData(session);
+          if (refreshedData.userId !== onboardingData.userId) {
+            throw new Error('The signed-in account changed. Sign in again to reload.');
+          }
+          onUpdateOnboardingData(refreshedData);
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('signed-in account changed')) throw error;
+          settingsError = error instanceof Error ? error : new Error(String(error));
+        }
+      }
+      const records = await loadFinanceRecords({ session, userId: refreshedData.userId, currency: resolveCurrencyOption(refreshedData).code });
+      const hasServerSnapshot = records.snapshotStatus === 'authoritative' || records.snapshotStatus === 'authoritative_with_pending_writes';
+      if (hasServerSnapshot) {
         setTransactions(records.transactions);
         setRecurringBills(records.recurringBills);
         setReconciliationAnchors(records.reconciliationAnchors);
       }
-    }).catch(() => {
-      // Fallback keeps state
-    });
-    return () => { isCancelled = true; };
-  }, [session, onboardingData?.userId, currencyCode]);
+      const completeSnapshot = records.snapshotStatus === 'authoritative' && settingsError === null;
+      setVerifiedFinanceScope(completeSnapshot ? `${session?.user?.id ?? 'offline'}:${refreshedData.userId}:${resolveCurrencyOption(refreshedData).code}` : '');
+      if (settingsError) {
+        setReloadFeedback({ kind: 'error', message: 'Reload was incomplete. Settings and debts could not be refreshed; existing financial records were kept unless a server snapshot was available.' });
+      } else if (records.snapshotStatus === 'authoritative') {
+        setReloadFeedback({ kind: 'success', message: 'App data refreshed from the server.' });
+      } else if (records.snapshotStatus === 'authoritative_with_pending_writes') {
+        setReloadFeedback({
+          kind: 'warning',
+          message: `${records.pendingWriteCount} local financial change${records.pendingWriteCount === 1 ? '' : 's'} still await confirmation. Server records were refreshed, but this snapshot is not fully verified.`,
+        });
+      } else if (records.error || records.failureKind) {
+        setReloadFeedback({ kind: 'error', message: 'Reload failed. Existing financial records remain on screen; saved offline data was not used to replace them.' });
+      } else {
+        setReloadFeedback({ kind: 'warning', message: 'Showing saved offline data. It has not been verified against the server.' });
+      }
+    } catch (err) {
+      setReloadFeedback({
+        kind: 'error',
+        message: err instanceof Error
+          ? `Reload failed: ${err.message}. Existing financial records remain on screen.`
+          : 'Reload failed. Existing financial records remain on screen.',
+      });
+    } finally {
+      setReloading(false);
+    }
+  };
 
   const handleAddRecurringBill = async (bill: RecurringBill) => {
-    if (!onboardingData) return;
+    if (!onboardingData) throw new Error('Onboarding settings are unavailable. Reload and retry.');
     try {
       const res = await executeAddRecurringBill({
         session,
@@ -391,9 +419,173 @@ export function DebtFreeFlow({
         currentBills: recurringBills,
       });
       setRecurringBills(res.bills);
+      return { outcome: res.syncResult.outcome === 'confirmed' ? 'confirmed' as const : 'pending' as const };
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Unable to add recurring bill.');
+      throw err;
     }
+  };
+
+  const handleDeleteRecurringBill = async (billId: string, expectedSnapshotToken: string) => {
+    if (!onboardingData) throw new Error('Onboarding settings are unavailable. Reload and retry.');
+    if (!session || session.user.id !== onboardingData.userId) throw new Error('The signed-in owner could not be verified. Reconnect and review the bill before retrying; nothing was changed.');
+    const freshData = await loadUserOnboardingData(session);
+    if (freshData.userId !== session.user.id) throw new Error('The refreshed owner does not match this session. Review the bill again; nothing was changed.');
+    const freshRecords = await loadFinanceRecords({ session, userId: freshData.userId, currency: resolveCurrencyOption(freshData).code });
+    if (freshRecords.snapshotStatus !== 'authoritative' || freshRecords.pendingWriteCount !== 0 || freshRecords.syncStatus !== 'synced') {
+      throw new Error('A complete authoritative finance snapshot is unavailable. Reload financial records and review the bill again; nothing was changed.');
+    }
+    const today = currentHouseholdDate(freshData.householdTimeZone);
+    const freshBill = freshRecords.recurringBills.find(bill => bill.id === billId);
+    if (!freshBill || !freshBill.active) throw new Error('This recurring item changed or is no longer active. Review the refreshed bill before retrying; nothing was changed.');
+    const freshPreview = createRecurringBillDeletionPreview({
+      transactions: freshRecords.transactions, bill: freshBill, debts: freshData.debts,
+      ownerId: freshData.userId, asOfDate: today,
+    });
+    if (freshPreview.snapshotToken !== expectedSnapshotToken) {
+      setTransactions(freshRecords.transactions);
+      setRecurringBills(freshRecords.recurringBills);
+      onUpdateOnboardingData(freshData);
+      throw new Error('The bill, linked transactions, or debt revisions changed after confirmation. Nothing was deleted. Review the refreshed details and confirm again.');
+    }
+    if (freshPreview.hasPendingLinkedTransaction) throw new Error('A linked transaction is still awaiting confirmation. Reload financial records and review the bill again; nothing was changed.');
+    const futureTransactions = freshPreview.transactionsToDelete;
+    const preservedHistorySummary = `${freshPreview.preservedPrepayments.length} recorded prepayment(s) applied to future cycles and ${freshPreview.preservedFutureDatedPastCycle.length} future-dated item(s) assigned to past cycles were preserved; no balance effects were reversed.`;
+    const unresolvedAccountTransaction = futureTransactions.find(tx => tx.accountId && !freshData.debts.some(debt => debt.id === tx.accountId));
+    if (unresolvedAccountTransaction) {
+      throw new Error(`The linked future transaction dated ${unresolvedAccountTransaction.date} refers to an account that is not loaded. Reload finance records before deletion; no rows were changed.`);
+    }
+    let currentData = freshData;
+    let currentTransactions = freshRecords.transactions;
+    setTransactions(currentTransactions);
+    setRecurringBills(freshRecords.recurringBills);
+    onUpdateOnboardingData(currentData);
+    let confirmedTransactionCount = 0;
+    try {
+      for (const transaction of futureTransactions) {
+        const result = await executeDeleteTransaction({
+          session,
+          onboardingData: currentData,
+          transactionId: transaction.id,
+          currentTransactions,
+          currencyCode,
+        });
+        currentData = result.updatedOnboardingData ?? currentData;
+        currentTransactions = result.transactions;
+        setTransactions(currentTransactions);
+        onUpdateOnboardingData(currentData);
+        if (result.outcome !== 'confirmed') {
+          return {
+            status: confirmedTransactionCount > 0 ? 'partial' as const : 'pending' as const,
+            deletedTransactions: confirmedTransactionCount,
+            totalTransactions: futureTransactions.length,
+            message: `${confirmedTransactionCount} of ${futureTransactions.length} future-dated linked ledger items were confirmed deleted. The ${transaction.date} item (${transaction.payee}) is awaiting server confirmation; the recurring item was not ended and no later rows were attempted. ${preservedHistorySummary} Unrelated transactions were preserved.`,
+          };
+        }
+        confirmedTransactionCount += 1;
+      }
+      // Re-read immediately before ending the bill. This catches transactions or
+      // balance revisions that changed while the transaction deletions ran.
+      const latestData = await loadUserOnboardingData(session);
+      const latestRecords = await loadFinanceRecords({ session, userId: latestData.userId, currency: resolveCurrencyOption(latestData).code });
+      if (latestData.userId !== session.user.id || latestRecords.snapshotStatus !== 'authoritative' || latestRecords.pendingWriteCount !== 0 || latestRecords.syncStatus !== 'synced') {
+        throw new Error('A complete authoritative finance snapshot is unavailable after processing linked transactions. The recurring item was not ended; reload and review again.');
+      }
+      const latestBill = latestRecords.recurringBills.find(bill => bill.id === billId);
+      if (!latestBill || !latestBill.active) throw new Error('The recurring item changed while linked transactions were processed. Review the refreshed bill before retrying.');
+      const expectedRemainder = createRecurringBillDeletionPreview({
+        transactions: currentTransactions, bill: freshBill, debts: currentData.debts,
+        ownerId: currentData.userId, asOfDate: today,
+      });
+      const latestRemainder = createRecurringBillDeletionPreview({
+        transactions: latestRecords.transactions, bill: latestBill, debts: latestData.debts,
+        ownerId: latestData.userId, asOfDate: today,
+      });
+      if (expectedRemainder.snapshotToken !== latestRemainder.snapshotToken) {
+        setTransactions(latestRecords.transactions);
+        setRecurringBills(latestRecords.recurringBills);
+        onUpdateOnboardingData(latestData);
+        throw new Error('Linked transactions, the bill revision, or a debt balance revision changed during processing. The recurring item was not ended; review the refreshed details and confirm again.');
+      }
+      currentData = latestData;
+      currentTransactions = latestRecords.transactions;
+      setTransactions(currentTransactions);
+      setRecurringBills(latestRecords.recurringBills);
+      onUpdateOnboardingData(currentData);
+      const result = await executeDeleteRecurringBill({
+        session,
+        userId: currentData.userId,
+        billId,
+        currentBills: latestRecords.recurringBills,
+      });
+      setRecurringBills(result.bills);
+      if (result.syncResult.outcome === 'confirmed') {
+        const scheduleKey = obligationScheduleKey('bill', billId);
+        let cleanupData = currentData;
+        const cleanupFailures: string[] = [];
+        try {
+          cleanupData = await removeObligationEditorSchedule({ current: cleanupData, key: scheduleKey, session });
+          onUpdateOnboardingData(cleanupData);
+        } catch (error) {
+          cleanupFailures.push(`Schedule cleanup: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const loanBillPairingByDebtId = withoutDeletedBillPairings(cleanupData.loanBillPairingByDebtId, billId);
+        if (Object.keys(loanBillPairingByDebtId).length !== Object.keys(cleanupData.loanBillPairingByDebtId ?? {}).length) {
+          try {
+            cleanupData = await saveUserOnboardingSettingsPatch(cleanupData, { loanBillPairingByDebtId }, session!);
+            onUpdateOnboardingData(cleanupData);
+          } catch (error) {
+            cleanupFailures.push(`Loan/bill link cleanup: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        const recurringBillCategoryLabelByBillId = { ...(cleanupData.recurringBillCategoryLabelByBillId ?? {}) };
+        delete recurringBillCategoryLabelByBillId[billId];
+        if (Object.keys(recurringBillCategoryLabelByBillId).length !== Object.keys(cleanupData.recurringBillCategoryLabelByBillId ?? {}).length) {
+          try {
+            cleanupData = await saveUserOnboardingSettingsPatch(cleanupData, { recurringBillCategoryLabelByBillId }, session!);
+            onUpdateOnboardingData(cleanupData);
+          } catch (error) {
+            cleanupFailures.push(`Custom category cleanup: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (cleanupFailures.length) {
+          return {
+            status: 'partial' as const,
+            deletedTransactions: confirmedTransactionCount,
+            totalTransactions: futureTransactions.length,
+            billDeleted: true,
+            message: `Recurring item deletion and ${confirmedTransactionCount} of ${futureTransactions.length} linked future transaction deletion(s) were confirmed. Cleanup was not atomic; ${cleanupFailures.join('; ')}. Remaining metadata is preserved in settings and backup for recovery. ${preservedHistorySummary}`,
+          };
+        }
+        return { status: 'confirmed' as const, deletedTransactions: confirmedTransactionCount, totalTransactions: futureTransactions.length, billDeleted: true, message: `The recurring item ended. ${confirmedTransactionCount} future-cycle transaction(s) were confirmed deleted. ${preservedHistorySummary} Unrelated transactions were preserved.` };
+      }
+      return {
+        status: 'pending' as const,
+        deletedTransactions: confirmedTransactionCount,
+        totalTransactions: futureTransactions.length,
+        billDeleted: false,
+        message: `${confirmedTransactionCount} of ${futureTransactions.length} future-dated linked ledger items were confirmed deleted. The recurring item's server deletion is pending; its schedule settings were kept for review. ${preservedHistorySummary} Unrelated transactions were preserved.`,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to end recurring bill.';
+      setLocalError(message);
+      if (confirmedTransactionCount > 0) {
+        return {
+          status: 'partial' as const,
+          deletedTransactions: confirmedTransactionCount,
+          totalTransactions: futureTransactions.length,
+          billDeleted: false,
+          message: `${confirmedTransactionCount} of ${futureTransactions.length} future-dated linked ledger items were confirmed deleted. Processing stopped: ${message}. The recurring item remains active. ${preservedHistorySummary} Unrelated transactions were preserved.`,
+        };
+      }
+      throw err;
+    }
+  };
+
+  const handleSaveObligationSchedule = async (key: ObligationScheduleKey, schedule: ObligationSchedule) => {
+    if (!onboardingData) throw new Error('Onboarding settings are unavailable. Reload and retry.');
+    const saved = await saveObligationEditorSchedule({ current: onboardingData, key, schedule, session });
+    onUpdateOnboardingData(saved);
   };
 
   const handleAddTransaction = async (tx: LedgerTransaction) => {
@@ -462,7 +654,7 @@ export function DebtFreeFlow({
     }
   };
 
-  const handleRecordBillPayment = async (bill: RecurringBill, dueCycle: DateOnly) => {
+  const handleRecordBillPayment = async (bill: RecurringBill, dueCycle: DateOnly, amount?: Money) => {
     if (!onboardingData) return { outcome: 'rejected' as const, syncStatus: 'cached_offline' as const };
     try {
       const res = await executeRecordBillPayment({
@@ -470,8 +662,10 @@ export function DebtFreeFlow({
         onboardingData,
         bill,
         dueCycle,
+        amount,
         currencyCode,
         currentTransactions: transactions,
+        householdTimeZone: onboardingData.householdTimeZone,
       });
       setTransactions(res.transactions);
       if (res.updatedOnboardingData) {
@@ -555,6 +749,7 @@ export function DebtFreeFlow({
 
   const openNewDebtEditor = (category: DebtCategory) => {
     clearErrors();
+    setOnboardingBillRecovery(null);
     const existingForUniqueType =
       category === 'Mortgage' || category === 'Auto loan'
         ? onboardingData?.debts.find(d => d.category === category)
@@ -567,6 +762,7 @@ export function DebtFreeFlow({
 
     setEditingDebtId(null);
     draftDebtIdRef.current = Crypto.randomUUID();
+    draftDebtPaidTodayRef.current = {};
     setDebtCategory(category);
     setDebtName(
       category === 'Mortgage'
@@ -586,8 +782,10 @@ export function DebtFreeFlow({
 
   const openEditDebtEditor = (item: DebtItem) => {
     clearErrors();
+    setOnboardingBillRecovery(null);
     setEditingDebtId(item.id);
     draftDebtIdRef.current = null;
+    draftDebtPaidTodayRef.current = {};
     setDebtCategory(item.category);
     setDebtName(item.name);
     setDebtBalance(formatEditableMoney(item.balance, currencyCode));
@@ -617,11 +815,18 @@ export function DebtFreeFlow({
       return;
     }
 
+    const debtId = editingDebtId ?? (draftDebtIdRef.current ??= Crypto.randomUUID());
+    const isDraftDebt = draftDebtIdRef.current === debtId;
+    const existingDebt = onboardingData.debts.find(d => d.id === debtId);
+    const dueDay = validation.debt.dueDay;
+    const shouldCreateOnboardingBill = stage === 'onboard_3' && !onboardingData.onboardingCompleted &&
+      (validation.debt.category === 'Mortgage' || validation.debt.category === 'Auto loan') && validation.debt.balance > 0;
     // Prevent duplicate rapid creation of identical debt name + category when not editing
     if (
       !editingDebtId &&
       onboardingData.debts.some(
         d =>
+          d.id !== debtId &&
           d.name.toLowerCase() === validation.debt.name.toLowerCase() &&
           d.category === validation.debt.category,
       )
@@ -633,19 +838,206 @@ export function DebtFreeFlow({
     savingRef.current = true;
     setSaving(true);
     try {
-      const updated = await upsertUserDebt(onboardingData, {
-        id: editingDebtId ?? (draftDebtIdRef.current ??= Crypto.randomUUID()),
+      const today = currentHouseholdDate(onboardingData.householdTimeZone);
+    if (shouldCreateOnboardingBill && dueDay === null) {
+      setLocalError('Enter the monthly due day so the linked recurring payment can keep its correct schedule.');
+      return;
+    }
+      const key = obligationScheduleKey('debt', debtId);
+      const priorSchedule = onboardingData.obligationSchedules?.[key];
+      let paidToday = draftDebtPaidTodayRef.current[debtId] ?? false;
+      if (dueDay !== null && draftDebtPaidTodayRef.current[debtId] === undefined && shouldAskPaidToday({
+        dueDay, today, isNew: isDraftDebt, legacyDueDay: existingDebt?.dueDay, hasSchedule: Boolean(priorSchedule),
+      })) {
+        const answer = await confirmObligationPaidToday();
+        if (answer === null) return;
+        paidToday = answer;
+        draftDebtPaidTodayRef.current[debtId] = answer;
+      }
+
+      const debtUnchanged = Boolean(existingDebt && existingDebt.name === validation.debt.name &&
+        existingDebt.category === validation.debt.category && existingDebt.balance === validation.debt.balance &&
+        existingDebt.originalBalance === validation.debt.originalBalance && existingDebt.apr === validation.debt.apr &&
+        existingDebt.minimumPayment === validation.debt.minimumPayment && existingDebt.dueDay === validation.debt.dueDay &&
+        existingDebt.creditLimit === validation.debt.creditLimit);
+      const updated = debtUnchanged ? onboardingData : await upsertUserDebt(onboardingData, {
+        id: debtId,
         ...validation.debt,
       });
       onUpdateOnboardingData(updated);
+      let settingsData = updated;
+      const savedDebt = updated.debts.find(debt => debt.id === debtId);
+      const nextPairings = savedDebt
+        ? withoutIncompatibleDebtPairing(updated.loanBillPairingByDebtId, savedDebt, recurringBills)
+        : updated.loanBillPairingByDebtId;
+      if (JSON.stringify(nextPairings) !== JSON.stringify(updated.loanBillPairingByDebtId ?? {})) {
+        try {
+          if (!session) throw new Error('Signed-in session is unavailable for settings cleanup.');
+          settingsData = await saveUserOnboardingSettingsPatch(updated, { loanBillPairingByDebtId: nextPairings }, session);
+          onUpdateOnboardingData(settingsData);
+        } catch (error) {
+          setLocalError(`Debt account saved, but its now-incompatible loan/bill link could not be cleared: ${error instanceof Error ? error.message : String(error)}. It remains preserved in settings and backup for recovery.`);
+        }
+      }
+      if (dueDay !== null) {
+        const schedule = prepareObligationEditorSchedule({
+          kind: 'debt', id: debtId, today, timeZone: onboardingData.householdTimeZone,
+          dueDay, amount: parseMoney(String(validation.debt.minimumPayment), currencyCode),
+          legacyDueDay: existingDebt?.dueDay ?? undefined,
+          legacyAmount: existingDebt?.dueDay !== null && existingDebt?.dueDay !== undefined
+            ? parseMoney(String(existingDebt.minimumPayment), currencyCode)
+            : undefined,
+          createdAt: existingDebt?.createdAt ?? settingsData.debts.find(d => d.id === debtId)?.createdAt ?? new Date().toISOString(),
+          isNew: isDraftDebt, paidToday, existing: priorSchedule,
+        });
+        const settings = await saveObligationEditorSchedule({ current: settingsData, key, schedule, session });
+        settingsData = settings;
+        onUpdateOnboardingData(settings);
+      }
+      if (shouldCreateOnboardingBill && savedDebt && dueDay !== null) {
+        const bill = createOnboardingLoanBill(savedDebt, currencyCode, savedDebt.createdAt);
+        const billScheduleKey = obligationScheduleKey('bill', bill.id);
+        const currentBillSchedule = settingsData.obligationSchedules?.[billScheduleKey];
+        const debtCycle = settingsData.obligationSchedules?.[key]
+          ? getObligationCycle(settingsData.obligationSchedules[key], today.slice(0, 7))
+          : null;
+        const billSchedule = prepareObligationEditorSchedule({
+          kind: 'bill', id: bill.id, today, timeZone: onboardingData.householdTimeZone,
+          dueDay, amount: bill.amount, createdAt: bill.createdAt, isNew: !currentBillSchedule,
+          paidToday: Boolean(debtCycle?.dueDate === today && debtCycle.acknowledgedPaid), existing: currentBillSchedule,
+        });
+        settingsData = await saveObligationEditorSchedule({ current: settingsData, key: billScheduleKey, schedule: billSchedule, session });
+        onUpdateOnboardingData(settingsData);
+
+        const existingBill = recurringBills.find(item => item.id === bill.id);
+        const billSaveAction = onboardingLoanBillSaveAction({ existingBill, desiredBill: bill, authoritativeSnapshot: financeRecordsVerified });
+        if (billSaveAction === 'wait_for_recovery') {
+          setOnboardingBillRecovery('needed');
+          setLocalError('The recurring item needs a safe server readback before another bill write. Use Refresh bill status below; no bill write was replayed.');
+          return;
+        }
+        if (billSaveAction === 'conflict') {
+          setOnboardingBillRecovery('conflict');
+          setLocalError('The server has a recurring item with this account ID, but its details differ from this draft. No bill was changed. Refresh status again or resolve the server record before saving this linked payment.');
+          return;
+        }
+        let billOutcome: 'confirmed' | 'pending';
+        if (billSaveAction === 'reuse_confirmed') {
+          billOutcome = 'confirmed';
+        } else {
+          // This is an explicit Save after a complete authoritative readback proved the ID absent.
+          setOnboardingBillRecovery('needed');
+          billOutcome = (await handleAddRecurringBill(bill)).outcome;
+        }
+        if (billOutcome !== 'confirmed') {
+          setOnboardingBillRecovery('needed');
+          setLocalError('The linked recurring item is still awaiting server confirmation. Refresh bill status below before retrying; no payment or debt balance change was created.');
+          return;
+        }
+        setOnboardingBillRecovery(current => current ? 'confirmed' : null);
+        const existingPairing = settingsData.loanBillPairingByDebtId?.[debtId];
+        if (existingPairing?.status !== 'linked' || existingPairing.billId !== bill.id) {
+          if (!session) throw new Error('Signed-in session is unavailable to confirm the loan payment link. The debt and recurring item are saved; retry from this onboarding step.');
+          settingsData = await saveUserOnboardingSettingsPatch(settingsData, {
+            loanBillPairingByDebtId: { ...(settingsData.loanBillPairingByDebtId ?? {}), [debtId]: { status: 'linked', billId: bill.id } },
+          }, session);
+          onUpdateOnboardingData(settingsData);
+        }
+      }
       setShowDebtForm(false);
       setEditingDebtId(null);
       draftDebtIdRef.current = null;
+      delete draftDebtPaidTodayRef.current[debtId];
+      setOnboardingBillRecovery(null);
     } catch (err) {
+      if (shouldCreateOnboardingBill) setOnboardingBillRecovery(current => current ?? 'needed');
       setLocalError(err instanceof Error ? err.message : 'Unable to save debt account.');
     } finally {
       savingRef.current = false;
       setSaving(false);
+    }
+  };
+
+  const handleRefreshOnboardingBillStatus = async () => {
+    if (!onboardingData || onboardingBillRecovery === 'loading') return;
+    if (!session || session.user.id !== onboardingData.userId) {
+      setOnboardingBillRecovery('error');
+      setLocalError('A matching signed-in session is required to refresh this bill. Reconnect, then refresh status again; no write was sent.');
+      return;
+    }
+    setOnboardingBillRecovery('loading');
+    setLocalError('');
+    setVerifiedFinanceScope('');
+    try {
+      const freshData = await loadUserOnboardingData(session);
+      if (freshData.userId !== session.user.id || freshData.userId !== onboardingData.userId) {
+        throw new Error('The refreshed onboarding owner does not match this signed-in account. No changes were made.');
+      }
+      const freshRecords = await loadFinanceRecords({
+        session,
+        userId: freshData.userId,
+        currency: resolveCurrencyOption(freshData).code,
+      });
+      onUpdateOnboardingData(freshData);
+      if (freshRecords.snapshotStatus === 'authoritative' || freshRecords.snapshotStatus === 'authoritative_with_pending_writes') {
+        setTransactions(freshRecords.transactions);
+        setRecurringBills(freshRecords.recurringBills);
+        setReconciliationAnchors(freshRecords.reconciliationAnchors);
+      }
+      const complete = freshRecords.snapshotStatus === 'authoritative' &&
+        freshRecords.pendingWriteCount === 0 && freshRecords.syncStatus === 'synced';
+      setVerifiedFinanceScope(complete
+        ? `${session.user.id}:${freshData.userId}:${resolveCurrencyOption(freshData).code}`
+        : '');
+      if (!complete) {
+        setOnboardingBillRecovery(freshRecords.failureKind ? 'error' : 'pending');
+        setLocalError(freshRecords.error
+          ? `Server readback failed: ${freshRecords.error.message}. The current form and draft ID are preserved; retry Refresh bill status when connected.`
+          : freshRecords.pendingWriteCount > 0
+            ? `${freshRecords.pendingWriteCount} financial change(s) still await confirmation. The server snapshot is not complete; retry Refresh bill status before saving the linked payment.`
+            : 'A complete authoritative finance snapshot is unavailable. The current form and draft ID are preserved; retry Refresh bill status when connected.');
+        return;
+      }
+      const debtId = draftDebtIdRef.current ?? editingDebtId;
+      const freshDebt = debtId ? freshData.debts.find(debt => debt.id === debtId) : undefined;
+      const draftValidation = validateDebtDraft({
+        name: debtName, category: debtCategory, balanceRaw: debtBalance,
+        originalBalanceRaw: debtOriginalBalance, aprRaw: debtApr,
+        minimumPaymentRaw: debtMinimum, dueDayRaw: debtDueDay,
+        creditLimitRaw: debtCreditLimit,
+      }, resolveCurrencyOption(freshData).code);
+      const expectedBill = freshDebt && draftValidation.valid
+        ? createOnboardingLoanBill({ ...freshDebt, ...draftValidation.debt }, resolveCurrencyOption(freshData).code, freshDebt.createdAt)
+        : null;
+      const serverBill = debtId ? freshRecords.recurringBills.find(bill => bill.id === debtId) : undefined;
+      if (!freshDebt) {
+        setOnboardingBillRecovery('retry');
+        setLocalError('The authoritative refresh completed, but the debt row is absent. Review the preserved form and press Save to retry with the same draft ID.');
+      } else if (!draftValidation.valid) {
+        setOnboardingBillRecovery('error');
+        setLocalError(`The authoritative refresh completed, but the current form needs correction: ${draftValidation.error}. Your draft ID and paid-today answer are preserved.`);
+      } else if (!expectedBill) {
+        setOnboardingBillRecovery('error');
+        setLocalError('The authoritative refresh completed, but the linked recurring item could not be compared safely. Correct the form or refresh again; no bill was changed.');
+      } else {
+        const action = onboardingLoanBillSaveAction({ existingBill: serverBill, desiredBill: expectedBill, authoritativeSnapshot: true });
+        if (action === 'reuse_confirmed') {
+          setOnboardingBillRecovery('confirmed');
+          setLocalError('Server readback confirmed the recurring item matches this debt. Press Save to finish or confirm its link; no bill write is needed.');
+        } else if (action === 'persist') {
+          setOnboardingBillRecovery('retry');
+          setLocalError('The authoritative server snapshot contains no recurring item with this draft ID. Press Save to retry once; the same ID will be used.');
+        } else if (action === 'conflict') {
+          setOnboardingBillRecovery('conflict');
+          setLocalError('The server has a recurring item with this account ID, but its details differ from the saved debt. No bill was changed. Resolve that server record before saving this linked payment.');
+        } else {
+          setOnboardingBillRecovery('pending');
+          setLocalError('The server returned a row without enough confirmation metadata to safely reuse it. Refresh status again or recover the record before saving.');
+        }
+      }
+    } catch (error) {
+      setOnboardingBillRecovery('error');
+      setLocalError(`Authoritative readback failed: ${error instanceof Error ? error.message : String(error)}. The current form and draft ID are preserved; retry Refresh bill status when connected.`);
     }
   };
 
@@ -657,6 +1049,27 @@ export function DebtFreeFlow({
     try {
       const updated = await deleteUserDebt(onboardingData, debtId);
       onUpdateOnboardingData(updated);
+      const loanBillPairingByDebtId = withoutDeletedDebtPairing(updated.loanBillPairingByDebtId, debtId);
+      const mortgageEscrowByDebtId = { ...(updated.mortgageEscrowByDebtId ?? {}) };
+      const mortgageExtraPaymentByDebtId = { ...(updated.mortgageExtraPaymentByDebtId ?? {}) };
+      const obligationSchedules = { ...(updated.obligationSchedules ?? {}) };
+      delete mortgageEscrowByDebtId[debtId];
+      delete mortgageExtraPaymentByDebtId[debtId];
+      delete obligationSchedules[obligationScheduleKey('debt', debtId)];
+      const cleanupPatch: Partial<UserOnboardingData> = {
+        ...(Object.keys(loanBillPairingByDebtId).length !== Object.keys(updated.loanBillPairingByDebtId ?? {}).length ? { loanBillPairingByDebtId } : {}),
+        ...(Object.keys(mortgageEscrowByDebtId).length !== Object.keys(updated.mortgageEscrowByDebtId ?? {}).length ? { mortgageEscrowByDebtId } : {}),
+        ...(Object.keys(mortgageExtraPaymentByDebtId).length !== Object.keys(updated.mortgageExtraPaymentByDebtId ?? {}).length ? { mortgageExtraPaymentByDebtId } : {}),
+        ...(Object.keys(obligationSchedules).length !== Object.keys(updated.obligationSchedules ?? {}).length ? { obligationSchedules } : {}),
+      };
+      if (Object.keys(cleanupPatch).length) {
+        try {
+          if (!session) throw new Error('Signed-in session is unavailable for settings cleanup.');
+          onUpdateOnboardingData(await saveUserOnboardingSettingsPatch(updated, cleanupPatch, session));
+        } catch (error) {
+          setLocalError(`Debt deletion was confirmed, but related settings cleanup could not be confirmed: ${error instanceof Error ? error.message : String(error)}. Export preserves the remaining metadata for recovery.`);
+        }
+      }
       if (editingDebtId === debtId) {
         setShowDebtForm(false);
         setEditingDebtId(null);
@@ -755,12 +1168,12 @@ export function DebtFreeFlow({
             {onTestUserSignIn ? (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Preview app with sample debts"
+                accessibilityLabel="Preview app with prototype household"
                 style={[styles.primaryButton, { backgroundColor: '#1E2C28', borderColor: '#81DFD2', borderWidth: 1, marginTop: 10 }]}
                 onPress={onTestUserSignIn}
               >
                 <Text style={[styles.primaryButtonText, { color: '#81DFD2' }]}>
-                  Preview with sample debts (Skip Sign-in)
+                  Preview Prototype Household (Skip Sign-in)
                 </Text>
               </Pressable>
             ) : null}
@@ -892,13 +1305,13 @@ export function DebtFreeFlow({
           {onTestUserSignIn ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Preview app with sample debts"
+              accessibilityLabel="Preview app with prototype household"
               style={[styles.providerButton, { backgroundColor: '#1E2C28', borderColor: '#81DFD2', borderWidth: 1, marginTop: 12 }]}
               onPress={onTestUserSignIn}
             >
               <AppIcon name="brandRise" size={16} color="#81DFD2" />
               <Text style={[styles.providerButtonText, { color: '#81DFD2', fontWeight: 'bold' }]}>
-                Preview with Sample Debts (Skip Auth)
+                Preview Prototype Household (Skip Auth)
               </Text>
             </Pressable>
           ) : null}
@@ -1810,6 +2223,7 @@ export function DebtFreeFlow({
   // SCREEN 08: ONBOARDING SETUP 3 OF 5 — ADD YOUR DEBTS (onboard_03.png)
   // ============================================================================
   if (stage === 'onboard_3') {
+    const mortgageDebt = onboardingData.debts.find(d => d.category === 'Mortgage');
     const autoLoanDebt = onboardingData.debts.find(d => d.category === 'Auto loan');
     const otherDebts = onboardingData.debts.filter(
       d => d.category !== 'Mortgage' && d.category !== 'Auto loan',
@@ -1824,6 +2238,15 @@ export function DebtFreeFlow({
     };
 
     const handleContinueDebts = () => {
+      const unlinkedLoan = onboardingData.debts.find(debt => {
+        if ((debt.category !== 'Mortgage' && debt.category !== 'Auto loan') || debt.balance <= 0) return false;
+        const relation = onboardingData.loanBillPairingByDebtId?.[debt.id];
+        return relation?.status !== 'linked' || !recurringBills.some(bill => bill.id === relation.billId && bill.active);
+      });
+      if (unlinkedLoan) {
+        setLocalError(`${unlinkedLoan.name} still needs its linked recurring payment confirmed. Reopen its editor, refresh bill status, and retry or resolve the server record before continuing setup.`);
+        return;
+      }
       const err = validateDebtsStep(
         onboardingData.homeStatus,
         onboardingData.vehicleStatus,
@@ -1883,6 +2306,27 @@ export function DebtFreeFlow({
             </View>
 
             <Text style={styles.sectionTitle}>Accounts to add</Text>
+
+            {/* Home / Mortgage Row */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Home mortgage — Balance, APR and payment"
+              style={[styles.twoRowCard, Boolean(mortgageDebt) && styles.twoRowCardSelected]}
+              onPress={() => openNewDebtEditor('Mortgage')}
+            >
+              <View style={styles.twoRowLeft}>
+                <View style={styles.iconCircle}><AppIcon name="homeLoan" size={18} color="#91DED7" /></View>
+                <View style={styles.flex1}>
+                  <Text style={styles.twoRowTitle}>Home / Mortgage</Text>
+                  <Text style={styles.twoRowSub}>{mortgageDebt
+                    ? `${mortgageDebt.name} · ${formatCurrency(mortgageDebt.balance, currencyCode)} · ${mortgageDebt.apr}% APR`
+                    : 'Balance, APR & monthly payment'}</Text>
+                </View>
+              </View>
+              <View style={[styles.selectCircle, Boolean(mortgageDebt) && styles.selectCircleSelected]}>
+                <AppIcon name={mortgageDebt ? 'check' : 'plus'} size={11} color="#FFFFFF" />
+              </View>
+            </Pressable>
 
             {/* Auto Loan Row */}
             <Pressable
@@ -2015,7 +2459,7 @@ export function DebtFreeFlow({
                     />
                   </View>
                   <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>Due day (1–31, optional)</Text>
+                  <Text style={styles.fieldLabelSmall}>{!onboardingData.onboardingCompleted && (debtCategory === 'Mortgage' || debtCategory === 'Auto loan') ? 'Monthly due day (1–31, required)' : 'Due day (1–31, optional)'}</Text>
                     <TextInput
                       accessibilityLabel="Due day of month"
                       style={styles.textInputField}
@@ -2027,6 +2471,10 @@ export function DebtFreeFlow({
                     />
                   </View>
                 </View>
+
+                {!editingDebtId && Number.isInteger(Number(debtDueDay)) && Number(debtDueDay) >= 1 && Number(debtDueDay) <= 31 ? (
+                  <Text style={styles.fieldLabelSmall}>{`First due date: ${obligationFirstDueDate(Number(debtDueDay), currentHouseholdDate(onboardingData.householdTimeZone), currencyCode)}`}</Text>
+                ) : null}
 
                 {debtCategory === 'Credit card' ? (
                   <>
@@ -2058,6 +2506,43 @@ export function DebtFreeFlow({
                   </>
                 )}
 
+                {onboardingBillRecovery ? (
+                  <View style={[styles.calloutOrange, { marginTop: 12 }]}>
+                    <Text style={styles.calloutOrangeTitle}>
+                      {onboardingBillRecovery === 'loading' ? 'Checking server status' :
+                        onboardingBillRecovery === 'confirmed' ? 'Recurring item confirmed' :
+                          onboardingBillRecovery === 'retry' ? 'Safe retry available' :
+                            onboardingBillRecovery === 'conflict' ? 'Server record conflict' :
+                              onboardingBillRecovery === 'error' ? 'Readback error' :
+                                'Confirmation still pending'}
+                    </Text>
+                    <Text style={styles.calloutOrangeText}>
+                      {onboardingBillRecovery === 'loading'
+                        ? 'Reading your authenticated onboarding and finance records. Your form, draft ID, and paid-today answer are being kept.'
+                        : onboardingBillRecovery === 'confirmed'
+                          ? 'The server row matches this draft. Press Save to finish the link; no recurring item will be recreated.'
+                          : onboardingBillRecovery === 'retry'
+                            ? 'A complete server snapshot found no row for this draft ID. Press Save to retry once with the same ID.'
+                            : onboardingBillRecovery === 'conflict'
+                              ? `A server row exists with this ID but has different details. No bill will be overwritten or duplicated. Adjust the draft to the server row shown here, then Save to reuse it, or recover the server record. ${(() => { const row = recurringBills.find(bill => bill.id === (draftDebtIdRef.current ?? editingDebtId)); return row ? `Server row: ${row.name}, ${formatCurrency(moneyToMajor(row.amount), currencyCode)} monthly, due day ${row.dueDay}.` : ''; })()}`
+                              : onboardingBillRecovery === 'error'
+                                ? 'The server could not be verified. Retry this readback when connected; no mutation was replayed.'
+                                : 'The server state is not yet conclusive. Refresh again before retrying Save; no mutation was replayed.'}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Refresh bill status from server"
+                      disabled={onboardingBillRecovery === 'loading' || saving}
+                      style={[styles.subtleActionBtn, { marginTop: 10, alignSelf: 'flex-start' }, (onboardingBillRecovery === 'loading' || saving) && styles.disabledButton]}
+                      onPress={() => void handleRefreshOnboardingBillStatus()}
+                    >
+                      {onboardingBillRecovery === 'loading'
+                        ? <ActivityIndicator color="#FFFFFF" size="small" />
+                        : <Text style={styles.subtleActionBtnText}>Refresh bill status</Text>}
+                    </Pressable>
+                  </View>
+                ) : null}
+
                 <View style={[styles.choiceGrid2, { marginTop: 14 }]}>
                   <Pressable
                     accessibilityRole="button"
@@ -2067,6 +2552,9 @@ export function DebtFreeFlow({
                       clearErrors();
                       setShowDebtForm(false);
                       setEditingDebtId(null);
+                      draftDebtIdRef.current = null;
+                      draftDebtPaidTodayRef.current = {};
+                      setOnboardingBillRecovery(null);
                     }}
                   >
                     <Text style={styles.subtleActionBtnText}>Cancel</Text>
@@ -2089,12 +2577,12 @@ export function DebtFreeFlow({
             ) : null}
 
             {/* Added Debts List */}
-            {activeDebts(onboardingData.debts).length > 0 ? (
+            {onboardingData.debts.length > 0 ? (
               <View style={{ marginTop: 10 }}>
                 <Text style={styles.sectionTitle}>
-                  Added accounts ({activeDebts(onboardingData.debts).length})
+                  Added accounts ({onboardingData.debts.length})
                 </Text>
-                {activeDebts(onboardingData.debts).map(item => (
+                {onboardingData.debts.map(item => (
                   <View key={item.id} style={styles.addedItemCard}>
                     <View style={styles.flex1}>
                       <Text style={styles.addedItemTitle}>
@@ -2540,7 +3028,15 @@ export function DebtFreeFlow({
       onRecordBillPayment={handleRecordBillPayment}
       onReconcileDebt={handleReconcileDebt}
       onAddRecurringBill={handleAddRecurringBill}
+      onDeleteRecurringBill={handleDeleteRecurringBill}
+      onSaveObligationSchedule={handleSaveObligationSchedule}
+      onUpdateTransactions={setTransactions}
+      onUpdateRecurringBills={setRecurringBills}
+      onUpdateReconciliationAnchors={setReconciliationAnchors}
       authBusy={authBusy}
+      onReload={handleReloadAppData}
+      reloading={reloading}
+      reloadFeedback={reloadFeedback}
     />
   );
 }
