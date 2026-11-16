@@ -3,10 +3,9 @@ import { Alert } from 'react-native';
 import type { UserOnboardingData } from '../onboarding-domain';
 import { FinancialSettingsConflictError, loadUserOnboardingData, saveUserOnboardingData } from '../onboarding-storage';
 import { type DateOnly } from './calendar';
-import { makeMoney, type Money } from './money';
+import { makeMoney } from './money';
 import {
   initializeObligationSchedule,
-  obligationScheduleKey,
   validateObligationSchedule,
   type ObligationSchedule,
   type ObligationScheduleKey,

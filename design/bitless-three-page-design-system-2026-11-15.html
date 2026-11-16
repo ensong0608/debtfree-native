@@ -1,0 +1,329 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>
+<style>
+#account-studies{font-family:Arial,sans-serif;color:var(--foreground)}
+#account-studies *{box-sizing:border-box}
+#account-studies .design-picker{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+#account-studies .design-picker button{font:500 12px Arial;border:1px solid var(--border);background:var(--card);color:var(--foreground);border-radius:24px;padding:11px 12px;cursor:pointer}
+#account-studies .design-picker button[aria-pressed=true]{background:#0051fb;border-color:#0051fb;color:#fff}
+#account-studies .stage{max-width:430px;margin:auto;container-type:inline-size}
+#account-studies .phone{height:203.87cqw;background:#f5f7fc;color:#182032;position:relative;border-radius:20px;overflow:hidden;box-shadow:0 12px 38px #070d5b14;display:flex;flex-direction:column;font-family:Arial,sans-serif;line-height:1.25}
+#account-studies .chrome{display:flex;align-items:center;justify-content:space-between;padding:4.2cqw 4cqw 2.5cqw;flex-shrink:0}
+#account-studies .brand{display:flex;align-items:center;gap:2.5cqw;font-size:6cqw;font-weight:700;letter-spacing:-.25cqw}
+#account-studies .logo{display:block;width:5.9cqw;height:5.9cqw;overflow:hidden;position:relative;border-radius:1.4cqw;background:#0051fb;flex-shrink:0}
+#account-studies .logo img{position:absolute;width:100cqw;max-width:none;left:-3.85cqw;top:-4.65cqw}
+#account-studies .gear{color:#637083;font-size:6cqw;line-height:1;display:grid;place-items:center;width:9cqw;height:9cqw}
+#account-studies .sections{display:flex;padding:0 4cqw;flex-shrink:0;gap:1cqw}
+#account-studies .sections button{flex:1;border:0;border-bottom:2px solid transparent;padding:3cqw 0 3.3cqw;background:transparent;color:#626e80;font-family:Arial,sans-serif;font-size:4.5cqw;font-weight:500;cursor:pointer}
+#account-studies .sections button[aria-selected=true]{border-bottom-color:#0051fb;color:#0051fb}
+#account-studies .content{flex:1;min-height:0;overflow:hidden;padding:4cqw 4cqw 0}
+#account-studies .nav{height:15.15cqw;position:relative;background:#fff;flex-shrink:0;z-index:4;overflow:hidden}
+#account-studies .nav img{width:100%;max-width:none;position:absolute;bottom:0;left:0}
+#account-studies .fab{position:absolute;z-index:5;right:4.3cqw;bottom:19.6cqw;width:13.66cqw;height:13.66cqw;border:0;border-radius:50%;background:#0051fb;box-shadow:0 2cqw 3cqw #0003;pointer-events:none}
+#account-studies .fab:before,#account-studies .fab:after{content:'';position:absolute;top:50%;left:50%;background:#fff;width:5.2cqw;height:.8cqw;border-radius:10px;transform:translate(-50%,-50%)}
+#account-studies .fab:after{transform:translate(-50%,-50%) rotate(90deg)}
+#account-studies [data-page=strategy] .fab{display:none}
+#account-studies .hero{isolation:isolate;position:relative;overflow:hidden;padding:4cqw;border-radius:4.5cqw;background:linear-gradient(118deg,#070d5b,#0051fb);color:#fff;box-shadow:0 5px 12px #0051fb12}
+#account-studies .hero:after{content:'';position:absolute;z-index:-1;border:1px solid #abdffd22;border-radius:50%;width:54cqw;height:54cqw;right:-22cqw;top:-22cqw;box-shadow:0 0 0 5cqw #abdffd07,0 0 0 10cqw #abdffd05}
+#account-studies .hero-label{font-size:max(11px,3.2cqw);color:#dceaff;display:flex;align-items:center;justify-content:space-between;gap:2cqw}
+#account-studies .info{font-size:max(11px,3cqw);font-weight:600;opacity:.85}
+#account-studies .money{font-size:8.8cqw;letter-spacing:-.4cqw;font-weight:600;white-space:nowrap;line-height:1.15}
+#account-studies .money small{font-size:5.3cqw;letter-spacing:-.15cqw}
+#account-studies .hero .money{margin:2cqw 0}
+#account-studies .hero-foot{font-size:max(11px,3cqw);color:#dceaff;display:flex;align-items:center;justify-content:space-between;gap:2cqw}
+#account-studies .hero-date{font-size:8.4cqw;letter-spacing:-.4cqw;font-weight:600;margin:1.8cqw 0 1.5cqw}
+#account-studies .hero-scope{font-size:max(11px,2.8cqw);color:#cee3ff;margin-top:2.6cqw}
+#account-studies .hero-months{font-size:3.7cqw;font-weight:500;color:#fff}
+#account-studies .hero-method{font-size:max(11px,2.9cqw);background:#ffffff19;border:1px solid #ffffff16;padding:1cqw 2cqw;border-radius:20px;color:#dff7ff}
+#account-studies .filters{display:flex;align-items:center;gap:1.6cqw;margin:3cqw 0}
+#account-studies .filters span{font-size:max(11px,3.1cqw);white-space:nowrap;border-radius:20px;padding:2.2cqw 2.5cqw;background:#fff;border:1px solid #dfe5ef;color:#39465b;font-weight:500}
+#account-studies .filters span.active{background:#0051fb;color:#fff;border-color:#0051fb}
+#account-studies .toolbar{display:flex;align-items:center;background:#fff;border:1px solid #dfe5ef;border-radius:3cqw;padding:2.8cqw 3.5cqw;font-size:max(11px,3.4cqw);color:#6d7787;gap:2cqw;min-height:10cqw}
+#account-studies .toolbar .search{flex:1;display:flex;align-items:center;gap:2cqw}
+#account-studies .search-mark{height:3.1cqw;width:3.1cqw;border-radius:50%;border:1.5px solid currentColor;position:relative;display:inline-block;flex-shrink:0}
+#account-studies .search-mark:after{position:absolute;content:'';width:1.5cqw;height:1.5px;background:currentColor;right:-1.2cqw;bottom:-.5cqw;transform:rotate(45deg)}
+#account-studies .sort{border-left:1px solid #e0e5ee;padding-left:3cqw;color:#26344b;font-weight:500;white-space:nowrap}
+#account-studies .sort b{font-weight:400;color:#0051fb;padding-left:2cqw}
+#account-studies .section-title{font-size:4.3cqw;font-weight:600;letter-spacing:-.1cqw;display:flex;align-items:center;justify-content:space-between;gap:2cqw;padding:0 4cqw;margin:4cqw 0 2.5cqw}
+#account-studies .section-title>span{font-size:max(11px,3cqw);font-weight:500;letter-spacing:0;color:#68758a}
+#account-studies .section-title .group-total{color:#23314b;font-size:3.7cqw}
+#account-studies .group-total small{font-size:2.6cqw}
+#account-studies .reference-caption{font-size:max(11px,2.5cqw);color:#748096;margin:-.4cqw 4cqw 2.4cqw}
+#account-studies .debt-card{padding:3.7cqw 4cqw;background:#fff;border:1px solid #dfe5ef;border-radius:4cqw;margin-bottom:2cqw;box-shadow:0 2px 3px #070d5b04}
+#account-studies .account-main{display:flex;align-items:center;gap:2.6cqw;min-width:0}
+#account-studies .card-icon{width:8cqw;height:8cqw;flex-shrink:0;display:grid;place-items:center;background:#e6f3f1;border-radius:50%;color:#087f72}
+#account-studies .card-symbol{width:3.8cqw;height:2.8cqw;border:1.4px solid currentColor;border-radius:.6cqw;position:relative;display:block}
+#account-studies .card-symbol:after{content:'';position:absolute;left:0;right:0;top:.65cqw;height:.5cqw;background:currentColor}
+#account-studies .account-name{flex:1;min-width:0}
+#account-studies .account-name strong{display:block;font-size:4.2cqw;font-weight:600;letter-spacing:-.12cqw}
+#account-studies .account-name>span{display:block;font-size:max(11px,2.85cqw);color:#68758a;margin-top:1cqw}
+#account-studies .account-value{white-space:nowrap;font-size:4.8cqw;font-weight:600;letter-spacing:-.15cqw;text-align:right}
+#account-studies .account-value small{font-size:2.9cqw;letter-spacing:0}
+#account-studies .chevron{color:#8290a3;font-size:5cqw;margin-left:1cqw}
+#account-studies .account-meta{display:flex;align-items:center;justify-content:space-between;gap:2cqw;font-size:max(11px,2.8cqw);color:#68758a;margin-top:2.3cqw}
+#account-studies .reduction{color:#17805a;font-weight:500;white-space:nowrap}
+#account-studies .mini-track{height:1.1cqw;border-radius:8px;background:#e5eaf2;overflow:hidden;margin-top:2.8cqw}
+#account-studies .mini-track i{display:block;height:100%;background:#0051fb;border-radius:8px}
+#account-studies .scope-tabs{display:flex;gap:5cqw;margin:3.5cqw 4cqw 0;border:0;font-size:max(11px,3.2cqw);color:#6b778b}
+#account-studies .scope-tabs span{padding-bottom:2cqw}
+#account-studies .scope-tabs .active{color:#0051fb;font-weight:600;border-bottom:2px solid #0051fb}
+#account-studies .method-panel{padding:0 4cqw}
+#account-studies .methods{display:flex;gap:2cqw}
+#account-studies .method-option{flex:1;min-width:0;border-radius:3cqw;background:#fff;border:1px solid #dfe5ef;padding:3cqw;position:relative}
+#account-studies .method-option.selected{background:#edf3ff;border-color:#0051fb}
+#account-studies .method-option strong{display:flex;align-items:center;justify-content:space-between;gap:2cqw;font-size:4cqw;font-weight:600;letter-spacing:-.1cqw}
+#account-studies .method-option>span{display:block;font-size:max(11px,2.8cqw);color:#66758c;margin-top:1.3cqw}
+#account-studies .radio{display:block;flex-shrink:0;width:3.1cqw;height:3.1cqw;border:1px solid #c2ccdc;border-radius:50%;background:#fff}
+#account-studies .selected .radio{border:1cqw solid #0051fb}
+#account-studies .extra-panel{background:#fff;border:1px solid #dfe5ef;border-radius:3.5cqw;padding:3.5cqw 4cqw;margin:3cqw 4cqw 0}
+#account-studies .extra-label{font-size:max(11px,3.2cqw);font-weight:500;display:flex;align-items:center;justify-content:space-between;gap:2cqw}
+#account-studies .extra-field{display:flex;align-items:baseline;justify-content:space-between;gap:2cqw;margin-top:2cqw}
+#account-studies .extra-field .money{font-size:6.5cqw;font-weight:500}
+#account-studies .extra-field .money small{font-size:3.7cqw}
+#account-studies .extra-field>span:last-child{font-size:max(11px,2.9cqw);color:#68758a}
+#account-studies .payoff-list{margin:0 4cqw;background:#fff;border:1px solid #dfe5ef;border-radius:3.5cqw;padding:0 3.5cqw}
+#account-studies .payoff-row{display:flex;align-items:center;gap:2.4cqw;padding:3.5cqw 0;border-bottom:1px solid #e8edf5}
+#account-studies .payoff-row:last-child{border-bottom:0}
+#account-studies .rank{width:6cqw;height:8cqw;display:grid;place-items:center;flex-shrink:0;border-radius:2cqw;background:#f0f3f9;font-size:3.5cqw;color:#53627a}
+#account-studies .payoff-row .card-icon{width:7cqw;height:7cqw}
+#account-studies .payoff-row .account-name strong{font-size:4.2cqw}
+#account-studies .payoff-row .account-value{font-size:4.5cqw}
+#account-studies .payoff-date{display:block;color:#0051fb;font-size:max(11px,2.8cqw);font-weight:500;margin-top:1.4cqw;background:#edf3ff;padding:.8cqw 1.5cqw;border-radius:1.4cqw;letter-spacing:0}
+#account-studies .row-hint{font-size:max(11px,2.6cqw);color:#748096;margin:2.5cqw 8cqw 0}
+#account-studies .signature .strategy-view .hero{margin:0 0 0}
+#account-studies .signature .strategy-view .section-title{margin-top:3.5cqw}
+/* Editorial Ledger: integrated masthead, fewer boxes, aligned data rows. */
+#account-studies .ledger .chrome{background:#070d5b;color:#fff}
+#account-studies .ledger .gear{color:#c1d4ff}
+#account-studies .ledger .sections{background:#070d5b}
+#account-studies .ledger .sections button{color:#b4c6ee}
+#account-studies .ledger .sections button[aria-selected=true]{color:#fff;border-color:#27eee9}
+#account-studies .ledger .content{padding-top:0}
+#account-studies .ledger .hero{margin:0 -4cqw;border-radius:0 0 6cqw 6cqw;padding:5cqw 8cqw;background:radial-gradient(ellipse at 100% 100%,#0051fb,transparent 75%),#070d5b;box-shadow:none}
+#account-studies .ledger .hero .money{font-size:10cqw;font-weight:500;letter-spacing:-.5cqw;margin:2.5cqw 0}
+#account-studies .ledger .hero .money small{font-size:5.3cqw}
+#account-studies .ledger .hero-foot{color:#c3d9ff}
+#account-studies .ledger .filters{margin:4cqw 4cqw 3cqw;gap:3cqw}
+#account-studies .ledger .filters span{border:0;padding:1.7cqw 0;background:transparent;color:#65738a;border-radius:0;font-size:max(11px,3.1cqw)}
+#account-studies .ledger .filters span.active{color:#0051fb;border-bottom:2px solid #0051fb}
+#account-studies .ledger .toolbar{margin:0 4cqw;padding:2.5cqw 0;border-radius:0;background:transparent;border:0;border-bottom:1px solid #d6dfed;min-height:9cqw}
+#account-studies .ledger .section-title{margin-top:4.5cqw;margin-bottom:2.8cqw}
+#account-studies .ledger .account-group{margin:0 1cqw;background:#fff;border:1px solid #e0e6ef;border-radius:4cqw;padding:0 3cqw}
+#account-studies .ledger .debt-card{border:0;border-bottom:1px solid #e7edf6;box-shadow:none;border-radius:0;margin:0;padding:4cqw 0}
+#account-studies .ledger .debt-card:last-child{border-bottom:0}
+#account-studies .ledger .mini-track{display:none}
+#account-studies .ledger .account-meta{margin-left:10.6cqw;margin-top:2cqw}
+#account-studies .ledger .account-value{font-size:4.6cqw}
+#account-studies .ledger .hero-date{font-family:Georgia,serif;font-weight:400;font-size:10cqw;margin:2cqw 0}
+#account-studies .ledger .hero-method{border:0;color:#98edc1;background:transparent;padding:0}
+#account-studies .ledger .hero-scope{margin-top:2cqw;color:#c3d9ff}
+#account-studies .ledger .scope-tabs{margin-top:4cqw;margin-bottom:2cqw}
+#account-studies .ledger .method-panel{background:#fff;border:1px solid #e0e6ef;margin:0 4cqw;padding:0 3cqw;border-radius:3cqw}
+#account-studies .ledger .methods{display:block}
+#account-studies .ledger .method-option{border:0;border-radius:0;background:transparent;display:flex;align-items:center;justify-content:space-between;gap:2cqw;padding:3cqw 0}
+#account-studies .ledger .method-option:first-child{border-bottom:1px solid #e8edf5}
+#account-studies .ledger .method-option strong{flex-direction:row-reverse;justify-content:flex-end;font-size:3.7cqw;gap:2cqw}
+#account-studies .ledger .method-option>span{font-size:max(11px,2.7cqw);margin:0;text-align:right}
+#account-studies .ledger .extra-panel{padding:3cqw 0;background:transparent;border:0;border-bottom:1px solid #d8e1ed;border-radius:0;display:flex;align-items:center;justify-content:space-between;gap:2cqw}
+#account-studies .ledger .extra-label{font-size:max(11px,3.1cqw)}
+#account-studies .ledger .extra-label .info{display:none}
+#account-studies .ledger .extra-field{margin:0;display:block;text-align:right}
+#account-studies .ledger .extra-field .money{font-size:5.4cqw}
+#account-studies .ledger .extra-field>span:last-child{font-size:max(11px,2.6cqw);margin-left:1cqw}
+#account-studies .ledger .payoff-list{border:0;background:transparent;padding:0;border-radius:0}
+#account-studies .ledger .payoff-row{padding:3cqw 0}
+#account-studies .ledger .payoff-row .card-icon{display:none}
+#account-studies .ledger .rank{border-radius:50%;width:6cqw;height:6cqw;background:#e6eeff;color:#0051fb}
+#account-studies .ledger .payoff-date{background:transparent;padding:0}
+/* Focus Studio: pale brand hero, compact information, stronger first payoff. */
+#account-studies .studio{background:#f6f9fc}
+#account-studies .studio .hero{background:radial-gradient(ellipse at 100% 0%,#abdffd,transparent 75%),#e8f5ff;border:1px solid #c9e4f9;color:#070d5b;box-shadow:none}
+#account-studies .studio .hero:after{border-color:#0051fb15;box-shadow:0 0 0 5cqw #0051fb04}
+#account-studies .studio .hero-label,#account-studies .studio .hero-foot,#account-studies .studio .hero-scope{color:#3d5b7f}
+#account-studies .studio .hero .money{font-size:9.2cqw;color:#070d5b}
+#account-studies .studio .filters{background:#e6ecf5;border-radius:3cqw;padding:.9cqw;gap:.7cqw}
+#account-studies .studio .filters span{border:0;background:transparent;color:#576780;padding:2cqw 1.4cqw;flex:1;text-align:center;font-size:max(11px,2.9cqw);border-radius:2.3cqw}
+#account-studies .studio .filters span.active{background:#fff;color:#0051fb;box-shadow:0 1px 3px #070d5b15}
+#account-studies .studio .toolbar{border-color:#e1e8f0}
+#account-studies .studio .debt-card{border-color:#e4eaf1;border-radius:3.5cqw;padding:3.5cqw 4cqw;position:relative}
+#account-studies .studio .card-icon{width:7cqw;height:7cqw;border-radius:2cqw}
+#account-studies .studio .account-meta{margin-left:9.6cqw}
+#account-studies .studio .mini-track{height:.8cqw;margin-left:9.6cqw;margin-top:2cqw}
+#account-studies .studio .hero-date{font-size:8cqw;font-weight:500}
+#account-studies .studio .strategy-view .hero-foot{position:absolute;right:4cqw;top:9cqw;display:block;text-align:right}
+#account-studies .studio .strategy-view .hero-months{font-size:7cqw;display:block;font-weight:600;color:#0051fb;letter-spacing:-.3cqw}
+#account-studies .studio .strategy-view .hero-months:after{content:' TO GO';display:block;font-size:2.6cqw;letter-spacing:.1cqw;color:#3d5b7f;margin-top:.8cqw}
+#account-studies .studio .strategy-view .hero-method{display:none}
+#account-studies .studio .hero-scope{max-width:65cqw;margin-top:3cqw}
+#account-studies .studio .strategy-view .hero-date{max-width:60cqw;font-size:7.4cqw}
+#account-studies .studio .scope-tabs{justify-content:space-between;gap:2cqw;margin-top:3cqw}
+#account-studies .studio .method-option{border-color:#dce6f3;background:#fff;padding:2.8cqw}
+#account-studies .studio .method-option.selected{border-color:#0051fb;box-shadow:inset 0 3px 0 #0051fb}
+#account-studies .studio .extra-panel{background:#eaf2ff;border-color:#d4e4fc;display:flex;align-items:center;justify-content:space-between;gap:3cqw;padding:3.5cqw}
+#account-studies .studio .extra-label{max-width:30cqw}
+#account-studies .studio .extra-label .info{display:none}
+#account-studies .studio .extra-field{display:block;text-align:right;margin:0}
+#account-studies .studio .extra-field .money{font-size:6cqw;display:block;color:#070d5b}
+#account-studies .studio .payoff-list{padding:0;border:0;background:transparent}
+#account-studies .studio .payoff-row{border:1px solid #dfe7f2;background:#fff;padding:3.5cqw;border-radius:3.5cqw;margin-bottom:2cqw}
+#account-studies .studio .payoff-row:first-child{background:#070d5b;color:#fff;border-color:#070d5b}
+#account-studies .studio .payoff-row:first-child .account-name>span{color:#c6d7f4}
+#account-studies .studio .payoff-row:first-child .rank{background:#ffffff14;color:#abdffd}
+#account-studies .studio .payoff-row:first-child .payoff-date{background:#ffffff16;color:#98edc1}
+#account-studies .studio .payoff-row .card-icon{display:none}
+#account-studies .preview-note{font-size:12px;color:var(--muted-foreground);text-align:center;margin-top:12px}
+/* Shared geometry: Accounts and Strategy have precisely the same summary bounds. */
+#account-studies .accounts-view>.hero,#account-studies .strategy-view>.hero{height:32cqw;min-height:32cqw;max-height:32cqw;padding:4cqw}
+#account-studies .accounts-view>.hero .hero-label,#account-studies .strategy-view>.hero .hero-label{position:absolute;top:4cqw;left:4cqw;right:4cqw}
+#account-studies .accounts-view>.hero .money,#account-studies .strategy-view>.hero .hero-date{position:absolute;top:10cqw;left:4cqw;margin:0;font-family:Arial,sans-serif;font-size:8.6cqw;font-weight:500;line-height:1.12;letter-spacing:-.4cqw}
+#account-studies .accounts-view>.hero .hero-foot{position:absolute;left:4cqw;right:4cqw;bottom:4cqw}
+#account-studies .strategy-view>.hero .hero-foot{position:absolute;right:4cqw;top:12.2cqw;display:block;text-align:right}
+#account-studies .strategy-view>.hero .hero-months{font-size:max(11px,3.6cqw);font-weight:500;color:#d4eaff;letter-spacing:0}
+#account-studies .strategy-view>.hero .hero-months:after{display:none}
+#account-studies .strategy-view>.hero .hero-method{display:none}
+#account-studies .strategy-view>.hero .hero-scope{position:absolute;left:4cqw;right:4cqw;bottom:4cqw;max-width:none;margin:0;color:#c9dfff;font-size:max(11px,2.8cqw)}
+#account-studies .ledger .accounts-view>.hero,#account-studies .ledger .strategy-view>.hero{padding:4cqw 8cqw}
+#account-studies .ledger .accounts-view>.hero .hero-label,#account-studies .ledger .strategy-view>.hero .hero-label{left:8cqw;right:8cqw}
+#account-studies .ledger .accounts-view>.hero .money,#account-studies .ledger .strategy-view>.hero .hero-date{left:8cqw}
+#account-studies .ledger .accounts-view>.hero .hero-foot,#account-studies .ledger .strategy-view>.hero .hero-scope{left:8cqw;right:8cqw}
+#account-studies .ledger .strategy-view>.hero .hero-foot{right:8cqw}
+#account-studies .studio .accounts-view>.hero,#account-studies .studio .strategy-view>.hero{background:linear-gradient(115deg,#070d5b,#123591);border:1px solid #2449a3;color:#fff}
+#account-studies .studio .hero-label,#account-studies .studio .hero-foot{color:#c9dfff}
+#account-studies .studio .accounts-view>.hero .money{color:#fff}
+#account-studies .studio .accounts-view>.hero:after,#account-studies .studio .strategy-view>.hero:after{border-color:#abdffd24}
+#account-studies .screen-picker{display:flex;justify-content:center;gap:6px;margin:0 0 16px}
+#account-studies .screen-picker button,#account-studies .motion-replay{border:1px solid var(--border);background:var(--card);color:var(--foreground);font:500 12px Arial;border-radius:18px;padding:9px 18px;cursor:pointer}
+#account-studies .screen-picker button[aria-pressed=true]{background:var(--foreground);color:var(--background)}
+#account-studies [data-page=home] .sections,#account-studies [data-page=home] .fab{display:none}
+#account-studies .home-nav{display:none}
+#account-studies [data-page=home] .home-nav{display:block;filter:hue-rotate(-27deg) saturate(2)}
+#account-studies [data-page=home] .accounts-nav{display:none}
+#account-studies [data-page=home] .content{padding-top:0}
+#account-studies .h-greeting{padding:1.5cqw 4cqw 4.5cqw;font-size:6cqw;letter-spacing:-.2cqw;font-weight:600}
+#account-studies .h-hero{height:60cqw;position:relative;isolation:isolate;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;background:radial-gradient(ellipse at 100% 10%,#0a70ff,transparent 70%),linear-gradient(125deg,#070d5b,#0051fb);border:1px solid #2975ff;box-shadow:0 2.6cqw 4cqw -2cqw #0051fb50,inset 0 1px 0 #ffffff50;border-radius:5cqw;padding:4.5cqw;color:#fff}
+#account-studies .h-hero:before{content:'';position:absolute;z-index:-1;right:-28cqw;top:-34cqw;width:75cqw;height:75cqw;border-radius:50%;border:1px solid #abdffd40;box-shadow:0 0 0 6cqw #abdffd08,0 0 0 12cqw #abdffd06;pointer-events:none}
+#account-studies .h-label{display:flex;align-items:center;justify-content:space-between;font-size:4.1cqw;font-weight:600;gap:2cqw}
+#account-studies .h-estimate{font-size:max(11px,2.5cqw);letter-spacing:.1cqw;border:1px solid #abdffd60;background:#ffffff12;border-radius:20px;padding:1.2cqw 2cqw;font-weight:500}
+#account-studies .h-date-row{display:flex;align-items:center;justify-content:space-between;gap:3cqw;margin:3cqw 0}
+#account-studies .h-short-date{font-size:8.4cqw;font-weight:600;letter-spacing:-.4cqw;white-space:nowrap}
+#account-studies .h-long-date{display:none}
+#account-studies .h-count{padding:2cqw 3cqw;background:#070d5b26;border:1px solid #abdffd40;border-radius:3cqw;flex-shrink:0;min-width:18cqw}
+#account-studies .h-count strong{font-size:8cqw;font-weight:500;letter-spacing:-.4cqw;display:block;line-height:1.05;color:#fff}
+#account-studies .h-count span{display:block;font-size:max(11px,2.9cqw);color:#d1e7ff;line-height:1.3;margin-top:1cqw}
+#account-studies .h-scope{font-size:max(11px,2.9cqw);color:#cfe3ff;margin-bottom:3cqw}
+#account-studies .h-progress{display:flex;gap:1.2cqw;height:1.8cqw;margin-bottom:3.5cqw}
+#account-studies .h-progress i{flex:1;border-radius:8px;background:#ffffff25}
+#account-studies .h-progress i:nth-child(-n+2){background:#27eee9}
+#account-studies .h-progress i:nth-child(3){background:linear-gradient(90deg,#27eee9 22%,#ffffff25 22%)}
+#account-studies .h-footer{display:flex;align-items:center;justify-content:space-between;gap:2cqw;font-size:max(11px,2.9cqw);color:#d1e7ff}
+#account-studies .h-footer strong{font-weight:500;color:#98edc1;white-space:nowrap}
+#account-studies .h-heading{padding:0 4cqw;font-size:4.4cqw;font-weight:600;letter-spacing:-.15cqw;display:flex;align-items:center;justify-content:space-between;gap:2cqw;margin:5cqw 0 3cqw}
+#account-studies .h-heading span{font-size:max(11px,2.9cqw);font-weight:500;letter-spacing:0;color:#63728a}
+#account-studies .h-summary{background:#fff;border:1px solid #dfe7f1;border-radius:4.5cqw;padding:4cqw}
+#account-studies .h-summary-main{display:flex;align-items:center;justify-content:space-between;gap:3cqw}
+#account-studies .h-ring{width:23cqw;height:23cqw;flex-shrink:0;border-radius:50%;display:grid;place-items:center;background:conic-gradient(#087f72 0 17%,#e7edf4 17% 100%);transform:rotate(-30deg)}
+#account-studies .h-ring>div{width:17.5cqw;height:17.5cqw;border-radius:50%;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:5.2cqw;font-weight:600;transform:rotate(30deg)}
+#account-studies .h-ring small{font-size:max(11px,2.5cqw);font-weight:400;color:#68758a;margin-top:.6cqw}
+#account-studies .h-balance{flex:1;min-width:0}
+#account-studies .h-balance-label{font-size:max(11px,3cqw);color:#68758a;margin-bottom:1.7cqw}
+#account-studies .h-balance .money{font-size:7.1cqw;font-weight:500;letter-spacing:-.3cqw}
+#account-studies .h-balance .money small{font-size:4.2cqw}
+#account-studies .h-reference{display:flex;align-items:center;justify-content:space-between;gap:2cqw;border-top:1px solid #e7edf4;padding-top:3cqw;margin-top:3cqw;font-size:max(11px,2.8cqw);color:#68758a}
+#account-studies .h-reference strong{font-size:4cqw;font-weight:500;color:#087647;white-space:nowrap}
+#account-studies .h-pages{display:flex;justify-content:center;gap:1.2cqw;margin-top:3cqw}
+#account-studies .h-pages>*{height:1cqw;width:1cqw;border-radius:8px;background:#dbe2ee}
+#account-studies .h-pages b{width:4.5cqw;background:#0051fb}
+#account-studies .h-next{border:1px solid #dfe7f1;background:#fff;border-radius:4cqw;padding:3.5cqw 4cqw;display:flex;align-items:center;gap:2.5cqw}
+#account-studies .h-next .account-name strong{font-size:4.5cqw}
+#account-studies .h-next-date{text-align:right;color:#0051fb;font-size:4cqw;font-weight:500;white-space:nowrap}
+#account-studies .h-next-date small{display:block;color:#68758a;font-size:max(11px,2.7cqw);font-weight:400;margin-top:1.3cqw}
+#account-studies .ledger[data-page=home] .h-greeting{margin:0 -4cqw;background:#070d5b;color:#d2e5ff;padding:2cqw 8cqw 4cqw;font-size:4.2cqw;font-weight:400;letter-spacing:0}
+#account-studies .ledger .h-hero{margin:0 -4cqw;border:0;border-radius:0 0 7cqw 7cqw;box-shadow:none;padding:3cqw 8cqw 6cqw;height:60cqw;background:radial-gradient(ellipse at 100% 100%,#0051fb,transparent 75%),#070d5b}
+#account-studies .ledger .h-label{font-size:max(11px,3cqw);letter-spacing:.2cqw;font-weight:500}
+#account-studies .ledger .h-short-date{display:none}
+#account-studies .ledger .h-long-date{display:block;font-size:12cqw;font-weight:600;letter-spacing:-.6cqw;line-height:1}
+#account-studies .ledger .h-long-date span{display:block;font-size:13cqw;font-weight:400;margin-top:.5cqw}
+#account-studies .ledger .h-date-row{margin:3cqw 0}
+#account-studies .ledger .h-count{align-self:flex-end;margin-bottom:.5cqw;min-width:0;background:#ffffff0b;display:flex;align-items:center;gap:1.5cqw;padding:1.7cqw 2.2cqw;border-radius:20px}
+#account-studies .ledger .h-count strong{font-size:5cqw;letter-spacing:-.1cqw;color:#98edc1}
+#account-studies .ledger .h-count span{font-size:max(11px,2.6cqw);margin:0}
+#account-studies .ledger .h-count br{display:none}
+#account-studies .ledger .h-progress{height:1cqw;gap:0;background:#ffffff25;border-radius:10px;overflow:hidden}
+#account-studies .ledger .h-progress i{border-radius:0}
+#account-studies .ledger .h-summary{border-radius:4cqw;padding:4cqw}
+#account-studies .ledger .h-summary-main{flex-direction:row-reverse}
+#account-studies .ledger .h-ring{width:18cqw;height:18cqw}
+#account-studies .ledger .h-ring>div{width:13.8cqw;height:13.8cqw;font-size:4.2cqw}
+#account-studies .ledger .h-ring small{display:none}
+#account-studies .ledger .h-balance .money{font-size:8cqw}
+#account-studies .ledger .h-next{background:#e8f0ff;border-color:#d8e4fa}
+#account-studies .studio .h-hero{height:68cqw;border:1px solid transparent;background:linear-gradient(125deg,#070d5b,#10369e 70%,#0051fb) padding-box,linear-gradient(130deg,#eaffff,#0051fb 40%,#27eee9 70%,#abdffd) border-box;box-shadow:0 3cqw 5cqw -2cqw #070d5b55,inset 0 1px 0 #abdffd65}
+#account-studies .studio .h-short-date{font-size:7.7cqw;white-space:normal;max-width:44cqw}
+#account-studies .studio .h-short-date span{display:block;font-size:10cqw;font-weight:400}
+#account-studies .studio .h-count{min-width:0;width:29cqw;height:29cqw;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-direction:column;border-color:#abdffd55;background:radial-gradient(circle at 50% 10%,#4081bc55,#070d5b55 75%);box-shadow:0 0 0 1.5cqw #abdffd09,inset 0 1px 1.5cqw #abdffd20}
+#account-studies .studio .h-count strong{font-size:11cqw;line-height:.95;color:#e1fff8}
+#account-studies .studio .h-count span{font-size:max(11px,2.7cqw);text-align:center}
+#account-studies .studio .h-label{font-weight:500}
+#account-studies .studio .h-summary{background:transparent;border:0;border-top:1px solid #dce5f1;border-bottom:1px solid #dce5f1;border-radius:0;padding:4cqw}
+#account-studies .studio .h-summary-main{flex-direction:row-reverse}
+#account-studies .studio .h-ring{width:18cqw;height:18cqw}
+#account-studies .studio .h-ring>div{width:14cqw;height:14cqw;background:#f6f9fc;font-size:4.2cqw}
+#account-studies .studio .h-ring small{display:none}
+#account-studies .studio .h-balance .money{font-size:8cqw}
+#account-studies .studio .h-next{background:#070d5b;color:#fff;border-color:#070d5b}
+#account-studies .studio .h-next .account-name>span{color:#c5d8f4}
+#account-studies .studio .h-next .rank{background:#ffffff16;color:#abdffd}
+#account-studies .studio .h-next-date{color:#98edc1}
+#account-studies .studio .h-next-date small{color:#c5d8f4}
+#account-studies .h-light{position:absolute;inset:-80% -70%;z-index:2;pointer-events:none;opacity:0;background:linear-gradient(110deg,transparent 40%,#ffffff20 49%,transparent 58%);transform:translateX(-60%)}
+#account-studies .playing .h-light{animation:home-light-pass 2400ms ease-in-out 1}
+@keyframes home-light-pass{15%,80%{opacity:1}100%{opacity:0;transform:translateX(60%)}}
+@media(prefers-reduced-motion:reduce){#account-studies .playing *{animation:none!important}}
+#account-studies .review-footer{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+#account-studies .review-footer .preview-note{margin:0}
+</style>
+<div id="account-studies">
+ <div class="design-picker" role="group" aria-label="Design direction"><button data-design="signature" aria-pressed="true">Signature</button><button data-design="ledger" aria-pressed="false">Horizon</button><button data-design="studio" aria-pressed="false">Precision</button></div>
+ <div class="screen-picker" role="group" aria-label="Screen to review"><button data-screen="home" aria-pressed="true">Home</button><button data-screen="accounts" aria-pressed="false">Accounts</button><button data-screen="strategy" aria-pressed="false">Strategy</button></div>
+ <div class="stage"><div class="phone signature" data-page="accounts">
+  <div class="chrome"><div class="brand"><span class="logo"><img src="C:/Users/lawre/.t3/userdata/attachments/049903aa-e87d-460e-a2e3-8b0a9877939a-275c08c7-e144-4ae3-ba72-dbaa8b2ec359.jpg" alt="BitLess logo"></span><span class="brand-title">BitLess</span></div><span class="gear" aria-label="Settings preview">⚙</span></div>
+  <div class="sections" role="tablist" aria-label="Accounts sections"><button id="account-design-tab" data-section="accounts" role="tab" aria-selected="true" aria-controls="study-page">Accounts</button><button id="strategy-design-tab" data-section="strategy" role="tab" aria-selected="false" aria-controls="study-page">Strategy</button></div>
+  <div class="content" id="study-page" role="tabpanel" aria-labelledby="account-design-tab"></div>
+  <div class="fab" aria-label="Original Add Debt Account button, preserved in this study" role="img"></div>
+  <div class="nav"><img class="accounts-nav" src="C:/Users/lawre/.t3/userdata/attachments/049903aa-e87d-460e-a2e3-8b0a9877939a-275c08c7-e144-4ae3-ba72-dbaa8b2ec359.jpg" alt="Existing five-tab navigation with Accounts selected"><img class="home-nav" src="C:/Users/lawre/.t3/userdata/attachments/049903aa-e87d-460e-a2e3-8b0a9877939a-19190827-3ad9-4ac7-a424-fc65df4425a3.jpg" alt="Existing five-tab navigation with Home selected"></div>
+ </div></div>
+ <div class="review-footer"><button class="motion-replay">Replay Home motion</button><span class="preview-note">3 directions · 3 screens each</span></div>
+</div>
+<script>
+(()=>{
+ const root=document.getElementById('account-studies'); const phone=root.querySelector('.phone'); const content=root.querySelector('.content');
+ let direction='signature'; let page='home';
+ const accounts=[
+  {name:'Chase Freed',apr:'21.24',amount:'4,618',cents:'93',reduction:'13.0',date:'Apr 2027'},
+  {name:'Chase Prime',apr:'23.49',amount:'6,888',cents:'92',reduction:'2.1',date:'Aug 2027'},
+  {name:'Discover',apr:'26.74',amount:'1,953',cents:'64',date:'Dec 2026'},
+  {name:'USBConnect',apr:'0.00',amount:'2,540',cents:'02',date:'Jan 2027'}
+ ];
+ const icon='<span class="card-icon" aria-hidden="true"><i class="card-symbol"></i></span>';
+ const accountRow=a=>`<div class="debt-card"><div class="account-main">${icon}<div class="account-name"><strong>${a.name}</strong><span>Credit card · ${a.apr}% APR</span></div><div class="account-value">$${a.amount}<small>.${a.cents}</small></div><span class="chevron" aria-hidden="true">›</span></div>${a.reduction?`<div class="mini-track" aria-label="${a.reduction}% adjusted-reference reduction"><i style="width:${a.reduction}%"></i></div>`:''}<div class="account-meta">${a.reduction?`<span class="reduction">↓ ${a.reduction}% reduced</span>`:'<span>Estimated payoff</span>'}<span>${a.reduction?'Est. ':''}${a.date}</span></div></div>`;
+ const payoffRow=(a,i)=>`<div class="payoff-row"><span class="rank">${i+1}</span>${icon}<div class="account-name"><strong>${a.name}</strong><span>${a.apr}% APR</span></div><div class="account-value">$${a.amount}<small>.${a.cents}</small><span class="payoff-date">${a.date}</span></div></div>`;
+ const methods=`<div class="method-panel"><div class="methods"><div class="method-option selected"><strong>Snowball<span class="radio" aria-hidden="true"></span></strong><span>Smallest balance first</span></div><div class="method-option"><strong>Avalanche<span class="radio" aria-hidden="true"></span></strong><span>Highest APR first</span></div></div></div>`;
+ function render(){
+  phone.className='phone '+direction; phone.dataset.page=page;
+  root.querySelector('.brand-title').textContent=page==='home'?'BitLess':'Accounts';
+  root.querySelector('.motion-replay').hidden=page!=='home';
+  root.querySelectorAll('[data-screen]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.screen===page)));
+  root.querySelectorAll('[data-design]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.design===direction)));
+  root.querySelectorAll('[data-section]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.section===page)));
+  content.setAttribute('aria-labelledby',page==='accounts'?'account-design-tab':'strategy-design-tab');
+  if(page==='home') content.innerHTML=`<div class="home-view"><div class="h-greeting">Hi, Lawrence</div><div class="h-hero"><div class="h-light" aria-hidden="true"></div><div class="h-label"><span>Debt-Free Date <small class="info">ⓘ</small></span><span class="h-estimate">ESTIMATE</span></div><div class="h-date-row"><div class="h-short-date">DEC <span>2027</span></div><div class="h-long-date">December<span>2027</span></div><div class="h-count"><strong>13</strong><span>months<br>to go</span></div></div><div><div class="h-scope">Cards / Loans &amp; Auto</div><div class="h-progress" aria-label="Illustrative existing progress indicator"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="h-footer"><span>Keep building your freedom.</span><strong>Snowball ↗</strong></div></div></div><div class="h-heading">Your accounts<span>Cards &amp; Loans · 9</span></div><div class="h-summary"><div class="h-summary-main"><div class="h-ring" aria-label="17 percent decrease versus entered reference"><div>−17%<small>change</small></div></div><div class="h-balance"><div class="h-balance-label">Current balance</div><div class="money">$44,108<small>.71</small></div></div></div><div class="h-reference"><span>vs entered reference</span><strong>−$9,252.01</strong></div><div class="h-pages" aria-label="Cards and Loans selected; Home and Auto also available"><b></b><i></i><i></i></div></div><div class="h-heading">Payoff strategy<span>See all ›</span></div><div class="h-next"><span class="rank">1</span><div class="account-name"><strong>Discover</strong><span>Snowball · Cards &amp; Loans</span></div><div class="h-next-date">Dec 2026<small>Projected payoff</small></div></div></div>`;
+  else if(page==='accounts') content.innerHTML=`<div class="accounts-view"><div class="hero"><div class="hero-label"><span>Total balance</span><span class="info" aria-label="Balance information">ⓘ</span></div><div class="money">$375,913<small>.32</small></div><div class="hero-foot"><span>11 active accounts</span><span>All accounts</span></div></div><div class="filters" aria-label="Category filter preview"><span class="active">All (11)</span><span>Cards &amp; Loans</span><span>Home &amp; Auto</span></div><div class="toolbar"><span class="search"><i class="search-mark" aria-hidden="true"></i>Search accounts</span><span class="sort">Name<b>⌄</b></span></div><div class="section-title">Cards &amp; Loans<span class="group-total">$44,108<small>.71</small></span></div><div class="reference-caption">Reduction vs adjusted reference</div><div class="account-group">${accounts.map(accountRow).join('')}</div></div>`;
+  else content.innerHTML=`<div class="strategy-view"><div class="hero"><div class="hero-label"><span>Estimated payoff</span><span class="info" aria-label="Estimate information">ⓘ</span></div><div class="hero-date">Dec 2027</div><div class="hero-foot"><span class="hero-months">13 months</span><span class="hero-method">Snowball</span></div><div class="hero-scope">Cards / Loans &amp; Auto · excludes mortgage</div></div><div class="scope-tabs" aria-label="Strategy scope preview"><span class="active">Debt strategy</span><span>Mortgage strategy</span></div><div class="section-title">Your method</div>${methods}<div class="extra-panel"><div class="extra-label">Extra monthly payment<span class="info">ⓘ</span></div><div class="extra-field"><span class="money">$3,500<small>.00</small></span><span>/ month</span></div></div><div class="section-title">Payoff order<span>Estimated</span></div><div class="payoff-list">${[accounts[2],accounts[3]].map(payoffRow).join('')}</div><div class="row-hint">Tap an account for its monthly projection</div></div>`;
+ }
+ root.querySelectorAll('[data-design]').forEach(b=>b.addEventListener('click',()=>{direction=b.dataset.design;render()}));
+ root.querySelectorAll('[data-screen]').forEach(b=>b.addEventListener('click',()=>{page=b.dataset.screen;render()}));
+ root.querySelectorAll('[data-section]').forEach(b=>b.addEventListener('click',()=>{page=b.dataset.section;render()}));
+ root.querySelector('.motion-replay').addEventListener('click',()=>{const hero=content.querySelector('.h-hero');if(hero){hero.classList.remove('playing');void hero.offsetWidth;hero.classList.add('playing')}});
+ render();
+})();
+</script>
+</body></html>

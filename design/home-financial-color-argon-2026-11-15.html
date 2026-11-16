@@ -1,0 +1,1806 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BitLess Home — Financial Color Symbolism Studies</title>
+<style>
+#argon-studies {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--foreground);
+}
+#argon-studies *, #argon-studies *::before, #argon-studies *::after {
+  box-sizing: border-box;
+}
+#argon-studies [hidden] {
+  display: none !important;
+}
+
+/* Top switcher & motion controls */
+#argon-studies .controls-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+#argon-studies .tab-btn,
+#argon-studies .replay-btn {
+  font: 600 12.5px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 10px 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+#argon-studies .tab-btn .swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+#argon-studies .tab-btn[aria-pressed="true"] {
+  background: var(--foreground);
+  color: var(--background);
+  border-color: var(--foreground);
+}
+#argon-studies .palette-caption {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin: 0 auto 14px;
+  max-width: 580px;
+  line-height: 1.45;
+}
+#argon-studies .palette-caption strong {
+  color: var(--foreground);
+}
+
+/* Stage layout */
+#argon-studies .stage {
+  max-width: 416px;
+  margin: 0 auto;
+  container-type: inline-size;
+}
+#argon-studies .phone {
+  min-height: 212cqw;
+  border-radius: 26px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  box-shadow: 0 18px 42px rgba(5, 16, 28, 0.24);
+}
+
+/* Shared Top Chrome & Navigation */
+#argon-studies .topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5cqw 5.5cqw 3.2cqw;
+  position: relative;
+  z-index: 2;
+}
+#argon-studies .brand {
+  display: flex;
+  align-items: center;
+  gap: 2.2cqw;
+  font-size: 5.6cqw;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+#argon-studies .brand-logo {
+  width: 6.6cqw;
+  height: 6.6cqw;
+  border-radius: 1.8cqw;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+#argon-studies .brand-logo svg {
+  width: 4.6cqw;
+  height: 4.6cqw;
+}
+#argon-studies .gear-btn {
+  width: 9.2cqw;
+  height: 9.2cqw;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+#argon-studies .gear-btn svg {
+  width: 4.6cqw;
+  height: 4.6cqw;
+}
+#argon-studies .greeting {
+  font-size: 5.8cqw;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  padding: 1.5cqw 5.5cqw 3.6cqw;
+  position: relative;
+  z-index: 2;
+}
+#argon-studies .info-dot {
+  display: inline-grid;
+  place-items: center;
+  width: 4cqw;
+  height: 4cqw;
+  border-radius: 50%;
+  font-size: 2.6cqw;
+  font-weight: 700;
+  font-style: normal;
+  vertical-align: middle;
+}
+
+/* Shared 5-Tab Bottom Dock */
+#argon-studies .dock {
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  padding: 2.6cqw 2.5cqw 3.2cqw;
+  border-top: 1px solid transparent;
+  position: relative;
+  z-index: 2;
+}
+#argon-studies .dock-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1cqw;
+  font-size: max(9px, 2.55cqw);
+  font-weight: 600;
+  opacity: 0.62;
+}
+#argon-studies .dock-item.active {
+  opacity: 1;
+  font-weight: 700;
+}
+#argon-studies .dock-icon {
+  width: 11cqw;
+  height: 6.6cqw;
+  border-radius: 99px;
+  display: grid;
+  place-items: center;
+}
+#argon-studies .dock-item svg {
+  width: 5cqw;
+  height: 5cqw;
+}
+
+/* =====================================================================
+   CONCEPT 1: SOVEREIGN MINT (Banknote Emerald, Burnished Gold & Linen)
+   Symbolism: Fresh currency notes, wealth accumulation, red-to-green ledger
+   ===================================================================== */
+#argon-studies .phone.mint {
+  background: #F4F1E8;
+  color: #10281E;
+}
+#argon-studies .mint .topbar {
+  border-bottom: 1px solid #E2DDD0;
+  background: #F8F6F0;
+}
+#argon-studies .mint .brand {
+  color: #0B291E;
+}
+#argon-studies .mint .brand-logo {
+  background: linear-gradient(135deg, #0D5C3E, #063824);
+  color: #E7F8CE;
+  box-shadow: 0 2px 6px rgba(6, 56, 36, 0.25);
+}
+#argon-studies .mint .gear-btn {
+  background: #ECE7DA;
+  border: 1px solid #DCD5C4;
+  color: #1B4332;
+}
+#argon-studies .mint .greeting {
+  color: #0B291E;
+}
+
+/* Mint Hero: Banknote Guilloche Certificate */
+#argon-studies .m-hero {
+  margin: 0 4.5cqw;
+  border-radius: 5.5cqw;
+  padding: 4.8cqw;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(212, 165, 72, 0.22), transparent 52%),
+    radial-gradient(circle at 12% 90%, rgba(45, 166, 110, 0.28), transparent 58%),
+    linear-gradient(138deg, #05261A 0%, #0A442F 54%, #0E5A3E 100%);
+  color: #F4F9F0;
+  border: 1.5px solid #2C6E52;
+  box-shadow:
+    0 14px 28px -10px rgba(5, 38, 26, 0.55),
+    inset 0 0 0 3px rgba(212, 165, 72, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+#argon-studies .m-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.14;
+  background:
+    repeating-radial-gradient(circle at 105% 10%, transparent 0 7px, rgba(232, 211, 150, 0.55) 7px 8px),
+    repeating-radial-gradient(circle at -5% 100%, transparent 0 9px, rgba(164, 238, 194, 0.45) 9px 10px);
+}
+#argon-studies .m-sheen {
+  position: absolute;
+  inset: -60% -80%;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(112deg, transparent 42%, rgba(247, 224, 158, 0.34) 50%, transparent 58%);
+  transform: translateX(-65%);
+}
+#argon-studies .m-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2cqw;
+}
+#argon-studies .m-title-row {
+  display: flex;
+  align-items: center;
+  gap: 1.6cqw;
+  font-size: 4.3cqw;
+  font-weight: 700;
+  color: #E7F3E2;
+}
+#argon-studies .m-title-row .info-dot {
+  background: rgba(231, 243, 226, 0.16);
+  color: #D9EBD2;
+}
+#argon-studies .m-badge {
+  font-size: max(9px, 2.5cqw);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 1.2cqw 2.6cqw;
+  border-radius: 99px;
+  color: #F6DF9E;
+  background: rgba(212, 165, 72, 0.16);
+  border: 1px solid rgba(236, 198, 114, 0.5);
+}
+#argon-studies .m-scope {
+  font-size: max(10px, 3.1cqw);
+  color: #B4D4C3;
+  margin-top: 1cqw;
+}
+#argon-studies .m-center {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3cqw;
+  margin: 4.5cqw 0 4.5cqw;
+}
+#argon-studies .m-date-block {
+  flex: 1;
+}
+#argon-studies .m-date-label {
+  font-size: max(9px, 2.4cqw);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: #DFC17B;
+  margin-bottom: 1cqw;
+  font-weight: 700;
+}
+#argon-studies .m-date {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 9.8cqw;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 0.98;
+  color: #FFFFFF;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+#argon-studies .m-date span {
+  display: block;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 5.2cqw;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #A9E8C4;
+  margin-bottom: 0.6cqw;
+}
+/* Sovereign Gold Seal for 13 Months */
+#argon-studies .m-seal {
+  width: 27cqw;
+  height: 27cqw;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: radial-gradient(circle at 30% 25%, #342811, #191306 75%);
+  border: 2px solid #DFB760;
+  box-shadow:
+    0 6px 16px rgba(0, 0, 0, 0.35),
+    0 0 0 3px rgba(223, 183, 96, 0.18),
+    inset 0 0 10px rgba(245, 208, 122, 0.25);
+  color: #FCE6A6;
+  position: relative;
+}
+#argon-studies .m-seal strong {
+  font-family: Georgia, serif;
+  font-size: 9.6cqw;
+  line-height: 0.95;
+  font-weight: 700;
+  color: #FFF3CB;
+}
+#argon-studies .m-seal span {
+  font-size: max(8px, 2.35cqw);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #DFB760;
+  margin-top: 0.8cqw;
+  line-height: 1.15;
+}
+/* 7 Bullion Bars */
+#argon-studies .m-bars {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1.3cqw;
+  height: 2.2cqw;
+  margin-bottom: 3.6cqw;
+}
+#argon-studies .m-bars i {
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.16);
+}
+#argon-studies .m-bars i:nth-child(1),
+#argon-studies .m-bars i:nth-child(2) {
+  background: linear-gradient(90deg, #7CE8B0, #DFB760);
+  box-shadow: 0 0 8px rgba(124, 232, 176, 0.35);
+}
+#argon-studies .m-bars i:nth-child(3) {
+  background: linear-gradient(90deg, #DFB760 24%, rgba(255, 255, 255, 0.16) 24%);
+}
+#argon-studies .m-hero-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 2.8cqw;
+  border-top: 1px solid rgba(212, 165, 72, 0.25);
+  font-size: max(10px, 3.1cqw);
+  color: #D2E8DA;
+}
+#argon-studies .m-hero-foot strong {
+  color: #FCE49C;
+  font-weight: 700;
+}
+
+/* Mint Content Cards */
+#argon-studies .m-body {
+  padding: 4.2cqw 4.5cqw 4.5cqw;
+  display: flex;
+  flex-direction: column;
+  gap: 3.8cqw;
+}
+#argon-studies .m-card {
+  background: #FCFBF7;
+  border: 1px solid #DFD9C8;
+  border-radius: 5cqw;
+  padding: 4.4cqw;
+  box-shadow: 0 4px 12px rgba(16, 40, 30, 0.05);
+}
+#argon-studies .m-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3.5cqw;
+}
+#argon-studies .m-card-title {
+  font-size: 4.4cqw;
+  font-weight: 750;
+  color: #0F291E;
+}
+#argon-studies .m-card-title small {
+  font-size: max(10px, 3.1cqw);
+  font-weight: 500;
+  color: #5E6F64;
+}
+#argon-studies .m-card-head .info-dot {
+  background: #7A8A80;
+  color: #FFF;
+}
+/* Split Passbook Ledger inside Your Accounts */
+#argon-studies .m-ledger {
+  display: flex;
+  align-items: center;
+  gap: 4cqw;
+}
+#argon-studies .m-ring {
+  width: 21cqw;
+  height: 21cqw;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: conic-gradient(#0D7A52 0 17%, #E5E0D2 17% 100%);
+  display: grid;
+  place-items: center;
+}
+#argon-studies .m-ring-inner {
+  width: 15.6cqw;
+  height: 15.6cqw;
+  border-radius: 50%;
+  background: #FCFBF7;
+  border: 1px solid #E5E0D2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 4.5cqw;
+  font-weight: 800;
+  color: #0F291E;
+}
+#argon-studies .m-figures {
+  flex: 1;
+  display: grid;
+  gap: 2.2cqw;
+}
+#argon-studies .m-fig-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 2cqw;
+  border-bottom: 1px dashed #DFD9C8;
+}
+#argon-studies .m-fig-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+#argon-studies .m-fig-label {
+  font-size: max(10px, 3.1cqw);
+  font-weight: 600;
+  color: #5E6F64;
+}
+#argon-studies .m-fig-val {
+  font-size: 5.5cqw;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+#argon-studies .m-fig-val small {
+  font-size: 3.6cqw;
+}
+#argon-studies .m-fig-val.paid {
+  color: #0B7A4B;
+}
+#argon-studies .m-fig-val.debt {
+  color: #B83324;
+}
+#argon-studies .m-dots {
+  display: flex;
+  justify-content: center;
+  gap: 1.4cqw;
+  margin-top: 3.5cqw;
+}
+#argon-studies .m-dots i {
+  width: 1.5cqw;
+  height: 1.5cqw;
+  border-radius: 99px;
+  background: #D4CEBE;
+}
+#argon-studies .m-dots i.on {
+  width: 5.2cqw;
+  background: #0D5C3E;
+}
+/* Mint Strategy Row */
+#argon-studies .m-strat-sub {
+  font-size: max(10px, 3cqw);
+  color: #5E6F64;
+  margin-top: -2.2cqw;
+  margin-bottom: 3.2cqw;
+}
+#argon-studies .m-see-all {
+  font-size: max(10px, 3.3cqw);
+  font-weight: 700;
+  color: #0D5C3E;
+}
+#argon-studies .m-target {
+  display: flex;
+  align-items: center;
+  gap: 2.8cqw;
+  padding: 3cqw 3.2cqw;
+  border-radius: 3.8cqw;
+  background: #F2EFE4;
+  border: 1px solid #E1DAC8;
+}
+#argon-studies .m-rank {
+  width: 6.8cqw;
+  height: 6.8cqw;
+  border-radius: 2cqw;
+  background: #0D5C3E;
+  color: #FCE6A6;
+  font-weight: 800;
+  font-size: 3.5cqw;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+#argon-studies .m-card-ico {
+  width: 8.5cqw;
+  height: 8.5cqw;
+  border-radius: 50%;
+  background: #E2ECE5;
+  color: #0D5C3E;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+#argon-studies .m-card-ico svg {
+  width: 4.5cqw;
+  height: 4.5cqw;
+}
+#argon-studies .m-target-info {
+  flex: 1;
+  min-width: 0;
+}
+#argon-studies .m-target-info strong {
+  display: block;
+  font-size: 4cqw;
+  color: #0F291E;
+}
+#argon-studies .m-target-info span {
+  font-size: max(9px, 2.8cqw);
+  color: #66756B;
+}
+#argon-studies .m-target-date {
+  font-size: max(10px, 3.1cqw);
+  font-weight: 700;
+  padding: 1.6cqw 2.8cqw;
+  border-radius: 2.4cqw;
+  background: #FCF3D8;
+  color: #7D5611;
+  border: 1px solid #E8CE89;
+  white-space: nowrap;
+}
+#argon-studies .mint .dock {
+  background: #FCFBF7;
+  border-top-color: #E2DDD0;
+  color: #495A50;
+}
+#argon-studies .mint .dock-item.active {
+  color: #0D5C3E;
+}
+#argon-studies .mint .dock-item.active .dock-icon {
+  background: #E3F1E8;
+}
+
+/* =====================================================================
+   CONCEPT 2: ALCHEMIST'S LEDGER (Obsidian, Molten Gold & Ember-to-Jade)
+   Symbolism: Burning down high-APR debt into golden financial freedom
+   ===================================================================== */
+#argon-studies .phone.alchemy {
+  background: #0B0D12;
+  color: #F5F2EB;
+}
+#argon-studies .alchemy .topbar {
+  background: #0B0D12;
+  border-bottom: 1px solid rgba(255, 204, 102, 0.1);
+}
+#argon-studies .alchemy .brand {
+  color: #FAF6EE;
+}
+#argon-studies .alchemy .brand-logo {
+  background: linear-gradient(135deg, #F59E0B, #B45309);
+  color: #0B0D12;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.35);
+}
+#argon-studies .alchemy .gear-btn {
+  background: #161A24;
+  border: 1px solid rgba(255, 209, 102, 0.24);
+  color: #F6C453;
+}
+#argon-studies .alchemy .greeting {
+  color: #F5F2EB;
+}
+
+/* Alchemy Hero: Molten Chronometer Dial */
+#argon-studies .a-hero {
+  margin: 0 4.5cqw;
+  border-radius: 6cqw;
+  padding: 4.8cqw;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(ellipse at 50% 110%, rgba(245, 158, 11, 0.36), rgba(224, 90, 71, 0.16) 48%, transparent 72%),
+    linear-gradient(165deg, #171B26 0%, #0F1219 65%, #21160E 100%);
+  border: 1px solid rgba(245, 183, 66, 0.42);
+  box-shadow:
+    0 18px 34px -10px rgba(0, 0, 0, 0.75),
+    0 0 24px rgba(245, 158, 11, 0.14),
+    inset 0 1px 0 rgba(255, 224, 150, 0.3);
+}
+#argon-studies .a-flare {
+  position: absolute;
+  width: 82cqw;
+  height: 48cqw;
+  left: 9cqw;
+  bottom: -22cqw;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 196, 77, 0.45), transparent 68%);
+  z-index: -1;
+  pointer-events: none;
+}
+#argon-studies .a-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#argon-studies .a-title {
+  display: flex;
+  align-items: center;
+  gap: 1.6cqw;
+  font-size: 4.3cqw;
+  font-weight: 700;
+  color: #F7EFE0;
+}
+#argon-studies .a-title .info-dot {
+  background: rgba(255, 209, 102, 0.16);
+  color: #FFD166;
+}
+#argon-studies .a-badge {
+  font-size: max(9px, 2.5cqw);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 1.2cqw 2.6cqw;
+  border-radius: 99px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(255, 209, 102, 0.45);
+  color: #FFD166;
+}
+#argon-studies .a-scope {
+  font-size: max(10px, 3.1cqw);
+  color: #9CA3B5;
+  margin-top: 1cqw;
+}
+/* Split Focal: Big Metallic Date + Glowing Countdown Capsule */
+#argon-studies .a-focal {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 3cqw;
+  margin: 4.4cqw 0 4cqw;
+}
+#argon-studies .a-date-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+#argon-studies .a-date-tag {
+  font-size: max(9px, 2.4cqw);
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: #F59E0B;
+  text-transform: uppercase;
+  margin-bottom: 1cqw;
+}
+#argon-studies .a-date {
+  font-size: 9.8cqw;
+  font-weight: 850;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FDE6B0 60%, #E5A93C 100%);
+  -webkit-background-clip: text;
+  color: transparent;
+}
+#argon-studies .a-countdown-pill {
+  min-width: 26cqw;
+  border-radius: 4.2cqw;
+  padding: 2.6cqw 3.4cqw;
+  background: linear-gradient(145deg, rgba(245, 158, 11, 0.24), rgba(180, 83, 9, 0.08));
+  border: 1px solid rgba(255, 209, 102, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 236, 179, 0.35);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+#argon-studies .a-countdown-pill strong {
+  font-size: 8.8cqw;
+  font-weight: 850;
+  line-height: 0.95;
+  color: #FFD166;
+}
+#argon-studies .a-countdown-pill span {
+  font-size: max(8px, 2.35cqw);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #E7CFA1;
+  margin-top: 0.9cqw;
+  line-height: 1.15;
+}
+/* 7 Ember-to-Gold Ignition Segments */
+#argon-studies .a-segments {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1.4cqw;
+  height: 2.3cqw;
+  margin-bottom: 3.4cqw;
+}
+#argon-studies .a-segments i {
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.11);
+}
+#argon-studies .a-segments i:nth-child(1) {
+  background: linear-gradient(90deg, #EF6445, #F59E0B);
+}
+#argon-studies .a-segments i:nth-child(2) {
+  background: linear-gradient(90deg, #F59E0B, #FFD166);
+  box-shadow: 0 0 10px rgba(255, 209, 102, 0.45);
+}
+#argon-studies .a-segments i:nth-child(3) {
+  background: linear-gradient(90deg, #FFD166 24%, rgba(255, 255, 255, 0.11) 24%);
+}
+#argon-studies .a-hero-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: max(10px, 3.1cqw);
+  color: #C7C2B8;
+  padding-top: 2.6cqw;
+  border-top: 1px solid rgba(255, 209, 102, 0.16);
+}
+#argon-studies .a-hero-foot strong {
+  color: #FFD166;
+  font-weight: 700;
+}
+
+/* Alchemy Content: Dual-Chamber Bento Forge */
+#argon-studies .a-body {
+  padding: 4cqw 4.5cqw 4.5cqw;
+  display: flex;
+  flex-direction: column;
+  gap: 3.6cqw;
+}
+#argon-studies .a-card {
+  background: linear-gradient(160deg, #161A24, #11141C);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 5cqw;
+  padding: 4.2cqw;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+#argon-studies .a-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3.2cqw;
+}
+#argon-studies .a-card-title {
+  font-size: 4.4cqw;
+  font-weight: 750;
+  color: #F5F2EB;
+}
+#argon-studies .a-card-title small {
+  font-size: max(10px, 3.1cqw);
+  font-weight: 500;
+  color: #8E95A8;
+}
+#argon-studies .a-card-head .info-dot {
+  background: rgba(255, 255, 255, 0.14);
+  color: #C7CDD9;
+}
+/* Dual-Chamber Bento Comparison + 17% Meter */
+#argon-studies .a-chambers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2.6cqw;
+}
+#argon-studies .a-chamber {
+  border-radius: 3.8cqw;
+  padding: 3cqw;
+  position: relative;
+  overflow: hidden;
+}
+#argon-studies .a-chamber.paid {
+  background: linear-gradient(145deg, rgba(46, 196, 146, 0.14), rgba(17, 20, 28, 0.9));
+  border: 1px solid rgba(52, 211, 153, 0.32);
+}
+#argon-studies .a-chamber.debt {
+  background: linear-gradient(145deg, rgba(239, 100, 69, 0.14), rgba(17, 20, 28, 0.9));
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+#argon-studies .a-chamber-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: max(9px, 2.8cqw);
+  font-weight: 700;
+  margin-bottom: 1.6cqw;
+}
+#argon-studies .a-chamber.paid .a-chamber-top {
+  color: #6EE7B7;
+}
+#argon-studies .a-chamber.debt .a-chamber-top {
+  color: #FCA5A5;
+}
+#argon-studies .a-pct-chip {
+  background: rgba(46, 196, 146, 0.24);
+  color: #A7F3D0;
+  padding: 0.5cqw 1.8cqw;
+  border-radius: 99px;
+  font-size: max(9px, 2.6cqw);
+  font-weight: 800;
+}
+#argon-studies .a-chamber-val {
+  font-size: 5.4cqw;
+  font-weight: 850;
+  letter-spacing: -0.03em;
+}
+#argon-studies .a-chamber-val small {
+  font-size: 3.5cqw;
+}
+#argon-studies .a-chamber.paid .a-chamber-val {
+  color: #34D399;
+}
+#argon-studies .a-chamber.debt .a-chamber-val {
+  color: #F87171;
+}
+#argon-studies .a-forge-bar {
+  margin-top: 3cqw;
+  height: 2cqw;
+  border-radius: 99px;
+  background: #252B39;
+  overflow: hidden;
+  display: flex;
+}
+#argon-studies .a-forge-bar span {
+  width: 17%;
+  background: linear-gradient(90deg, #10B981, #34D399);
+  border-radius: 99px;
+}
+#argon-studies .a-dots {
+  display: flex;
+  justify-content: center;
+  gap: 1.4cqw;
+  margin-top: 3cqw;
+}
+#argon-studies .a-dots i {
+  width: 1.5cqw;
+  height: 1.5cqw;
+  border-radius: 99px;
+  background: #2C3344;
+}
+#argon-studies .a-dots i.on {
+  width: 5.2cqw;
+  background: #F59E0B;
+}
+/* Alchemy Strategy */
+#argon-studies .a-see-all {
+  font-size: max(10px, 3.3cqw);
+  font-weight: 700;
+  color: #FFD166;
+}
+#argon-studies .a-strat-sub {
+  font-size: max(10px, 3cqw);
+  color: #8E95A8;
+  margin-top: -2.2cqw;
+  margin-bottom: 3cqw;
+}
+#argon-studies .a-target {
+  display: flex;
+  align-items: center;
+  gap: 2.8cqw;
+  padding: 3cqw 3.2cqw;
+  border-radius: 3.8cqw;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(245, 158, 11, 0.28);
+}
+#argon-studies .a-rank {
+  width: 6.8cqw;
+  height: 6.8cqw;
+  border-radius: 2cqw;
+  background: #F59E0B;
+  color: #0B0D12;
+  font-weight: 850;
+  font-size: 3.5cqw;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+#argon-studies .a-card-ico {
+  width: 8.5cqw;
+  height: 8.5cqw;
+  border-radius: 50%;
+  background: rgba(245, 158, 11, 0.16);
+  color: #FFD166;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+#argon-studies .a-card-ico svg {
+  width: 4.5cqw;
+  height: 4.5cqw;
+}
+#argon-studies .a-target-info {
+  flex: 1;
+  min-width: 0;
+}
+#argon-studies .a-target-info strong {
+  display: block;
+  font-size: 4cqw;
+  color: #F5F2EB;
+}
+#argon-studies .a-target-info span {
+  font-size: max(9px, 2.8cqw);
+  color: #F87171;
+  font-weight: 600;
+}
+#argon-studies .a-target-date {
+  font-size: max(10px, 3.1cqw);
+  font-weight: 700;
+  padding: 1.6cqw 2.8cqw;
+  border-radius: 2.4cqw;
+  background: rgba(245, 158, 11, 0.18);
+  color: #FFD166;
+  border: 1px solid rgba(255, 209, 102, 0.4);
+  white-space: nowrap;
+}
+#argon-studies .alchemy .dock {
+  background: #12151D;
+  border-top-color: rgba(255, 255, 255, 0.08);
+  color: #8E95A8;
+}
+#argon-studies .alchemy .dock-item.active {
+  color: #FFD166;
+}
+#argon-studies .alchemy .dock-item.active .dock-icon {
+  background: rgba(245, 158, 11, 0.18);
+}
+
+/* =====================================================================
+   CONCEPT 3: ZERO-GRAVITY ASCENT (Royal Cobalt, Electric Cyan-Mint & Alabaster)
+   Symbolism: Lifting the weight of debt into open sky, clarity & momentum
+   ===================================================================== */
+#argon-studies .phone.ascent {
+  background: #EEF3FB;
+  color: #091336;
+}
+/* Full-bleed atmospheric dome header + hero */
+#argon-studies .z-dome {
+  background:
+    radial-gradient(circle at 85% 22%, rgba(30, 227, 207, 0.4), transparent 48%),
+    radial-gradient(circle at 15% 80%, rgba(123, 241, 168, 0.26), transparent 55%),
+    linear-gradient(145deg, #070D5B 0%, #0D279B 52%, #0051FB 100%);
+  color: #FFFFFF;
+  padding-bottom: 5.5cqw;
+  border-radius: 0 0 7.5cqw 7.5cqw;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  box-shadow: 0 14px 28px -10px rgba(7, 13, 91, 0.45);
+}
+#argon-studies .z-aurora {
+  position: absolute;
+  inset: -20% -10%;
+  background: radial-gradient(ellipse at 70% 30%, rgba(39, 238, 233, 0.25), transparent 60%);
+  z-index: -1;
+  pointer-events: none;
+}
+#argon-studies .ascent .brand {
+  color: #FFFFFF;
+}
+#argon-studies .ascent .brand-logo {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(171, 223, 253, 0.45);
+  color: #27EEE9;
+}
+#argon-studies .ascent .gear-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(171, 223, 253, 0.35);
+  color: #FFFFFF;
+}
+#argon-studies .ascent .greeting {
+  color: #D7ECFF;
+  font-size: 4.8cqw;
+  padding-top: 0.5cqw;
+  padding-bottom: 3cqw;
+}
+#argon-studies .z-hero-inner {
+  margin: 0 5cqw;
+  border-radius: 5cqw;
+  padding: 4.4cqw;
+  background: rgba(7, 13, 91, 0.36);
+  border: 1px solid rgba(171, 223, 253, 0.38);
+  backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+#argon-studies .z-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#argon-studies .z-title {
+  display: flex;
+  align-items: center;
+  gap: 1.6cqw;
+  font-size: 4.3cqw;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+#argon-studies .z-title .info-dot {
+  background: rgba(171, 223, 253, 0.24);
+  color: #ABDFFD;
+}
+#argon-studies .z-badge {
+  font-size: max(9px, 2.5cqw);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 1.2cqw 2.6cqw;
+  border-radius: 99px;
+  background: rgba(39, 238, 233, 0.18);
+  border: 1px solid rgba(39, 238, 233, 0.55);
+  color: #98EDC1;
+}
+#argon-studies .z-scope {
+  font-size: max(10px, 3.1cqw);
+  color: #ABDFFD;
+  margin-top: 1cqw;
+}
+/* Ascending Elevation Row */
+#argon-studies .z-main-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 3cqw;
+  margin: 4.2cqw 0 4cqw;
+}
+#argon-studies .z-date {
+  font-size: 9.8cqw;
+  font-weight: 850;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  color: #FFFFFF;
+}
+#argon-studies .z-date small {
+  display: block;
+  font-size: max(9px, 2.5cqw);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #27EEE9;
+  margin-bottom: 1cqw;
+}
+#argon-studies .z-pill {
+  background: linear-gradient(135deg, #27EEE9, #98EDC1);
+  color: #070D5B;
+  border-radius: 3.8cqw;
+  padding: 2.2cqw 3.4cqw;
+  text-align: center;
+  box-shadow: 0 8px 18px rgba(39, 238, 233, 0.28);
+}
+#argon-studies .z-pill strong {
+  display: block;
+  font-size: 7.8cqw;
+  font-weight: 850;
+  line-height: 0.95;
+}
+#argon-studies .z-pill span {
+  display: block;
+  font-size: max(8px, 2.3cqw);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  margin-top: 0.6cqw;
+}
+/* 7 Ascending Altitude Bars */
+#argon-studies .z-steps {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  align-items: end;
+  gap: 1.4cqw;
+  height: 4.2cqw;
+  margin-bottom: 3.6cqw;
+}
+#argon-studies .z-steps i {
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.22);
+}
+#argon-studies .z-steps i:nth-child(1) { height: 45%; background: #27EEE9; }
+#argon-studies .z-steps i:nth-child(2) { height: 55%; background: #98EDC1; }
+#argon-studies .z-steps i:nth-child(3) {
+  height: 65%;
+  background: linear-gradient(90deg, #98EDC1 24%, rgba(255, 255, 255, 0.22) 24%);
+}
+#argon-studies .z-steps i:nth-child(4) { height: 74%; }
+#argon-studies .z-steps i:nth-child(5) { height: 83%; }
+#argon-studies .z-steps i:nth-child(6) { height: 92%; }
+#argon-studies .z-steps i:nth-child(7) { height: 100%; }
+
+#argon-studies .z-hero-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: max(10px, 3.1cqw);
+  color: #D7ECFF;
+  padding-top: 2.6cqw;
+  border-top: 1px solid rgba(171, 223, 253, 0.25);
+}
+#argon-studies .z-hero-foot strong {
+  color: #98EDC1;
+  font-weight: 700;
+}
+
+/* Ascent Content Cards */
+#argon-studies .z-body {
+  padding: 4.2cqw 4.5cqw 4.5cqw;
+  display: flex;
+  flex-direction: column;
+  gap: 3.8cqw;
+}
+#argon-studies .z-card {
+  background: #FFFFFF;
+  border: 1px solid #DAE5F7;
+  border-radius: 5cqw;
+  padding: 4.4cqw;
+  box-shadow: 0 6px 18px rgba(7, 13, 91, 0.05);
+}
+#argon-studies .z-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3.5cqw;
+}
+#argon-studies .z-card-title {
+  font-size: 4.4cqw;
+  font-weight: 750;
+  color: #070D5B;
+}
+#argon-studies .z-card-title small {
+  font-size: max(10px, 3.1cqw);
+  font-weight: 500;
+  color: #5C6B8A;
+}
+#argon-studies .z-card-head .info-dot {
+  background: #64748B;
+  color: #FFFFFF;
+}
+#argon-studies .z-accounts-row {
+  display: flex;
+  align-items: center;
+  gap: 3.8cqw;
+}
+#argon-studies .z-ring {
+  width: 21cqw;
+  height: 21cqw;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: conic-gradient(#0D9488 0 17%, #E2EBF8 17% 100%);
+  display: grid;
+  place-items: center;
+}
+#argon-studies .z-ring-inner {
+  width: 15.6cqw;
+  height: 15.6cqw;
+  border-radius: 50%;
+  background: #FFFFFF;
+  display: grid;
+  place-items: center;
+  font-size: 4.5cqw;
+  font-weight: 800;
+  color: #070D5B;
+}
+#argon-studies .z-pills-col {
+  flex: 1;
+  display: grid;
+  gap: 2cqw;
+}
+#argon-studies .z-stat-pill {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 2cqw 2.8cqw;
+  border-radius: 3cqw;
+}
+#argon-studies .z-stat-pill.paid {
+  background: #ECFDF5;
+  border: 1px solid #BCEFD8;
+}
+#argon-studies .z-stat-pill.debt {
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+}
+#argon-studies .z-stat-pill span {
+  font-size: max(10px, 3cqw);
+  font-weight: 600;
+  color: #475569;
+}
+#argon-studies .z-stat-pill strong {
+  font-size: 5.2cqw;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+#argon-studies .z-stat-pill strong small {
+  font-size: 3.4cqw;
+}
+#argon-studies .z-stat-pill.paid strong {
+  color: #057A55;
+}
+#argon-studies .z-stat-pill.debt strong {
+  color: #C8322B;
+}
+#argon-studies .z-dots {
+  display: flex;
+  justify-content: center;
+  gap: 1.4cqw;
+  margin-top: 3.4cqw;
+}
+#argon-studies .z-dots i {
+  width: 1.5cqw;
+  height: 1.5cqw;
+  border-radius: 99px;
+  background: #CBD5E1;
+}
+#argon-studies .z-dots i.on {
+  width: 5.2cqw;
+  background: #0051FB;
+}
+/* Ascent Strategy */
+#argon-studies .z-see-all {
+  font-size: max(10px, 3.3cqw);
+  font-weight: 700;
+  color: #0051FB;
+}
+#argon-studies .z-strat-sub {
+  font-size: max(10px, 3cqw);
+  color: #5C6B8A;
+  margin-top: -2.2cqw;
+  margin-bottom: 3.2cqw;
+}
+#argon-studies .z-target {
+  display: flex;
+  align-items: center;
+  gap: 2.8cqw;
+  padding: 3cqw 3.2cqw;
+  border-radius: 3.8cqw;
+  background: #F4F8FF;
+  border: 1px solid #D7E4FC;
+}
+#argon-studies .z-rank {
+  width: 6.8cqw;
+  height: 6.8cqw;
+  border-radius: 2cqw;
+  background: #0051FB;
+  color: #FFFFFF;
+  font-weight: 800;
+  font-size: 3.5cqw;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+#argon-studies .z-card-ico {
+  width: 8.5cqw;
+  height: 8.5cqw;
+  border-radius: 50%;
+  background: #E0ECFF;
+  color: #0051FB;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+#argon-studies .z-card-ico svg {
+  width: 4.5cqw;
+  height: 4.5cqw;
+}
+#argon-studies .z-target-info {
+  flex: 1;
+  min-width: 0;
+}
+#argon-studies .z-target-info strong {
+  display: block;
+  font-size: 4cqw;
+  color: #070D5B;
+}
+#argon-studies .z-target-info span {
+  font-size: max(9px, 2.8cqw);
+  color: #5C6B8A;
+}
+#argon-studies .z-target-date {
+  font-size: max(10px, 3.1cqw);
+  font-weight: 700;
+  padding: 1.6cqw 2.8cqw;
+  border-radius: 2.4cqw;
+  background: #E8F2FF;
+  color: #0051FB;
+  border: 1px solid #BDD6FF;
+  white-space: nowrap;
+}
+#argon-studies .ascent .dock {
+  background: #FFFFFF;
+  border-top-color: #DFEAFA;
+  color: #5C6B8A;
+}
+#argon-studies .ascent .dock-item.active {
+  color: #0051FB;
+}
+#argon-studies .ascent .dock-item.active .dock-icon {
+  background: #EBF2FF;
+}
+
+/* Motion Footer & One-Shot Animations */
+#argon-studies .motion-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+#argon-studies .motion-note {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+#argon-studies .playing .m-sheen {
+  animation: argon-mint-sweep 2000ms ease-in-out 1;
+}
+#argon-studies .playing .m-seal {
+  animation: argon-seal-glint 2000ms ease-in-out 1;
+}
+#argon-studies .playing .a-flare {
+  animation: argon-ember-rise 2200ms ease-out 1;
+}
+#argon-studies .playing .a-countdown-pill {
+  animation: argon-gold-pulse 2200ms ease-in-out 1;
+}
+#argon-studies .playing .z-aurora {
+  animation: argon-aurora-lift 2400ms ease-out 1;
+}
+#argon-studies .playing .z-pill {
+  animation: argon-pill-float 2000ms ease-in-out 1;
+}
+@keyframes argon-mint-sweep {
+  0% { opacity: 0; transform: translateX(-65%); }
+  25% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(65%); }
+}
+@keyframes argon-seal-glint {
+  0%, 100% { transform: scale(1); filter: brightness(1); }
+  45% { transform: scale(1.04); filter: brightness(1.22); }
+}
+@keyframes argon-ember-rise {
+  0% { transform: translateY(8cqw) scale(0.92); opacity: 0.4; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+@keyframes argon-gold-pulse {
+  0%, 100% { box-shadow: inset 0 1px 0 rgba(255, 236, 179, 0.3), 0 0 0 rgba(245, 158, 11, 0); }
+  50% { box-shadow: inset 0 1px 0 rgba(255, 236, 179, 0.6), 0 0 22px rgba(245, 158, 11, 0.42); }
+}
+@keyframes argon-aurora-lift {
+  0% { transform: translateY(6cqw) rotate(-6deg); opacity: 0.45; }
+  100% { transform: translateY(0) rotate(0deg); opacity: 1; }
+}
+@keyframes argon-pill-float {
+  0%, 100% { transform: translateY(0); }
+  45% { transform: translateY(-1.2cqw); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #argon-studies .playing *,
+  #argon-studies .playing *::before,
+  #argon-studies .playing *::after {
+    animation: none !important;
+  }
+}
+</style>
+
+<div id="argon-studies">
+  <!-- Shared Vector Symbol Definitions -->
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute;overflow:hidden">
+    <symbol id="ico-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 18v-5M10 18V9M15 18v-3" />
+      <path d="M14 7c2.5 0 4.5-1.5 5-4-2.5.5-4.5 2-5 4Z" fill="currentColor" />
+    </symbol>
+    <symbol id="ico-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+    </symbol>
+    <symbol id="ico-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2.8 11.1 12 3.4l9.2 7.7" />
+      <path d="M4.8 9.5V20h14.4V9.5" />
+      <path d="M12 11.3v6.2" />
+      <path d="M14.2 12.4c-.35-.7-1.1-1.05-2.1-1.05-1.15 0-1.9.55-1.9 1.35 0 1.8 4 1 4 3.1 0 .8-.78 1.4-2.05 1.4-1.02 0-1.82-.4-2.2-1.15" />
+    </symbol>
+    <symbol id="ico-accounts" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="2.2" />
+      <path d="M4 9.8h16" />
+      <path d="M7 14.2h4" />
+    </symbol>
+    <symbol id="ico-tx" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="5.5" width="16" height="14.5" rx="1.8" />
+      <path d="M8 3.5v4M16 3.5v4M4 9.5h16" />
+      <circle cx="8" cy="13" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="13" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="13" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="16.5" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="16.5" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="16.5" r=".55" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="ico-budget" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5.4 5h12.2a2 2 0 0 1 2 2v1.3" />
+      <path d="M5.5 5a2.5 2.5 0 0 0 0 5h14.8v9.2H5.5A2.5 2.5 0 0 1 3 16.7V7.5A2.5 2.5 0 0 1 5.5 5Z" />
+      <path d="M17.3 12.5h4v4h-4a2 2 0 0 1 0-4Z" />
+      <circle cx="17.7" cy="14.5" r=".45" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="ico-progress" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="3.8" width="17" height="11.5" rx="1.5" />
+      <path d="m7.5 11.2 3.1-3.1 2.2 1.9 3.8-4.1" />
+      <path d="M14.2 5.9h2.5v2.5" />
+      <path d="m8 15.3 4 5.2 4-5.2M12 20.5h-4M12 20.5h4" />
+    </symbol>
+  </svg>
+
+  <!-- Concept Switcher -->
+  <div class="controls-bar" role="group" aria-label="Financial color design concepts">
+    <button class="tab-btn" data-concept="mint" aria-pressed="true">
+      <span class="swatch" style="background:linear-gradient(135deg,#0D5C3E,#DFB760)"></span>
+      1. Sovereign Mint
+    </button>
+    <button class="tab-btn" data-concept="alchemy" aria-pressed="false">
+      <span class="swatch" style="background:linear-gradient(135deg,#171B24,#F59E0B)"></span>
+      2. Alchemist’s Ledger
+    </button>
+    <button class="tab-btn" data-concept="ascent" aria-pressed="false">
+      <span class="swatch" style="background:linear-gradient(135deg,#0051FB,#27EEE9)"></span>
+      3. Zero-Gravity Ascent
+    </button>
+  </div>
+
+  <p class="palette-caption" id="argon-caption">
+    <strong>Sovereign Mint:</strong> Central-bank emerald, burnished bullion gold, and cotton linen paper—contrasting emerald Paid principal against crimson Debt ink.
+  </p>
+
+  <div class="stage" id="argon-stage">
+    <!-- ================================================
+         SCREEN 1: SOVEREIGN MINT
+         ================================================ -->
+    <section class="phone mint" data-scene="mint" aria-label="Sovereign Mint Home concept">
+      <div class="topbar">
+        <div class="brand">
+          <span class="brand-logo"><svg aria-hidden="true"><use href="#ico-logo"/></svg></span>
+          BitLess
+        </div>
+        <span class="gear-btn" aria-label="Settings"><svg aria-hidden="true"><use href="#ico-gear"/></svg></span>
+      </div>
+      <div class="greeting">Hi, Lawrence</div>
+
+      <div class="m-hero">
+        <div class="m-sheen" aria-hidden="true"></div>
+        <div class="m-hero-top">
+          <div class="m-title-row">Debt-Free Date <i class="info-dot">i</i></div>
+          <span class="m-badge">ESTIMATE</span>
+        </div>
+        <div class="m-scope">Cards / Loans &amp; Auto</div>
+
+        <div class="m-center">
+          <div class="m-date-block">
+            <div class="m-date-label">Projected Maturity</div>
+            <div class="m-date"><span>DECEMBER</span>2027</div>
+          </div>
+          <div class="m-seal" aria-label="13 months to go">
+            <strong>13</strong>
+            <span>Months<br>To Go</span>
+          </div>
+        </div>
+
+        <div class="m-bars" aria-label="7-segment progress indicator">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+
+        <div class="m-hero-foot">
+          <span>Keep building your freedom.</span>
+          <strong>Snowball ›</strong>
+        </div>
+      </div>
+
+      <div class="m-body">
+        <div class="m-card">
+          <div class="m-card-head">
+            <div class="m-card-title">Your Accounts <small>· Cards &amp; Loans (9)</small></div>
+            <i class="info-dot">i</i>
+          </div>
+          <div class="m-ledger">
+            <div class="m-ring" aria-label="17 percent paid">
+              <div class="m-ring-inner">17%</div>
+            </div>
+            <div class="m-figures">
+              <div class="m-fig-row">
+                <span class="m-fig-label">Paid</span>
+                <strong class="m-fig-val paid">$9,252<small>.01</small></strong>
+              </div>
+              <div class="m-fig-row">
+                <span class="m-fig-label">Balance</span>
+                <strong class="m-fig-val debt">$44,108<small>.71</small></strong>
+              </div>
+            </div>
+          </div>
+          <div class="m-dots" aria-label="Cards and Loans selected">
+            <i class="on"></i><i></i><i></i>
+          </div>
+        </div>
+
+        <div class="m-card">
+          <div class="m-card-head">
+            <div class="m-card-title">Payoff Strategy</div>
+            <span class="m-see-all">See all ›</span>
+          </div>
+          <div class="m-strat-sub">Snowball · Cards &amp; Loans</div>
+          <div class="m-target">
+            <span class="m-rank">1</span>
+            <span class="m-card-ico"><svg aria-hidden="true"><use href="#ico-accounts"/></svg></span>
+            <div class="m-target-info">
+              <strong>Discover</strong>
+              <span>26.74% APR</span>
+            </div>
+            <span class="m-target-date">Dec 2026</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="dock" aria-label="Bottom navigation">
+        <div class="dock-item active"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-home"/></svg></span><span>Home</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-accounts"/></svg></span><span>Accounts</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-tx"/></svg></span><span>Transactions</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-budget"/></svg></span><span>Budget</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-progress"/></svg></span><span>Progress</span></div>
+      </nav>
+    </section>
+
+    <!-- ================================================
+         SCREEN 2: ALCHEMIST'S LEDGER
+         ================================================ -->
+    <section class="phone alchemy" data-scene="alchemy" aria-label="Alchemist's Ledger Home concept" hidden>
+      <div class="topbar">
+        <div class="brand">
+          <span class="brand-logo"><svg aria-hidden="true"><use href="#ico-logo"/></svg></span>
+          BitLess
+        </div>
+        <span class="gear-btn" aria-label="Settings"><svg aria-hidden="true"><use href="#ico-gear"/></svg></span>
+      </div>
+      <div class="greeting">Hi, Lawrence</div>
+
+      <div class="a-hero">
+        <div class="a-flare" aria-hidden="true"></div>
+        <div class="a-hero-top">
+          <div class="a-title">Debt-Free Date <i class="info-dot">i</i></div>
+          <span class="a-badge">ESTIMATE</span>
+        </div>
+        <div class="a-scope">Cards / Loans &amp; Auto</div>
+
+        <div class="a-focal">
+          <div class="a-date-box">
+            <span class="a-date-tag">Freedom Horizon</span>
+            <div class="a-date">DEC 2027</div>
+          </div>
+          <div class="a-countdown-pill" aria-label="13 months to go">
+            <strong>13</strong>
+            <span>MONTHS<br>TO GO</span>
+          </div>
+        </div>
+
+        <div class="a-segments" aria-label="7-segment progress indicator">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+
+        <div class="a-hero-foot">
+          <span>Keep building your freedom.</span>
+          <strong>Snowball ›</strong>
+        </div>
+      </div>
+
+      <div class="a-body">
+        <div class="a-card">
+          <div class="a-card-head">
+            <div class="a-card-title">Your Accounts <small>· Cards &amp; Loans (9)</small></div>
+            <i class="info-dot">i</i>
+          </div>
+          <div class="a-chambers">
+            <div class="a-chamber paid">
+              <div class="a-chamber-top">
+                <span>Paid</span>
+                <b class="a-pct-chip">17%</b>
+              </div>
+              <div class="a-chamber-val">$9,252<small>.01</small></div>
+            </div>
+            <div class="a-chamber debt">
+              <div class="a-chamber-top">
+                <span>Balance</span>
+              </div>
+              <div class="a-chamber-val">$44,108<small>.71</small></div>
+            </div>
+          </div>
+          <div class="a-forge-bar" aria-hidden="true"><span></span></div>
+          <div class="a-dots" aria-label="Cards and Loans selected">
+            <i class="on"></i><i></i><i></i>
+          </div>
+        </div>
+
+        <div class="a-card">
+          <div class="a-card-head">
+            <div class="a-card-title">Payoff Strategy</div>
+            <span class="a-see-all">See all ›</span>
+          </div>
+          <div class="a-strat-sub">Snowball · Cards &amp; Loans</div>
+          <div class="a-target">
+            <span class="a-rank">1</span>
+            <span class="a-card-ico"><svg aria-hidden="true"><use href="#ico-accounts"/></svg></span>
+            <div class="a-target-info">
+              <strong>Discover</strong>
+              <span>26.74% APR</span>
+            </div>
+            <span class="a-target-date">Dec 2026</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="dock" aria-label="Bottom navigation">
+        <div class="dock-item active"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-home"/></svg></span><span>Home</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-accounts"/></svg></span><span>Accounts</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-tx"/></svg></span><span>Transactions</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-budget"/></svg></span><span>Budget</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-progress"/></svg></span><span>Progress</span></div>
+      </nav>
+    </section>
+
+    <!-- ================================================
+         SCREEN 3: ZERO-GRAVITY ASCENT
+         ================================================ -->
+    <section class="phone ascent" data-scene="ascent" aria-label="Zero-Gravity Ascent Home concept" hidden>
+      <div class="z-dome">
+        <div class="z-aurora" aria-hidden="true"></div>
+        <div class="topbar">
+          <div class="brand">
+            <span class="brand-logo"><svg aria-hidden="true"><use href="#ico-logo"/></svg></span>
+            BitLess
+          </div>
+          <span class="gear-btn" aria-label="Settings"><svg aria-hidden="true"><use href="#ico-gear"/></svg></span>
+        </div>
+        <div class="greeting">Hi, Lawrence</div>
+
+        <div class="z-hero-inner">
+          <div class="z-hero-top">
+            <div class="z-title">Debt-Free Date <i class="info-dot">i</i></div>
+            <span class="z-badge">ESTIMATE</span>
+          </div>
+          <div class="z-scope">Cards / Loans &amp; Auto</div>
+
+          <div class="z-main-row">
+            <div class="z-date">
+              <small>TARGET SUMMIT</small>
+              DEC 2027
+            </div>
+            <div class="z-pill" aria-label="13 months to go">
+              <strong>13</strong>
+              <span>MONTHS TO GO</span>
+            </div>
+          </div>
+
+          <div class="z-steps" aria-label="7-step ascending progress">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </div>
+
+          <div class="z-hero-foot">
+            <span>Keep building your freedom.</span>
+            <strong>Snowball ›</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="z-body">
+        <div class="z-card">
+          <div class="z-card-head">
+            <div class="z-card-title">Your Accounts <small>· Cards &amp; Loans (9)</small></div>
+            <i class="info-dot">i</i>
+          </div>
+          <div class="z-accounts-row">
+            <div class="z-ring" aria-label="17 percent paid">
+              <div class="z-ring-inner">17%</div>
+            </div>
+            <div class="z-pills-col">
+              <div class="z-stat-pill paid">
+                <span>Paid</span>
+                <strong>$9,252<small>.01</small></strong>
+              </div>
+              <div class="z-stat-pill debt">
+                <span>Balance</span>
+                <strong>$44,108<small>.71</small></strong>
+              </div>
+            </div>
+          </div>
+          <div class="z-dots" aria-label="Cards and Loans selected">
+            <i class="on"></i><i></i><i></i>
+          </div>
+        </div>
+
+        <div class="z-card">
+          <div class="z-card-head">
+            <div class="z-card-title">Payoff Strategy</div>
+            <span class="z-see-all">See all ›</span>
+          </div>
+          <div class="z-strat-sub">Snowball · Cards &amp; Loans</div>
+          <div class="z-target">
+            <span class="z-rank">1</span>
+            <span class="z-card-ico"><svg aria-hidden="true"><use href="#ico-accounts"/></svg></span>
+            <div class="z-target-info">
+              <strong>Discover</strong>
+              <span>26.74% APR</span>
+            </div>
+            <span class="z-target-date">Dec 2026</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="dock" aria-label="Bottom navigation">
+        <div class="dock-item active"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-home"/></svg></span><span>Home</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-accounts"/></svg></span><span>Accounts</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-tx"/></svg></span><span>Transactions</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-budget"/></svg></span><span>Budget</span></div>
+        <div class="dock-item"><span class="dock-icon"><svg aria-hidden="true"><use href="#ico-progress"/></svg></span><span>Progress</span></div>
+      </nav>
+    </section>
+  </div>
+
+  <div class="motion-bar">
+    <button class="replay-btn" id="argon-replay">↻ Replay subtle motion</button>
+    <span class="motion-note" id="argon-motion-note" aria-live="polite">Gold foil sweep + treasury seal glint</span>
+  </div>
+</div>
+
+<script>
+(() => {
+  const root = document.getElementById('argon-studies');
+  const stage = document.getElementById('argon-stage');
+  const scenes = [...root.querySelectorAll('[data-scene]')];
+  const buttons = [...root.querySelectorAll('[data-concept]')];
+  const caption = document.getElementById('argon-caption');
+  const motionNote = document.getElementById('argon-motion-note');
+  let active = 'mint';
+
+  const captions = {
+    mint: '<strong>Sovereign Mint:</strong> Central-bank emerald, burnished bullion gold, and cotton linen paper—contrasting emerald Paid principal against crimson Debt ink.',
+    alchemy: '<strong>Alchemist’s Ledger:</strong> Obsidian charcoal, molten amber-gold, and ember-to-jade chambers—symbolizing burning down high-APR debt into golden freedom.',
+    ascent: '<strong>Zero-Gravity Ascent:</strong> Deep cobalt lifting into electric cyan-mint and alabaster—symbolizing weightlessness, clarity, and climbing out of debt.',
+    all: '<strong>All 3 Color Symbolism Studies:</strong> Left to right — Sovereign Mint (Banknote Emerald &amp; Gold), Alchemist’s Ledger (Obsidian &amp; Molten Amber), Zero-Gravity Ascent (Cobalt &amp; Cyan-Mint).'
+  };
+
+  const motionNotes = {
+    mint: 'Gold foil sweep + treasury seal glint',
+    alchemy: 'Molten horizon glow + golden chronometer pulse',
+    ascent: 'Cyan-mint aurora lift + floating countdown badge',
+    all: 'Replays all three hero animations simultaneously'
+  };
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      active = btn.dataset.concept;
+      buttons.forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+      stage.classList.toggle('compare-all', active === 'all');
+      scenes.forEach(s => {
+        s.hidden = active !== 'all' && s.dataset.scene !== active;
+        s.classList.remove('playing');
+      });
+      caption.innerHTML = captions[active];
+      motionNote.textContent = motionNotes[active];
+    });
+  });
+
+  document.getElementById('argon-replay').addEventListener('click', () => {
+    const targets = active === 'all' ? scenes : scenes.filter(s => s.dataset.scene === active);
+    targets.forEach(t => {
+      t.classList.remove('playing');
+      void t.offsetWidth;
+      t.classList.add('playing');
+    });
+  });
+})();
+</script>
+</body>
+</html>

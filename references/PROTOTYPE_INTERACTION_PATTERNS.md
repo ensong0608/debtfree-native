@@ -1,5 +1,7 @@
 # Prototype Interaction Patterns & User Experience Blueprint
 
+> **Current native decisions (2026-11-08):** Read [UI_PREFERENCES.md](./UI_PREFERENCES.md). Upcoming lives only under Transactions, grouped by month/year then due date. Scheduled lives only under Transactions; Strategy lives only under Debt. Budget has no Upcoming or Scheduled section. Home shortcuts follow these destinations. Keep current colors/style and horizontal placement; use Monthly Income / Edit and collapsed Income sources. Prototype descriptions below are historical.
+
 This document captures the screen-by-screen interactive behavior, navigational flows, modals, accordions, and user-specified design and functional directives from the live prototype at [debtfree-dashboard.ensong0608.workers.dev](https://debtfree-dashboard.ensong0608.workers.dev/).
 
 > **Source Reference**: Captured on **2026-11-06** in mobile viewport (**iPhone 14 Pro Max**, 430 × 932 px).  
@@ -16,14 +18,14 @@ All agents developing or reviewing screens for the native app MUST abide by the 
 2. **Upcoming Recurring Bills Card (Home Tab)**:  
    - **Behavior**: Hidden by default on the Home tab.  
    - **Trigger**: It **only appears on the Home tab** if a recurring bill or credit card is nearing its due date AND the minimum payment has **not been settled yet**.
-   - **Source List**: The full list of upcoming items lives under **Budget → Upcoming**.
+   - **Source List (current owner decision)**: The full list lives under **Transactions → Upcoming**, grouped by month and due date.
 3. **Home Card Carousel**:  
    - The user likes the carousel concept (cycling through Cards & Loans, Home, Auto) on the Home tab, but **does not love the current visual design**. Keep the functional grouping but refine the layout and styling in the native app.
 4. **Payoff Strategy Redirection**:  
-   - Clicking on the "Payoff strategy" card or its "See all" button on the Home tab redirects directly to the **Payoff Strategy view** (located under **Budget → Strategy**).
+   - Clicking on the "Payoff strategy" card or its "See all" button on the Home tab redirects directly to **Debt → Strategy**.
 5. **Debt Detail Popups (Debt Tab)**:  
    - Clicking any debt card on the Debt tab opens a **bottom sheet/modal** with three tabs: **Overview**, **Transactions**, and **Detail**.
-6. **Payoff Strategy Monthly Schedule Expansion (Budget → Strategy)**:  
+6. **Payoff Strategy Monthly Schedule Expansion (Debt → Strategy)**:  
    - In the Payoff Strategy ranked list, **clicking an individual account row expands an inline monthly payoff projection table** (`Month`, `Payment`, `Interest`, `Balance`).
 7. **Strict Backend Safety**:  
    - Never write scripts that edit, delete, or submit forms that alter live production/prototype data.
@@ -80,10 +82,10 @@ All screenshots are stored in [`references/prototype/interactions/`](./prototype
 - **Upcoming Recurring Bills Card** *(Conditional)*:
   - **Does not show by default**.
   - Only renders when a recurring bill or credit card minimum is nearing its due date and remains unsettled.
-  - Includes a "See all >" link pointing to **Budget → Upcoming**.
+  - Includes a "See all >" link pointing to **Transactions → Upcoming**.
 - **Payoff Strategy Preview Card**:
   - Displays active method (e.g., `Avalanche · Cards & Loans`) and top priority payoff targets.
-  - Clicking the card or "See all >" **redirects to Budget → Strategy**.
+  - Clicking the card or "See all >" **redirects to Debt → Strategy**.
 - **Recent Activity Section**:
   - Shows the 3 most recent transactions/adjustments.
   - "See all >" redirects to **Transactions → History**.
@@ -129,7 +131,9 @@ All screenshots are stored in [`references/prototype/interactions/`](./prototype
 
 ---
 
-### 3.4 Budget Tab
+### 3.4 Historical prototype Budget layout
+
+The Upcoming and Strategy subsections below describe prototype interactions now hosted in Transactions and Debt. Do not recreate these as Budget subtabs.
 - **Sub-Tabs**:
   - `Budget`, `Upcoming`, and `Strategy`.
 - **Subtab 1: Budget (Monthly Plan)**:

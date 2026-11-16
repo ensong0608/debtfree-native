@@ -5,7 +5,9 @@ export function acceptOnboardingSnapshot(
   current: UserOnboardingData | null,
   incoming: UserOnboardingData,
 ): UserOnboardingData {
-  if (!current || current.userId !== incoming.userId) return incoming;
+  if (!current) return incoming;
+  // Explicit household switches bypass this merge. Late screen callbacks cannot.
+  if (current.userId !== incoming.userId || current.householdId !== incoming.householdId) return current;
   if ((incoming.settingsRevision ?? 0) < (current.settingsRevision ?? 0)) return current;
 
   const currentDebts = new Map(current.debts.map(debt => [debt.id, debt]));

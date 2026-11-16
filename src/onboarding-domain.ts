@@ -1,5 +1,7 @@
 // @ts-ignore TS5097
 import type { ObligationSchedules } from './finance/obligation-schedule.ts';
+// @ts-ignore TS5097
+import type { DebtPaymentSplitPlansByDebtId, BillPaymentSplitPlansByBillId } from './finance/debt-payment-split.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { CURRENCIES, getCurrency, type CurrencyScale } from './finance/currencies.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
@@ -8,6 +10,7 @@ import { classifyMoneyEdit, parseMoney, parseApr, makeMoney, multiplyMoneyRatio,
 import { householdDate, monthlyPaymentDate, parseDateOnly, type DateOnly } from './finance/calendar.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import type { DataContext } from './finance/contracts.ts';
+import type { HouseholdContext } from './household-context';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { calculatePayoff, type PayoffResult, type PayoffAccountInput } from './finance/payoff.ts';
 /**
@@ -33,7 +36,6 @@ export const SIGNUP_GOALS = [
   'Build a monthly budget',
   'Keep up with upcoming bills',
   'See when I can be debt-free',
-  'Manage debt with my partner',
   'Stay motivated with milestones',
 ] as const;
 
@@ -76,12 +78,16 @@ export type AdditionalIncomeSource = {
   amount: number;
   frequency: PayFrequency;
   monthlyAmount: number;
+  /** Optional pre-tax amount for income-ratio calculations; existing amount remains take-home. */
+  grossAmount?: number | null;
 };
 
 /** Explicitly reviewed relationship between a mortgage/auto loan and its payment bill. */
 export type LoanBillPairing = Readonly<{
   status: 'linked' | 'separate' | 'dismissed';
   billId?: string;
+  /** Loan owns future terms; bill ID remains a historical alias. */
+  canonical?: boolean;
 }>;
 
 export type PremiumPlanChoice = 'premium' | 'premium_bank_sync';
@@ -111,6 +117,9 @@ export type DebtItem = {
   minimumPayment: number;
   dueDay: number | null;
   creditLimit: number | null;
+  /** Expected yearly card fee and its next renewal date; neither implies a charge was posted. */
+  annualFeeAmount?: number | null;
+  annualFeeNextDueDate?: DateOnly | null;
   createdAt: string;
   updatedAt: string;
   /** Server-validated monotonic revision of a persisted debt row. */
@@ -140,6 +149,9 @@ export type UserOnboardingData = {
   version: 1;
   userId: string;
   householdId: string;
+  /** Server-refreshed authorization context; never persisted as household settings or trusted from cache. */
+  householdContext?: HouseholdContext;
+  householdName?: string;
   currentStage: FlowStage;
   signupCompleted: boolean;
   onboardingCompleted: boolean;
@@ -155,7 +167,10 @@ export type UserOnboardingData = {
   managesWithPartner: boolean | null;
   worksWithProfessional: boolean | null;
   // Onboarding Step 1 (Income)
+  primaryIncomeName?: string;
   primaryIncomeAmount: number;
+  /** Optional pre-tax amount per pay period; uses primaryPayFrequency. */
+  primaryGrossIncomeAmount?: number | null;
   primaryPayFrequency: PayFrequency;
   primaryMonthlyIncome: number;
   additionalIncomes: AdditionalIncomeSource[];
@@ -172,9 +187,15 @@ export type UserOnboardingData = {
   notifications: NotificationPreferences;
   completedAt: string | null;
   updatedAt: string;
-  /** Server-validated revision for settings held in auth metadata; absent on legacy profiles. */
+  /** Server-validated revision for settings held by the active household. */
   settingsRevision?: number;
+  /** Per-user profile revision; shared household settings use settingsRevision. */
+  profileSettingsRevision?: number;
   obligationSchedules?: ObligationSchedules;
+  /** Optional informational split-payment plans; never payment instructions or ledger entries. */
+  debtPaymentSplitPlansByDebtId?: DebtPaymentSplitPlansByDebtId;
+  /** Optional informational bill split-payment plans; never payment instructions or ledger entries. */
+  billPaymentSplitPlansByBillId?: BillPaymentSplitPlansByBillId;
   /** User-entered monthly escrow component for mortgage payments; missing means unknown. */
   mortgageEscrowByDebtId?: Record<string, number>;
   /** Independently entered monthly extra payment for each mortgage projection. */
@@ -183,12 +204,26 @@ export type UserOnboardingData = {
   loanBillPairingByDebtId?: Record<string, LoanBillPairing>;
   /** Reusable display labels for recurring bills stored with the compatible other_bill enum. */
   recurringBillCategoryLabelByBillId?: Record<string, string>;
+  /** Server-maintained debt identities archived after a confirmed payment reaches zero. */
+  archivedPaidOffDebtIds?: string[];
 };
 
 /** Round a numeric dollar amount to two decimal places using integer-cent precision. */
 export function roundCents(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/** Auto-estimated minimum monthly payment: 1% of principal + monthly interest (min $25, capped at payoff). */
+export function estimateMinimumPayment(balance: number, apr: number, currencyCode = 'USD'): number {
+  if (!Number.isFinite(balance) || balance <= 0) return 0;
+  const currencyScale = getCurrency(currencyCode).scale;
+  const factor = 10 ** currencyScale;
+  const roundCurrency = (value: number) => Math.round((value + Number.EPSILON) * factor) / factor;
+  const safeApr = Number.isFinite(apr) && apr > 0 ? apr : 0;
+  const monthlyInterest = (balance * safeApr) / 1200;
+  const floor = currencyScale === 0 ? 2500 : 25;
+  return Math.min(roundCurrency(balance + monthlyInterest), Math.max(floor, roundCurrency(balance * 0.01 + monthlyInterest)));
 }
 
 const currencySymbols: Record<string, string> = { USD: '$', EUR: '€', GBP: '£', CAD: 'CA$', AUD: 'A$', JPY: '¥', CHF: 'CHF', CNY: 'CN¥', INR: '₹', KWD: 'KWD', CLF: 'CLF' };
@@ -248,6 +283,24 @@ export function calculateTotalMonthlyIncome(
   return total.minorUnits / 10 ** getCurrency(currencyCode).scale;
 }
 
+/** Return gross monthly income only when every active take-home source has a gross amount. */
+export function calculateTotalGrossMonthlyIncome(
+  primaryNetAmount: number,
+  primaryGrossAmount: number | null | undefined,
+  primaryFrequency: PayFrequency,
+  additionalIncomes: readonly AdditionalIncomeSource[],
+  currencyCode = 'USD',
+): number | null {
+  const activeSources = [
+    ...(primaryNetAmount > 0 ? [{ amount: primaryGrossAmount, frequency: primaryFrequency }] : []),
+    ...additionalIncomes.filter(source => source.amount > 0).map(source => ({ amount: source.grossAmount, frequency: source.frequency })),
+  ];
+  if (activeSources.length === 0 || activeSources.some(source => source.amount == null || !Number.isFinite(source.amount) || source.amount <= 0)) return null;
+  return activeSources.reduce((sum, source) => addMoney(sum,
+    parseMoney(String(normalizeMonthlyIncome(source.amount!, source.frequency, currencyCode)), currencyCode)),
+  parseMoney('0', currencyCode)).minorUnits / 10 ** getCurrency(currencyCode).scale;
+}
+
 export function createDefaultOnboardingData(userId: string): UserOnboardingData {
   return {
     version: 1,
@@ -273,11 +326,11 @@ export function createDefaultOnboardingData(userId: string): UserOnboardingData 
     strategy: 'snowball',
     extraMonthlyPayment: 0,
     notifications: {
-      upcomingReminders: true,
-      overdueAlerts: true,
+      upcomingReminders: false,
+      overdueAlerts: false,
       milestonesAndProgress: false,
       permissionRequested: false,
-      osPermissionStatus: 'undetermined',
+      osPermissionStatus: 'unavailable',
     },
     completedAt: null,
     updatedAt: new Date().toISOString(),
@@ -287,12 +340,18 @@ export function createDefaultOnboardingData(userId: string): UserOnboardingData 
 /** Determine which screen an authenticated user should see when opening or signing into the app. */
 export function resolveAuthenticatedStage(data: UserOnboardingData): FlowStage {
   if (data.onboardingCompleted) return 'home';
+  // Personal signup questions still belong to the user, but a verified member
+  // must not be sent through the owner's financial household setup.
+  const context = data.householdContext;
+  if (data.signupCompleted && context?.userId === data.userId && context.householdId === data.householdId
+      && (context.role === 'member' || context.role === 'viewer')) return 'home';
+  // Existing onboarding records may still point at the retired Premium / Bank Sync choice screen.
+  if (data.currentStage === 'onboard_2') return 'onboard_3';
   const validStages: FlowStage[] = [
     'signup_2',
     'signup_3',
     'signup_4',
     'onboard_1',
-    'onboard_2',
     'onboard_3',
     'onboard_4',
     'onboard_5',
@@ -414,6 +473,9 @@ export function validateDebtDraft(
       return { valid: false, error: 'Due day must be between 1 and 31.' };
     }
     dueDay = dayNum;
+  }
+  if ((draft.category === 'Mortgage' || draft.category === 'Auto loan') && balance > 0 && dueDay === null) {
+    return { valid: false, error: 'Select a monthly due day (1–31) for an active Mortgage or Auto loan.' };
   }
 
   let creditLimit: number | null = null;
@@ -543,20 +605,22 @@ export function formatDateOnlyMonthYear(date: DateOnly): string {
 export function homeDebtFreeEstimateDate(label: string): string {
   return label.replace(/^Entered debts projected paid off:\s*/, '');
 }
-export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy, extraMonthlyPayment: number, baseDate: Date = new Date(), currencyCode = 'USD', householdTimeZone = 'UTC'): PayoffPlanResult {
+export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy, extraMonthlyPayment: number, baseDate: Date = new Date(), currencyCode = 'USD', householdTimeZone = 'UTC', archivedPaidOffDebtIds: readonly string[] = []): PayoffPlanResult {
   const scale = 10 ** getCurrency(currencyCode).scale;
+  const archived = new Set(archivedPaidOffDebtIds);
+  const activeDebtRecords = debts.filter(debt => !(archived.has(debt.id) && debt.balance === 0));
   const toMinor = (n: number) => Math.round(n * scale);
   const money = (n: number) => makeMoney(currencyCode, toMinor(n));
-  const ordered = sortDebtsByStrategy(debts, strategy, currencyCode);
+  const ordered = sortDebtsByStrategy(activeDebtRecords, strategy, currencyCode);
   const totalDebt = ordered.reduce((sum, d) => sum + toMinor(d.balance), 0) / scale;
-  const totalStartingDebt = activeDebts(debts).reduce((sum, d) => sum + toMinor(Math.max(0, d.balance, d.originalBalance ?? d.balance)), 0) / scale;
+  const totalStartingDebt = activeDebts(activeDebtRecords).reduce((sum, d) => sum + toMinor(Math.max(0, d.balance, d.originalBalance ?? d.balance)), 0) / scale;
   const hasOpenObligations = ordered.length > 0;
   const totalMinimums = ordered.reduce((sum, d) => sum + toMinor(d.minimumPayment), 0) / scale;
   const safeExtra = toMinor(extraMonthlyPayment) / scale;
   const context: DataContext = { householdId: 'local', source: { id: 'onboarding', kind: 'manual' }, asOf: null, coverage: { status: 'unknown' } };
   let result: PayoffResult;
   try {
-    const accounts: PayoffAccountInput[] = debts.map(d => ({ accountId: d.id, inclusion: isActiveDebtItem(d) ? 'accelerated' : 'excluded', balance: money(d.balance), aprThousandths: Math.round(d.apr * 1000), scheduledMinimum: money(d.minimumPayment) }));
+    const accounts: PayoffAccountInput[] = activeDebtRecords.map(d => ({ accountId: d.id, inclusion: isActiveDebtItem(d) ? 'accelerated' : 'excluded', balance: money(d.balance), aprThousandths: Math.round(d.apr * 1000), scheduledMinimum: money(d.minimumPayment) }));
     result = calculatePayoff({ accounts: { status: 'available', data: accounts, context }, assumptions: { firstPaymentDate: defaultFirstPaymentDate(baseDate, householdTimeZone), requestedDay: 1, householdTimeZone }, strategy, currency: currencyCode, extraMonthlyPayment: money(extraMonthlyPayment) });
   } catch (error) { result = { status: 'invalidInput', reason: error instanceof Error ? error.message : 'Invalid input' }; }
   const common = 'schedule' in result ? result : null;
@@ -577,7 +641,7 @@ export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy,
     return { ...d, firstMonthPayment: monthlySchedule[0]?.payment ?? 0, monthsToPayoff: summary?.payoffMonth ?? null, projectedPayoffLabel: summary?.payoffDate ? formatDateOnlyMonthYear(summary.payoffDate) : 'Payoff date unavailable', monthlySchedule };
   });
 
-  const excludedDebts = debts.filter(d => !isActiveDebtItem(d) && d.balance > 0);
+  const excludedDebts = activeDebtRecords.filter(d => !isActiveDebtItem(d) && d.balance > 0);
   const excludedProjections: DebtPayoffProjection[] = excludedDebts.map(d => {
     const summary = common?.accounts.find(a => a.accountId === d.id);
     const monthlySchedule: PayoffScheduleRow[] = (common?.schedule ?? [])
@@ -604,7 +668,7 @@ export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy,
   // A known-zero set of *entered* accounts does not establish complete household coverage.
   const displayStatus = hasOpenObligations ? result.status : 'insufficientData';
   const displayPayoffLabel = !hasOpenObligations
-    ? (activeDebts(debts).length ? 'No balance owed on entered accounts' : 'Add accounts to estimate payoff')
+    ? (activeDebts(activeDebtRecords).length ? 'No balance owed on entered accounts' : 'Add accounts to estimate payoff')
     : result.status === 'paidOff'
       ? (result.monthsToPayoff === 0 ? 'No outstanding tracked debt'
         : result.coverageScope === 'verified-household'

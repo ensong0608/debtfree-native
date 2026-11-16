@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BitLess Navigation Icon Review</title>
+  <style>
+    :root {
+      --brand-blue: #0051FB;
+      --sky: #ABDFFD;
+      --turquoise: #27EEE9;
+      --mint: #98EDC1;
+      --navy: #070D5B;
+      --white: #FFFFFF;
+      --light-surface: #F3F7FF;
+      --light-tile: #FFFFFF;
+      --dark-tile: #101848;
+      --muted-ink: #64708F;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; color: var(--navy); font-family: var(--font); background: transparent; }
+    main { width: 100%; max-width: 920px; margin: 0 auto; display: grid; gap: 14px; }
+    header { display: grid; gap: 3px; }
+    h1 { margin: 0; font-size: 20px; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; }
+    .subtitle { margin: 0; font-size: 12px; line-height: 1.4; color: var(--muted-ink); }
+    .theme { padding: 14px; border-radius: 18px; display: grid; gap: 10px; }
+    .theme.light { background: var(--light-surface); }
+    .theme.dark { color: var(--white); background: var(--navy); }
+    .theme-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .theme-name { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: .09em; }
+    .theme-note { font-size: 10px; opacity: .72; white-space: nowrap; }
+    .icon-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+    .icon-cell { min-width: 0; min-height: 92px; border-radius: 14px; background: var(--light-tile); display: grid; grid-template-rows: 1fr auto; justify-items: center; align-items: center; gap: 6px; padding: 10px 4px 9px; color: var(--navy); }
+    .dark .icon-cell { background: var(--dark-tile); color: var(--sky); }
+    .icon-cell.active { color: var(--brand-blue); }
+    .dark .icon-cell.active { color: var(--turquoise); }
+    .icon-cell svg { width: 38px; height: 38px; display: block; overflow: visible; }
+    .icon-cell span { font-size: 11px; line-height: 1.1; font-weight: 600; text-align: center; }
+    .dark .theme-note { color: var(--sky); }
+    .principle { margin: 0; padding: 0 2px; font-size: 11px; line-height: 1.45; color: var(--muted-ink); }
+    @media (max-width: 420px) {
+      main { gap: 10px; }
+      .theme { padding: 11px 9px; border-radius: 15px; }
+      .icon-grid { gap: 5px; }
+      .icon-cell { min-height: 82px; padding: 8px 2px 7px; border-radius: 12px; }
+      .icon-cell svg { width: 34px; height: 34px; }
+      .icon-cell span { font-size: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute;overflow:hidden">
+    <symbol id="bitless-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2.8 11.1 12 3.4l9.2 7.7" />
+      <path d="M4.8 9.5V20h14.4V9.5" />
+      <path d="M12 11.3v6.2" />
+      <path d="M14.2 12.4c-.35-.7-1.1-1.05-2.1-1.05-1.15 0-1.9.55-1.9 1.35 0 1.8 4 1 4 3.1 0 .8-.78 1.4-2.05 1.4-1.02 0-1.82-.4-2.2-1.15" />
+    </symbol>
+    <symbol id="bitless-debt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="2.2" />
+      <path d="M4 9.8h16" />
+      <path d="M7 14.2h4" />
+    </symbol>
+    <symbol id="bitless-transactions" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="5.5" width="16" height="14.5" rx="1.8" />
+      <path d="M8 3.5v4M16 3.5v4M4 9.5h16" />
+      <circle cx="8" cy="13" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="13" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="13" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="16.5" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="16.5" r=".55" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="16.5" r=".55" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="bitless-budget" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5.4 5h12.2a2 2 0 0 1 2 2v1.3" />
+      <path d="M5.5 5a2.5 2.5 0 0 0 0 5h14.8v9.2H5.5A2.5 2.5 0 0 1 3 16.7V7.5A2.5 2.5 0 0 1 5.5 5Z" />
+      <path d="M17.3 12.5h4v4h-4a2 2 0 0 1 0-4Z" />
+      <circle cx="17.7" cy="14.5" r=".45" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="bitless-progress" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="3.8" width="17" height="11.5" rx="1.5" />
+      <path d="m7.5 11.2 3.1-3.1 2.2 1.9 3.8-4.1" />
+      <path d="M14.2 5.9h2.5v2.5" />
+      <path d="m8 15.3 4 5.2 4-5.2M12 20.5h-4M12 20.5h4" />
+    </symbol>
+  </svg>
+
+  <main>
+    <header>
+      <h1>BitLess navigation icons</h1>
+      <p class="subtitle">One outline family | 24-unit grid | 1.8px stroke | rounded ends</p>
+    </header>
+
+    <section class="theme light" aria-label="Light appearance icon preview">
+      <div class="theme-head"><h2 class="theme-name">LIGHT</h2><span class="theme-note">Progress shown selected</span></div>
+      <div class="icon-grid">
+        <div class="icon-cell"><svg aria-hidden="true"><use href="#bitless-home" /></svg><span>Home</span></div>
+        <div class="icon-cell"><svg aria-hidden="true"><use href="#bitless-debt" /></svg><span>Debt</span></div>
+        <div class="icon-cell"><svg aria-hidden="true"><use href="#bitless-transactions" /></svg><span>Transactions</span></div>
+        <div class="icon-cell"><svg aria-hidden="true"><use href="#bitless-budget" /></svg><span>Budget</span></div>
+        <div class="icon-cell active"><svg aria-hidden="true"><use href="#bitless-progress" /></svg><span>Progress</span></div>
+      </div>
+    </section>
+
+    <section class="theme dark" aria-label="Dark appearance icon preview">
+      <div class="theme-head"><h2 class="theme-name">DARK</h2><span class="theme-note">Same shapes, selected color only</span></div>
+      <div class="icon-grid">
+        <div class="icon-cell"><svg aria-hidden="true"><use href="#bitless-home" /></svg><span>Home</span></div>
+        <div class="icon-cell"><svg aria-hidden="true"><use href="#bitless-debt" /></svg><span>Debt</span></div>
+        <div class="icon-cell"><svg aria-hidden="true"><use href="#bitless-transactions" /></svg><span>Transactions</span></div>
+        <div class="icon-cell"><svg aria-hidden="true"><use href="#bitless-budget" /></svg><span>Budget</span></div>
+        <div class="icon-cell active"><svg aria-hidden="true"><use href="#bitless-progress" /></svg><span>Progress</span></div>
+      </div>
+    </section>
+
+    <p class="principle">Debt card | Transactions calendar | Budget wallet | Progress chart | Home dollar-house. Original drawings guided by your references; every icon keeps the same grid, outline weight, and rounded geometry.</p>
+  </main>
+</body>
+</html>

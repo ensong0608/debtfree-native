@@ -1,0 +1,38 @@
+[
+  {
+    "palette": "Indigo · Porcelain",
+    "lightBrand": "7.46",
+    "darkBrand": "8.69",
+    "lightMuted": "5.29",
+    "darkMuted": "7.56",
+    "lightCTA": "7.46",
+    "darkCTA": "8.31"
+  },
+  {
+    "palette": "Cobalt · Ice",
+    "lightBrand": "5.85",
+    "darkBrand": "8.15",
+    "lightMuted": "4.89",
+    "darkMuted": "7.79",
+    "lightCTA": "5.85",
+    "darkCTA": "7.75"
+  },
+  {
+    "palette": "Copper · Ink",
+    "lightBrand": "6.01",
+    "darkBrand": "8.62",
+    "lightMuted": "5.11",
+    "darkMuted": "7.72",
+    "lightCTA": "6.06",
+    "darkCTA": "8.61"
+  },
+  {
+    "palette": "Orchid · Graphite",
+    "lightBrand": "6.69",
+    "darkBrand": "8.55",
+    "lightMuted": "5.15",
+    "darkMuted": "7.84",
+    "lightCTA": "6.69",
+    "darkCTA": "7.90"
+  }
+]

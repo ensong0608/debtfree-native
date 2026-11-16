@@ -1,5 +1,5 @@
 // @ts-ignore TS5097
-import { getObligationCycle, obligationScheduleKey, type ObligationSchedules } from './obligation-schedule.ts';
+import { getObligationCycle, obligationScheduleKey, type ObligationSchedule, type ObligationSchedules } from './obligation-schedule.ts';
 // Node's direct TypeScript loader requires the extension; Expo resolves it as well.
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { type DateOnly, getNextMonthString } from './calendar.ts';
@@ -33,7 +33,22 @@ export type PaymentObligation = Readonly<{
   debt?: DebtItem;
   /** A manually linked loan whose payment can settle this bill's same-month cycle. */
   linkedDebtId?: string;
+  /** Immutable historical bill IDs whose bill-tagged payments settle this unified loan obligation. */
+  historicalBillIds?: readonly string[];
 }>;
+
+/** Resolve the effective schedule for a unified debt, merging any preserved legacy bill
+ *  schedule history (earlier terms, firstDueDate, acknowledgedPaidCycles) if present. */
+export function resolveEffectiveDebtSchedule(
+  schedules: ObligationSchedules | undefined,
+  debtId: string,
+  historicalBillIds: readonly string[] = [],
+): ObligationSchedule | undefined {
+  // An atomically saved debt schedule already contains the preserved bill history.
+  // Never overlay the independently stored legacy schedule onto it again.
+  return schedules?.[obligationScheduleKey('debt', debtId)]
+    ?? historicalBillIds.map(id => schedules?.[obligationScheduleKey('bill', id)]).find(Boolean);
+}
 
 export type ObligationMatchResult = Readonly<{
   obligation: PaymentObligation;
@@ -97,13 +112,20 @@ export function paymentMatchesObligation(
   }
 
   const targetCycleMonth = target.dueCycleMonth || target.dueDate.slice(0, 7);
+  const txBillIdFromId = extractBillIdFromTxId(tx.id);
+  const memoBillIds = extractBillIdsFromMemo(tx.memo);
+  const historicalBillIds = target.historicalBillIds ?? [];
+  const matchedHistoricalBillAlias = target.kind === 'debt' && historicalBillIds.length > 0 && (
+    (txBillIdFromId !== null && historicalBillIds.includes(txBillIdFromId)) ||
+    [...memoBillIds].some(id => historicalBillIds.includes(id))
+  );
 
   // Cycle date matching:
   // If `appliesToDate` is specified, it strictly dictates which due cycle this transaction applies to.
-  // If `appliesToDate` is a full date (YYYY-MM-DD), it must equal target.dueDate.
+  // If `appliesToDate` is a full date (YYYY-MM-DD), it must equal target.dueDate (except across linked loan/bill aliases in the same month).
   const pairedLoanPayment = target.kind === 'bill' && Boolean(target.linkedDebtId && tx.accountId === target.linkedDebtId && tx.category === 'payment');
   if (tx.appliesToDate) {
-    if (tx.appliesToDate.length === 10 && tx.appliesToDate !== target.dueDate && !pairedLoanPayment) {
+    if (tx.appliesToDate.length === 10 && tx.appliesToDate !== target.dueDate && !pairedLoanPayment && !matchedHistoricalBillAlias) {
       return false;
     }
     const txCycleMonth = tx.appliesToDate.slice(0, 7);
@@ -124,10 +146,7 @@ export function paymentMatchesObligation(
     // A transaction explicitly links to a bill if:
     // 1) tx.id starts with `bill:${target.billId}:` or equals `bill:${target.billId}`
     // 2) OR tx.memo explicitly references `[bill:${target.billId}]` or `bill:${target.billId}`
-    const txBillIdFromId = extractBillIdFromTxId(tx.id);
     const isExplicitBillId = txBillIdFromId === target.billId;
-
-    const memoBillIds = extractBillIdsFromMemo(tx.memo);
     const isExplicitMemo = memoBillIds.has(target.billId);
 
     // Per Finding 1 & P0-A: Require durable explicit bill/obligation identity.
@@ -168,15 +187,31 @@ export function paymentMatchesObligation(
   }
 
   // Debt payment obligation:
+  const hasBillReference = txBillIdFromId !== null || memoBillIds.size > 0;
+  if (hasBillReference) {
+    if (!matchedHistoricalBillAlias) return false;
+    if (txBillIdFromId !== null && !historicalBillIds.includes(txBillIdFromId)) return false;
+    for (const memoBillId of memoBillIds) {
+      if (!historicalBillIds.includes(memoBillId)) return false;
+    }
+    if (tx.category !== 'payment' && tx.category !== 'debit_bill') return false;
+    if (tx.accountId !== null && tx.accountId !== target.accountId) return false;
+    if (tx.category === 'debit_bill' && tx.accountId !== null) return false;
+    if (txBillIdFromId !== null) {
+      const idParts = tx.id.split(':');
+      if (idParts.length >= 3) {
+        const idCycle = idParts[2];
+        if (idCycle.length === 10 && idCycle.slice(0, 7) !== targetCycleMonth) return false;
+        if (idCycle.length === 7 && idCycle !== targetCycleMonth) return false;
+      }
+    }
+    return true;
+  }
+
   // Must be category 'payment' on the matching debt account.
   // Merchant refunds (category: 'refund') do NOT settle or reverse payment obligations.
   if (!target.accountId || tx.accountId !== target.accountId) return false;
   if (tx.category !== 'payment') return false;
-
-  // A transaction explicitly designated for a recurring bill cannot settle a debt minimum obligation
-  if (extractBillIdFromTxId(tx.id) !== null || extractBillIdsFromMemo(tx.memo).size > 0) {
-    return false;
-  }
 
   return true;
 }
@@ -286,14 +321,27 @@ export function findUnassignedPaymentsForObligation(
       return true;
     }
 
+    const historicalBillIds = obligation.historicalBillIds ?? [];
+
     // Don't show transactions that specifically belong to another bill
     if (tx.id.startsWith('bill:')) {
-      if (!obligation.billId || !tx.id.startsWith(`bill:${obligation.billId}:`)) {
+      const idBillId = extractBillIdFromTxId(tx.id);
+      const matchesOwnBill = Boolean(obligation.billId && idBillId === obligation.billId);
+      const matchesHistBill = Boolean(idBillId && historicalBillIds.includes(idBillId));
+      if (!matchesOwnBill && !matchesHistBill) {
         return false;
       }
     }
 
     if (obligation.kind === 'debt') {
+      if (historicalBillIds.length > 0) {
+        const idBillId = extractBillIdFromTxId(tx.id);
+        const memoIds = extractBillIdsFromMemo(tx.memo);
+        const isHistBillTx = historicalBillIds.some(histId => idBillId === histId || memoIds.has(histId));
+        if (isHistBillTx && (tx.accountId === null || tx.accountId === obligation.accountId) && (tx.category === 'payment' || tx.category === 'debit_bill')) {
+          return !tx.appliesToDate;
+        }
+      }
       // Must be a payment
       if (tx.category !== 'payment') return false;
       // Either already on this debt account without appliesToDate, or unassigned payee match
@@ -325,6 +373,24 @@ export function findUnassignedPaymentsForObligation(
       }
     }
   });
+}
+
+function effectiveDebtStartDate(
+  debt: DebtItem,
+  historicalBillIds: readonly string[],
+  recurringBills: readonly RecurringBill[],
+  asOfDate: DateOnly,
+): string {
+  const candidates = [debt.createdAt, debt.updatedAt]
+    .concat(
+      recurringBills
+        .filter(bill => historicalBillIds.includes(bill.id))
+        .map(bill => bill.createdAt),
+    )
+    .map(value => (value ? value.slice(0, 10) : ''))
+    .filter(dateOnly => /^\d{4}-\d{2}-\d{2}$/.test(dateOnly));
+  if (candidates.length === 0) return asOfDate;
+  return candidates.sort()[0];
 }
 
 /**
@@ -363,8 +429,21 @@ export function calculateOverdueObligations(params: {
   currencyCode: string;
   schedules?: ObligationSchedules;
   loanBillPairs?: Readonly<Record<string, string>>;
+  excludedBillIds?: readonly string[];
+  historicalBillIdsByDebtId?: Readonly<Record<string, readonly string[]>>;
 }): readonly OverdueObligationItem[] {
-  const { debts, recurringBills, transactions, asOfDate, currencyCode, schedules, loanBillPairs = {} } = params;
+  const {
+    debts,
+    recurringBills,
+    transactions,
+    asOfDate,
+    currencyCode,
+    schedules,
+    loanBillPairs = {},
+    excludedBillIds = [],
+    historicalBillIdsByDebtId = {},
+  } = params;
+  const excludedBills = new Set(excludedBillIds);
   const linkedBillToDebt = new Map(Object.entries(loanBillPairs).map(([debtId, billId]) => [billId, debtId]));
   const currentMonthStr = asOfDate.slice(0, 7);
   const currencyScale = getCurrency(currencyCode).scale;
@@ -372,6 +451,7 @@ export function calculateOverdueObligations(params: {
 
   // 1. Recurring Bills
   for (const bill of getActiveRecurringBills(recurringBills)) {
+    if (excludedBills.has(bill.id)) continue;
     // Don't create cycles before bill creation or if creation is future-dated
     const billCreationDate = bill.createdAt || asOfDate;
     if (billCreationDate.slice(0, 10) > asOfDate) continue;
@@ -426,11 +506,12 @@ export function calculateOverdueObligations(params: {
   // 2. Active Debts (Credit cards, loans with positive balance, minimum payment, and due day)
   for (const debt of debts) {
     if (loanBillPairs[debt.id]) continue;
-    const schedule = schedules?.[obligationScheduleKey('debt', debt.id)];
-    if (debt.balance <= 0 || (!schedule && (!debt.dueDay || debt.minimumPayment <= 0))) continue;
-    // Use verified debt creation date; fall back to updatedAt or asOfDate
-    const debtCreationDate = debt.createdAt || debt.updatedAt || asOfDate;
-    if (debtCreationDate.slice(0, 10) > asOfDate) continue;
+    const historicalBillIds = historicalBillIdsByDebtId[debt.id] ?? [];
+    const schedule = resolveEffectiveDebtSchedule(schedules, debt.id, historicalBillIds);
+    if (debt.balance <= 0 || debt.dueDay == null || (!schedule && debt.minimumPayment <= 0)) continue;
+    // Use earliest verified debt or linked bill creation date; fall back to asOfDate
+    const debtCreationDate = effectiveDebtStartDate(debt, historicalBillIds, recurringBills, asOfDate);
+    if (debtCreationDate > asOfDate) continue;
 
     const requiredMoney = makeMoney(currencyCode, Math.round(debt.minimumPayment * 10 ** currencyScale));
     const validMonths = getValidPastDueCycleMonths(schedule?.firstDueDate ?? debtCreationDate, currentMonthStr);
@@ -440,7 +521,7 @@ export function calculateOverdueObligations(params: {
       if (schedule && (!cycle || cycle.acknowledgedPaid)) continue;
       const cycleDueDate = cycle?.dueDate ?? resolveRecurringBillDate(mStr, debt.dueDay!);
       const cycleAmount = cycle?.amount ?? requiredMoney;
-      if (cycleDueDate < debtCreationDate.slice(0, 10) || cycleAmount.minorUnits <= 0) continue;
+      if (cycleDueDate < debtCreationDate || cycleAmount.minorUnits <= 0) continue;
       if (cycleDueDate < asOfDate) {
         const obligation: PaymentObligation = {
           id: `minimum:${debt.id}`,
@@ -451,6 +532,7 @@ export function calculateOverdueObligations(params: {
           requiredAmount: cycleAmount,
           accountId: debt.id,
           debt,
+          historicalBillIds,
         };
         const state = getObligationPaymentState(obligation, transactions, currencyCode);
         const match = state.confirmedMatch;
@@ -492,7 +574,7 @@ export function createDebtMinimumPaymentTransaction(params: {
 }): LedgerTransaction {
   return {
     id: params.id, accountId: params.debt.id, date: params.today, appliesToDate: params.dueDate,
-    amount: params.amount, category: 'payment', payee: `Payment to ${params.debt.name}`,
+    amount: params.amount, category: 'payment', payee: 'Payment',
     memo: `Minimum payment for ${params.dueDate}`, source: 'manual', reconciled: false,
     createdAt: params.createdAt, deletedAt: null,
   };
@@ -500,11 +582,29 @@ export function createDebtMinimumPaymentTransaction(params: {
 
 /** Shared current/next and overdue obligation rows for Transactions → Scheduled. */
 export function getScheduledObligationRows(params: {
-  debts: readonly DebtItem[]; recurringBills: readonly RecurringBill[]; transactions: readonly LedgerTransaction[];
-  asOfDate: DateOnly; currencyCode: string; schedules?: ObligationSchedules; loanBillPairs?: Readonly<Record<string, string>>;
+  debts: readonly DebtItem[];
+  recurringBills: readonly RecurringBill[];
+  transactions: readonly LedgerTransaction[];
+  asOfDate: DateOnly;
+  currencyCode: string;
+  schedules?: ObligationSchedules;
+  loanBillPairs?: Readonly<Record<string, string>>;
+  excludedBillIds?: readonly string[];
+  historicalBillIdsByDebtId?: Readonly<Record<string, readonly string[]>>;
 }): ScheduledObligationRow[] {
-  const { debts, recurringBills, transactions, asOfDate, currencyCode, schedules, loanBillPairs = {} } = params;
+  const {
+    debts,
+    recurringBills,
+    transactions,
+    asOfDate,
+    currencyCode,
+    schedules,
+    loanBillPairs = {},
+    excludedBillIds = [],
+    historicalBillIdsByDebtId = {},
+  } = params;
   const linkedBillToDebt = new Map(Object.entries(loanBillPairs).map(([debtId, billId]) => [billId, debtId]));
+  const excludedBills = new Set(excludedBillIds);
   const currentMonth = asOfDate.slice(0, 7);
   const months = Array.from({ length: 12 }, (_, offset) => {
     let month = currentMonth;
@@ -532,11 +632,13 @@ export function getScheduledObligationRows(params: {
       requiredAmount: item.requiredAmount, accountId: item.debt?.id ?? item.bill?.creditAccountId,
       billId: item.bill?.id, bill: item.bill, debt: item.debt,
       linkedDebtId: item.kind === 'bill' ? linkedBillToDebt.get(entityId) : undefined,
+      historicalBillIds: item.kind === 'debt' ? (historicalBillIdsByDebtId[entityId] ?? []) : undefined,
     };
     add(obligation, item.bill, item.debt);
   }
 
   for (const bill of getActiveRecurringBills(recurringBills)) {
+    if (excludedBills.has(bill.id)) continue;
     if ((bill.createdAt || asOfDate).slice(0, 10) > asOfDate) continue;
     const schedule = schedules?.[obligationScheduleKey('bill', bill.id)];
     for (const month of months) {
@@ -553,18 +655,20 @@ export function getScheduledObligationRows(params: {
   const scale = getCurrency(currencyCode).scale;
   for (const debt of debts) {
     if (loanBillPairs[debt.id]) continue;
-    if (debt.balance <= 0 || debt.minimumPayment <= 0 || debt.dueDay == null) continue;
-    if ((debt.createdAt || asOfDate).slice(0, 10) > asOfDate) continue;
-    const schedule = schedules?.[obligationScheduleKey('debt', debt.id)];
+    const historicalBillIds = historicalBillIdsByDebtId[debt.id] ?? [];
+    const schedule = resolveEffectiveDebtSchedule(schedules, debt.id, historicalBillIds);
+    if (debt.balance <= 0 || debt.dueDay == null || (!schedule && debt.minimumPayment <= 0)) continue;
+    const debtStartDate = effectiveDebtStartDate(debt, historicalBillIds, recurringBills, asOfDate);
+    if (debtStartDate > asOfDate) continue;
     for (const month of months) {
       const cycle = schedule ? getObligationCycle(schedule, month) : null;
       if (schedule && (!cycle || cycle.acknowledgedPaid)) continue;
       const dueDate = cycle?.dueDate ?? resolveRecurringBillDate(month, debt.dueDay);
-      if (dueDate < (debt.createdAt || asOfDate).slice(0, 10)) continue;
+      if (dueDate < debtStartDate) continue;
       const requiredAmount = cycle?.amount ?? makeMoney(currencyCode, Math.round(debt.minimumPayment * 10 ** scale));
       if (requiredAmount.minorUnits <= 0) continue;
       add({ id: `minimum:${debt.id}`, kind: 'debt', name: `${debt.name} minimum`, dueDate,
-        dueCycleMonth: month, requiredAmount, accountId: debt.id, debt }, undefined, debt);
+        dueCycleMonth: month, requiredAmount, accountId: debt.id, debt, historicalBillIds }, undefined, debt);
     }
   }
   return [...rows.values()].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));

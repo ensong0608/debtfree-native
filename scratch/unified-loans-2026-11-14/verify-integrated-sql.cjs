@@ -1,0 +1,44 @@
+const fs = require('fs'), assert = require('node:assert/strict');
+const {PGlite}=require('./sql-test-runtime/node_modules/@electric-sql/pglite');
+function sqlFunction(file,name){const src=fs.readFileSync(file,'utf8');const a=src.indexOf('CREATE OR REPLACE FUNCTION public.'+name+'(');if(a<0)throw Error(name);const b=src.indexOf('$$;',a);return src.slice(a,b+3);}
+(async()=>{
+ const db=new PGlite();
+ await db.exec("CREATE ROLE anon;CREATE ROLE authenticated;CREATE SCHEMA auth;CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql AS $$ SELECT '00000000-0000-4000-8000-000000000099'::uuid $$;"+
+ "CREATE TABLE public.households(id text PRIMARY KEY,lifecycle_state text,membership_version bigint);CREATE TABLE public.household_members(household_id text,user_id uuid,status text,role text);CREATE TABLE public.household_settings(household_id text PRIMARY KEY,revision bigint,settings jsonb,updated_at timestamptz);"+
+ "CREATE TABLE public.debts(id uuid PRIMARY KEY,user_id uuid,household_id text,name text,category text,balance numeric(18,4),apr numeric(6,3),minimum_payment numeric(18,4),original_balance numeric(18,4),credit_limit numeric(18,4),due_day integer,annual_fee_amount numeric(18,4),annual_fee_next_due_date date,created_at timestamptz,updated_at timestamptz,version bigint);"+
+ "CREATE FUNCTION public.debtfree_internal_lock_account_guards(uuid[],text,boolean) RETURNS void LANGUAGE sql AS $$ SELECT $$;CREATE FUNCTION public.debtfree_internal_lock_households(text[],text) RETURNS void LANGUAGE sql AS $$ SELECT $$;"+
+ "CREATE FUNCTION public.debtfree_internal_finance_authorize(text,bigint,text[],OUT r_actor uuid,OUT r_role text,OUT r_membership_version bigint,OUT r_currency text,OUT r_household_name text) RETURNS record LANGUAGE plpgsql AS $$ BEGIN SELECT m.role,h.membership_version,s.settings->>'currencyCode',s.settings->>'householdName' INTO r_role,r_membership_version,r_currency,r_household_name FROM public.household_members m JOIN public.households h ON h.id=m.household_id JOIN public.household_settings s ON s.household_id=h.id WHERE h.id=$1 AND m.user_id=auth.uid() AND m.status='active'; IF r_role IS NULL OR r_role<>ALL($3) OR r_membership_version<>$2 THEN RAISE EXCEPTION 'access denied' USING ERRCODE='42501';END IF;r_actor:=auth.uid();END $$;"+
+ "CREATE FUNCTION public.debtfree_internal_currency_scale(text) RETURNS integer LANGUAGE sql AS $$ SELECT 2 $$;"+
+ "CREATE FUNCTION public.test_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.version:=OLD.version+1;RETURN NEW;END $$;CREATE TRIGGER test_version BEFORE UPDATE ON public.debts FOR EACH ROW EXECUTE FUNCTION public.test_version();");
+ const source='supabase/migrations/20261114003911_household_finance_cutover_and_membership.sql';
+ await db.exec(sqlFunction('supabase/migrations/20261113231107_household_settings_lifecycle_context.sql','debtfree_save_household_settings'));
+ await db.exec(sqlFunction(source,'debtfree_upsert_household_debt_atomic'));
+ await db.exec(sqlFunction(source,'debtfree_internal_sync_household_paid_off_archive'));
+ await db.exec(sqlFunction(source,'debtfree_unarchive_reopened_debt'));
+ await db.exec("CREATE TRIGGER test_reopen AFTER UPDATE OF balance ON public.debts FOR EACH ROW EXECUTE FUNCTION public.debtfree_unarchive_reopened_debt();");
+ await db.exec(fs.readFileSync('supabase/migrations/20261115230945_unified_loan_atomic_save.sql','utf8'));
+ await db.exec("INSERT INTO public.households VALUES('h1','active',7);INSERT INTO public.household_members VALUES('h1',auth.uid(),'active','owner');");
+ const id='00000000-0000-4000-8000-000000000001';
+ const base={householdId:'h1',householdName:'Synthetic',currencyCode:'USD',obligationSchedules:{},loanBillPairingByDebtId:{},mortgageEscrowByDebtId:{},mortgageExtraPaymentByDebtId:{},debtPaymentSplitPlansByDebtId:{},billPaymentSplitPlansByBillId:{}};
+ const debt={id,name:'Vehicle',category:'Auto loan',balance:10000,apr:5,minimum_payment:1000,due_day:15};
+ const desired={...base,obligationSchedules:{['debt:'+id]:{firstDueDate:'2026-11-15',acknowledgedPaidCycles:[],terms:[{effectiveMonth:'2026-11',dueDay:15,amount:{currency:'USD',minorUnits:100000}}]}}};
+ const reset=async(settings=base)=>{await db.exec("TRUNCATE public.debts;DELETE FROM public.household_settings;UPDATE public.household_members SET role='owner'");await db.query("INSERT INTO public.household_settings VALUES('h1',3,$1,now())",[JSON.stringify(settings)]);};
+ const call=(d=debt,s=desired,rev=3,version=null)=>db.query("SELECT public.debtfree_upsert_household_loan_atomic('h1',7,$1,$2,$3,$4,$5) AS receipt",[JSON.stringify(d),version,id,rev,JSON.stringify(s)]);
+ let checks=0;
+ await reset();
+ let r=(await call()).rows[0].receipt;assert.equal(r.revision,4);assert.equal(r.row.version,1);assert.equal(r.row.minimum_payment,1000);checks++;
+ const next={...desired,obligationSchedules:{['debt:'+id]:{...desired.obligationSchedules['debt:'+id],terms:[...desired.obligationSchedules['debt:'+id].terms,{effectiveMonth:'2026-12',dueDay:20,amount:{currency:'USD',minorUnits:120000}}]}}};
+ r=(await call({...debt,due_day:20,minimum_payment:1200},next,4,1)).rows[0].receipt;assert.equal(r.row.version,2);assert.equal(r.revision,5);checks++;
+ await reset();
+ await assert.rejects(call({...debt,apr:101}),/invalid financial fields/);
+ assert.equal((await db.query("SELECT revision FROM public.household_settings")).rows[0].revision,3);assert.equal((await db.query("SELECT count(*)::int n FROM public.debts")).rows[0].n,0);checks++;
+ await reset();
+ await db.exec("UPDATE public.household_members SET role='viewer'");await assert.rejects(call(),/access denied/);checks++;
+ await reset();
+ const archived={...base,archivedPaidOffDebtIds:[id]};await db.query("UPDATE public.household_settings SET settings=$1",[JSON.stringify(archived)]);
+ await db.query("INSERT INTO public.debts(id,user_id,household_id,name,category,balance,apr,minimum_payment,due_day,version) VALUES($1,auth.uid(),'h1','Vehicle','Auto loan',0,5,1000,15,1)",[id]);
+ r=(await call(debt,{...desired,archivedPaidOffDebtIds:[id]},3,1)).rows[0].receipt;
+ assert.equal(r.revision,5);assert.deepEqual(r.settings.archivedPaidOffDebtIds,[]);checks++;
+ console.log(JSON.stringify({runtime:'in-memory PostgreSQL via PGlite',checksPassed:checks,nestedFunctions:'actual checked-in household-settings CAS, debt upsert and archive-reopen functions',stubbed:'authentication/authority/lock infrastructure and currency-scale helper only',hostedAccess:false}));
+ await db.close();
+})().catch(e=>{console.error(e.message);process.exitCode=1});

@@ -1,6 +1,8 @@
+import { settingsFailureSnapshot } from '../settings-contract';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  BackHandler,
   Alert,
   Modal,
   Platform,
@@ -10,12 +12,15 @@ import {
   Vibration,
   useWindowDimensions,
 } from 'react-native';
-import { Pressable, ScrollView, Text, TextInput, View, useNativeAppearance } from '../components/NativeAppearance';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Pressable, ScrollView, Text, TextInput, View, useNativeAppearance, type ThemePreference } from '../components/NativeAppearance';
 import type { Session } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
-import { AppIcon } from '../components/AppIcon';
+import { AppIcon, type AppIconName } from '../components/AppIcon';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { Card, Segments, ui } from '../components/FinancialScreen';
+import { InspireQuote } from '../components/InspireArt';
 import { SelectDropdown, type DropdownOption } from '../components/SelectDropdown';
 import {
   CURRENCY_OPTIONS,
@@ -28,7 +33,9 @@ import {
 } from '../onboarding-domain';
 import {
   requestNativeNotificationPermission,
+  loadUserOnboardingData,
   saveUserOnboardingData,
+  saveUserOnboardingSettingsPatch,
 } from '../onboarding-storage';
 import {
   assertCurrencyChangeAllowed,
@@ -36,20 +43,47 @@ import {
   validateStoredAmounts,
 } from '../debt-storage-domain';
 import { getPendingFinanceSummary, getPendingFinanceOperations, recoverPendingFinanceWrites, loadFinanceRecords, canRetryPendingFinanceOperation } from '../finance-storage';
-import { loadUserOnboardingData } from '../onboarding-storage';
 import { createNativeBackup, parseNativeBackup, createRestorePlan, createBackupCheckpointRepository, nativeBackupLifecycleWarnings, type RestoreCheckpoint } from '../finance/backup';
 import { createChunkedStorage } from '../secure-chunks';
 import type { LedgerTransaction, ReconciliationAnchor } from '../finance/ledger';
 import type { RecurringBill } from '../finance/recurring-bills';
-import type { PendingCommand } from '../finance/pending-journal';
+import type { HouseholdPendingCommand } from '../finance/pending-journal';
+import {
+  canEditHousehold,
+  type HouseholdMembershipSummary,
+  type HouseholdRole as ContextHouseholdRole,
+} from '../household-context';
+import {
+  acceptHouseholdInvitation,
+  buildHouseholdInviteWebUrl,
+  cancelHouseholdInvitation,
+  createHouseholdInvitation,
+  leaveHousehold,
+  listHouseholdInvitations,
+  listHouseholdMembers,
+  removeHouseholdMember,
+  rotateHouseholdInvitation,
+  transferHouseholdOwnership,
+  updateHouseholdMemberRole,
+  type CreatedOrRotatedInviteResult,
+  type HouseholdInvitationRole,
+  type HouseholdInvitationSummary,
+  type HouseholdMemberSummary,
+} from '../household-collaboration';
 
-export type ThemePreference = 'System' | 'Dark' | 'Light';
-export type HouseholdRole = 'Owner' | 'Admin' | 'Viewer';
+export type { ThemePreference } from '../components/NativeAppearance';
+export type HouseholdRole = 'Owner' | 'Member' | 'Admin' | 'Viewer';
+
+function toDisplayRole(role: ContextHouseholdRole): HouseholdRole {
+  if (role === 'owner') return 'Owner';
+  if (role === 'viewer') return 'Viewer';
+  return 'Member';
+}
 
 type SupportDocumentKey = 'guides' | 'privacy' | 'terms';
 type SettingsPage = 'appearance' | 'household' | 'preferences' | 'notifications' | 'security' | 'support' | 'data';
 
-const THEME_OPTIONS: readonly ThemePreference[] = ['System', 'Dark', 'Light'] as const;
+const THEME_OPTIONS: readonly ThemePreference[] = ['System', 'Dark', 'Light', 'Inspire'] as const;
 
 const COMMON_TIMEZONES: readonly { value: string; label: string; subtitle: string }[] = [
   { value: 'America/Los_Angeles', label: 'Pacific Time (US & Canada)', subtitle: 'America/Los_Angeles' },
@@ -70,11 +104,11 @@ const COMMON_TIMEZONES: readonly { value: string; label: string; subtitle: strin
 
 const SUPPORT_DOCS: Record<
   SupportDocumentKey,
-  { title: string; url: string; summary: readonly string[] }
+  { title: string; url: string | null; summary: readonly string[] }
 > = {
   guides: {
     title: 'Help & Guides',
-    url: 'https://debtfree-dashboard.ensong0608.workers.dev/help',
+    url: process.env.EXPO_PUBLIC_HELP_URL ?? null,
     summary: [
       'Snowball prioritizes your smallest balance first for fast momentum, while Avalanche targets the highest APR to minimize total interest.',
       'Recurring bills on credit cards increase card balance only when confirmed; debit bills track checking cashflow without creating debt.',
@@ -83,7 +117,7 @@ const SUPPORT_DOCS: Record<
   },
   privacy: {
     title: 'Privacy Policy',
-    url: 'https://debtfree-dashboard.ensong0608.workers.dev/privacy',
+    url: process.env.EXPO_PUBLIC_PRIVACY_URL ?? null,
     summary: [
       'Your financial accounts, ledger transactions, and payoff preferences are scoped strictly to your authenticated household account via Row-Level Security.',
       'Local offline cache entries on this device are encrypted using platform hardware-backed SecureStore while unlocked.',
@@ -92,7 +126,7 @@ const SUPPORT_DOCS: Record<
   },
   terms: {
     title: 'Terms of Service',
-    url: 'https://debtfree-dashboard.ensong0608.workers.dev/terms',
+    url: process.env.EXPO_PUBLIC_TERMS_URL ?? null,
     summary: [
       'Payoff dates and amortization tables are mathematical projections based on the balances, APRs, and extra monthly payments you enter.',
       'Recording or scheduling a bill inside DebtFree updates your personal ledger only and does not initiate bank transfers or lender payments.',
@@ -144,6 +178,7 @@ function SettingSwitchRow({
   disabled?: boolean;
   onToggle: () => void;
 }) {
+  const { palette, ctaBg, ctaFg } = useNativeAppearance();
   return (
     <Pressable
       accessibilityRole="switch"
@@ -157,8 +192,8 @@ function SettingSwitchRow({
         <Text style={styles.rowTitle}>{title}</Text>
         {subtitle ? <Text style={styles.rowSub}>{subtitle}</Text> : null}
       </View>
-      <View style={[styles.toggleTrack, checked && styles.toggleTrackOn]}>
-        <View style={[styles.toggleThumb, checked && styles.toggleThumbOn]} />
+      <View style={[styles.toggleTrack, { backgroundColor: checked ? ctaBg : palette.raised, borderColor: checked ? ctaBg : palette.border }]}>
+        <View style={[styles.toggleThumb, checked && styles.toggleThumbOn, { backgroundColor: checked ? ctaFg : palette.muted }]} />
       </View>
     </Pressable>
   );
@@ -167,9 +202,9 @@ function SettingSwitchRow({
 function RoleBadge({ role }: { role: HouseholdRole }) {
   const palette =
     role === 'Owner'
-      ? { bg: '#31534D', border: '#46786F', text: '#81DFD2' }
-      : role === 'Admin'
-        ? { bg: '#3A3324', border: '#6A5B37', text: '#F2C94C' }
+      ? { bg: '#31534D', border: '#46786F', text: '#76DCB9' }
+      : role === 'Member' || role === 'Admin'
+        ? { bg: '#3A3324', border: '#6A5B37', text: '#F5C563' }
         : { bg: '#2F3633', border: '#47524D', text: '#B5BDB7' };
 
   return (
@@ -187,6 +222,10 @@ function RoleBadge({ role }: { role: HouseholdRole }) {
 export type SettingsScreenProps = {
   session: Session | null;
   onboardingData: UserOnboardingData;
+  householdSummaries?: HouseholdMembershipSummary[];
+  onSwitchHousehold?: (householdId: string) => Promise<void>;
+  onRefreshHouseholdContexts?: () => Promise<HouseholdMembershipSummary[]>;
+  onAcceptHouseholdInvite?: (tokenOrUrl: string) => Promise<void>;
   transactions: LedgerTransaction[];
   recurringBills: RecurringBill[];
   reconciliationAnchors: ReconciliationAnchor[];
@@ -201,12 +240,21 @@ export type SettingsScreenProps = {
   onUpdateRecurringBills?: (next: RecurringBill[]) => void;
   onUpdateReconciliationAnchors?: (next: ReconciliationAnchor[]) => void;
   onSignOut: () => void | Promise<void>;
-  onEditSetup?: () => void;
+  onDeleteAccount?: () => Promise<void>;
+  accountDeletionEnabled?: boolean;
+  settingsUncertain?: boolean;
+  onSettingsUncertain?: () => void;
 };
 
 export function SettingsScreen({
   session,
   onboardingData,
+  settingsUncertain = false,
+  onSettingsUncertain,
+  householdSummaries = [],
+  onSwitchHousehold,
+  onRefreshHouseholdContexts,
+  onAcceptHouseholdInvite,
   transactions,
   recurringBills,
   reconciliationAnchors,
@@ -221,16 +269,30 @@ export function SettingsScreen({
   onUpdateRecurringBills,
   onUpdateReconciliationAnchors,
   onSignOut,
-  onEditSetup,
+  onDeleteAccount,
+  accountDeletionEnabled = false,
 }: SettingsScreenProps) {
   const { fontScale } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const userId = session?.user?.id ?? onboardingData.userId;
+  const verifiedContext = onboardingData.householdContext;
+  const isOwner = session ? verifiedContext?.role === 'owner' : true;
+  const canEdit = session ? (verifiedContext ? canEditHousehold(verifiedContext) : false) : true;
 
   // Local device preferences (Appearance, Haptics, Dynamic Text)
   const [localThemePreference, setLocalThemePreference] = useState<ThemePreference>(propThemePreference ?? 'Dark');
   const themePreference = propThemePreference ?? localThemePreference;
-  const { textScaling: dynamicTextEnabled, setTextScaling } = useNativeAppearance();
+  const { textScaling: dynamicTextEnabled, setTextScaling, appearanceError, palette, isInspire, accentColor, setAccentColor, ctaBg, ctaFg } = useNativeAppearance();
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
+  const [confirmPrompt, setConfirmPrompt] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    cancelLabel?: string;
+    destructive?: boolean;
+    icon?: AppIconName;
+    onConfirm: () => void;
+  } | null>(null);
 
   // Synced financial preferences state
   const committedExtraKey = `${currencyCode}:${onboardingData.extraMonthlyPayment}`;
@@ -244,48 +306,107 @@ export function SettingsScreen({
   const [prefsNotice, setPrefsNotice] = useState('');
   const savingRef = useRef(false);
 
+  // Household collaboration state
+  const [rosterMembers, setRosterMembers] = useState<HouseholdMemberSummary[]>([]);
+  const [invitations, setInvitations] = useState<HouseholdInvitationSummary[]>([]);
+  const [collabLoading, setCollabLoading] = useState(false);
+  const [collabBusy, setCollabBusy] = useState(false);
+  const [collabError, setCollabError] = useState('');
+  const [collabNotice, setCollabNotice] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<HouseholdInvitationRole>('member');
+  const [latestInvite, setLatestInvite] = useState<CreatedOrRotatedInviteResult | null>(null);
+  const [joinInput, setJoinInput] = useState('');
+  const [switchingHouseholdId, setSwitchingHouseholdId] = useState<string | null>(null);
+
   // Sign-out check state
   const [signingOutCheck, setSigningOutCheck] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   // Support & Legal sheet state
   const [activeDoc, setActiveDoc] = useState<SupportDocumentKey | null>(null);
   const [activeSettingsPage, setActiveSettingsPage] = useState<SettingsPage | null>(null);
+  const [editingHousehold, setEditingHousehold] = useState(false);
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (savingRef.current) return true;
+      if (editingHousehold) { setEditingHousehold(false); setPrefsError(''); }
+      else if (activeSettingsPage) setActiveSettingsPage(null);
+      else onClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [editingHousehold, activeSettingsPage, onClose]);
+  const [householdDraft, setHouseholdDraft] = useState('');
 
   const [backupText, setBackupText] = useState('');
   const [backupMessage, setBackupMessage] = useState('');
   const [backupBusy, setBackupBusy] = useState(false);
-  const [pendingStatus, setPendingStatus] = useState('Checking pending changes?');
-  const [pendingOperations, setPendingOperations] = useState<PendingCommand[]>([]);
+  const pendingScopeAvailable = Boolean(session?.user.id && session.user.id === onboardingData.userId && onboardingData.householdContext?.householdId === onboardingData.householdId);
+  const [pendingStatus, setPendingStatus] = useState(pendingScopeAvailable ? 'Checking pending changes…' : 'Sign in to inspect pending changes and checkpoints.');
+  const [pendingOperations, setPendingOperations] = useState<HouseholdPendingCommand[]>([]);
   const [checkpoint, setCheckpoint] = useState<RestoreCheckpoint | null>(null);
   const owner = () => {
-    if (!session?.user.id || session.user.id !== onboardingData.userId || !onboardingData.householdId) throw new Error('A matching authenticated user and household are required.');
-    return { userId: session.user.id, householdId: onboardingData.householdId };
+    const householdContext = onboardingData.householdContext;
+    if (!session?.user.id || session.user.id !== onboardingData.userId || !householdContext
+      || householdContext.userId !== session.user.id || householdContext.householdId !== onboardingData.householdId) {
+      throw new Error('A matching authenticated user and current verified household context are required.');
+    }
+    return {
+      userId: session.user.id,
+      householdId: onboardingData.householdId,
+      membershipVersion: householdContext.membershipVersion,
+      role: householdContext.role,
+      householdContext,
+    };
   };
   const refreshPending = async () => {
     const current = owner();
-    const [summary, operations] = await Promise.all([getPendingFinanceSummary(current.userId), getPendingFinanceOperations(current.userId)]);
+    const [summary, operations] = await Promise.all([getPendingFinanceSummary(current.householdContext), getPendingFinanceOperations(current.householdContext)]);
     setPendingOperations(operations);
     setPendingStatus(`${summary.total} unresolved; ${summary.conflict} conflicts, ${summary.needs_review} need review, ${summary.rejected} rejected.`);
     return summary.total;
   };
+  const onboardingHouseholdContext = onboardingData.householdContext;
   useEffect(() => {
     let active = true;
-    if (!session?.user.id || session.user.id !== onboardingData.userId || !onboardingData.householdId) { setPendingOperations([]); setPendingStatus('Sign in to inspect pending changes and checkpoints.'); return; }
-    const current = { userId: session.user.id, householdId: onboardingData.householdId };
-    void Promise.all([getPendingFinanceSummary(current.userId), getPendingFinanceOperations(current.userId), checkpoints.load(current)]).then(([summary, operations, saved]) => {
+    if (!session?.user.id || session.user.id !== onboardingData.userId || !onboardingHouseholdContext
+      || onboardingHouseholdContext.userId !== session.user.id || onboardingHouseholdContext.householdId !== onboardingData.householdId) return;
+    const current = {
+      userId: session.user.id,
+      householdId: onboardingData.householdId,
+      membershipVersion: onboardingHouseholdContext.membershipVersion,
+      role: onboardingHouseholdContext.role,
+      householdContext: onboardingHouseholdContext,
+    };
+    const backupOwner = {
+      userId: current.userId,
+      householdId: current.householdId,
+      membershipVersion: current.membershipVersion,
+      role: current.role,
+    };
+    void Promise.all([getPendingFinanceSummary(current.householdContext), getPendingFinanceOperations(current.householdContext), checkpoints.load(backupOwner)]).then(([summary, operations, saved]) => {
       if (active) { setPendingOperations(operations); setPendingStatus(`${summary.total} unresolved; ${summary.conflict} conflicts, ${summary.needs_review} need review, ${summary.rejected} rejected.`); setCheckpoint(saved); }
     }).catch(() => { if (active) setPendingStatus('Pending status or checkpoint could not be inspected.'); });
     return () => { active = false; };
-  }, [session?.user.id, onboardingData.userId, onboardingData.householdId]);
+  }, [session?.user.id, onboardingData.userId, onboardingData.householdId, onboardingHouseholdContext]);
+  const visiblePendingStatus = pendingScopeAvailable ? pendingStatus : 'Sign in to inspect pending changes and checkpoints.';
+  const visiblePendingOperations = pendingScopeAvailable ? pendingOperations : [];
   const currentBackup = async () => {
     const current = owner();
+    const backupOwner = {
+      userId: current.userId,
+      householdId: current.householdId,
+      membershipVersion: current.membershipVersion,
+      role: current.role,
+    };
     if (savingRef.current || await refreshPending() > 0 || transactions.some(tx => tx.isPending)) throw new Error('Unconfirmed local changes must be resolved before backup or preflight.');
-    const verified = await loadUserOnboardingData(session!);
+    const verified = await loadUserOnboardingData(session!, { householdId: current.householdId });
     if (verified.householdId !== current.householdId || JSON.stringify(verified) !== JSON.stringify(onboardingData)) throw new Error('Current settings or debts differ from the verified household. Refresh and resolve local changes first.');
-    const records = await loadFinanceRecords({ session, userId: current.userId, currency: currencyCode });
+    const records = await loadFinanceRecords({ session, userId: current.userId, currency: currencyCode, householdContext: current.householdContext });
     if (records.syncStatus !== 'synced' || records.pendingWriteCount > 0 || await refreshPending() > 0) throw new Error('A complete confirmed finance snapshot is unavailable. Connect and resolve pending changes first.');
     if (JSON.stringify(records.transactions) !== JSON.stringify(transactions) || JSON.stringify(records.recurringBills) !== JSON.stringify(recurringBills) || JSON.stringify(records.reconciliationAnchors) !== JSON.stringify(reconciliationAnchors)) throw new Error('Displayed records differ from the verified snapshot. Refresh before continuing.');
-    return createNativeBackup({ ...current, currency: currencyCode, exportedAt: new Date().toISOString(), onboardingData: verified, transactions: records.transactions, recurringBills: records.recurringBills, reconciliationAnchors: records.reconciliationAnchors }, current);
+    return createNativeBackup({ userId: current.userId, householdId: current.householdId, currency: currencyCode, exportedAt: new Date().toISOString(), onboardingData: verified, transactions: records.transactions, recurringBills: records.recurringBills, reconciliationAnchors: records.reconciliationAnchors }, backupOwner);
   };
   const runBackupAction = async (action: () => Promise<void>) => {
     if (backupBusy) return;
@@ -299,17 +420,19 @@ export function SettingsScreen({
   });
   const preflightBackup = () => void runBackupAction(async () => {
     const current = await currentBackup();
-    const parsed = parseNativeBackup(backupText, owner());
+    const { userId: uid, householdId: hid, membershipVersion, role } = owner();
+    const backupOwner = { userId: uid, householdId: hid, membershipVersion, role };
+    const parsed = parseNativeBackup(backupText, backupOwner);
     if (parsed.backup.transactions.some(tx => tx.isPending)) throw new Error('The backup contains unconfirmed transactions.');
-    const plan = createRestorePlan(parsed.backup, current, owner());
+    const plan = createRestorePlan(parsed.backup, current, backupOwner);
     const counts = plan.operations.reduce((acc, op) => { acc[op.action]++; return acc; }, { create: 0, unchanged: 0, conflict: 0 });
     setBackupMessage(`Validated: ${parsed.backup.onboardingData.debts.length} debts, ${parsed.backup.transactions.length} transactions, ${parsed.backup.recurringBills.length} bills, ${parsed.backup.reconciliationAnchors.length} anchors. Preflight: ${counts.create} new, ${counts.unchanged} unchanged, ${counts.conflict} conflicts. ${parsed.warnings.join(' ')} Restoration requires a verified atomic service.`);
   });
   const refreshRecoveryState = async () => {
     const current = owner();
-    const verified = await loadUserOnboardingData(session!);
+    const verified = await loadUserOnboardingData(session!, { householdId: current.householdId });
     if (verified.userId !== current.userId || verified.householdId !== current.householdId) throw new Error('The current household could not be verified.');
-    const records = await loadFinanceRecords({ session, userId: current.userId, currency: currencyCode });
+    const records = await loadFinanceRecords({ session, userId: current.userId, currency: currencyCode, householdContext: current.householdContext });
     const remaining = await refreshPending();
     if (records.snapshotStatus !== 'authoritative' || records.pendingWriteCount > 0 || remaining > 0) {
       throw new Error('Some changes remain unresolved or the complete server state is unavailable. Displayed balances have not been refreshed.');
@@ -319,15 +442,15 @@ export function SettingsScreen({
     onUpdateRecurringBills?.(records.recurringBills);
     onUpdateReconciliationAnchors?.(records.reconciliationAnchors);
   };
-  const performRecovery = async (command: PendingCommand, action: 'retry' | 'accept_server_state') => {
+  const performRecovery = async (command: HouseholdPendingCommand, action: 'retry' | 'accept_server_state') => {
     await runBackupAction(async () => {
       const current = owner();
       let recoveryError: unknown;
       try {
         if (action === 'retry') {
-          await recoverPendingFinanceWrites({ userId: current.userId, session, action, commandId: command.commandId });
+          await recoverPendingFinanceWrites({ userId: current.userId, householdContext: current.householdContext, session, action, commandId: command.commandId });
         } else {
-          await recoverPendingFinanceWrites({ userId: current.userId, session, action, acknowledgeServerState: true, commandId: command.commandId });
+          await recoverPendingFinanceWrites({ userId: current.userId, householdContext: current.householdContext, session, action, acknowledgeServerState: true, commandId: command.commandId });
         }
       } catch (error) { recoveryError = error; }
       try { await refreshRecoveryState(); } catch (error) {
@@ -339,18 +462,43 @@ export function SettingsScreen({
       setBackupMessage(action === 'retry' ? 'Retry completed and the current server state was refreshed.' : 'Current server state adopted and refreshed. The original outcome remains unproven; evidence was archived.');
     });
   };
-  const confirmRetry = (command: PendingCommand) => Alert.alert('Retry this change?', 'This change was never sent. Retry it now?', [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Retry', onPress: () => void performRecovery(command, 'retry') },
-  ]);
-  const confirmServerState = (command: PendingCommand) => Alert.alert('Review current server state', 'The outcome of this change is not proven. Adopting the current server state discards the local provisional intent while preserving archived evidence. This does not confirm whether the original change happened.', [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Adopt server state', style: 'destructive', onPress: () => void performRecovery(command, 'accept_server_state') },
-  ]);
-  const refreshConfirmation = () => Alert.alert('Refresh confirmation?', 'Check the server for evidence of pending finance writes. This does not retry a write; unresolved operations may still need review.', [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Refresh confirmation', onPress: () => void runBackupAction(async () => { const current = owner(); await recoverPendingFinanceWrites({ userId: current.userId, session, action: 'readback' }); await refreshRecoveryState(); setBackupMessage('Confirmation and current server state refreshed.'); }) },
-  ]);
+  const confirmRetry = (command: HouseholdPendingCommand) => setConfirmPrompt({
+    title: 'Retry this change?',
+    message: 'This change was never sent. Retry it now?',
+    confirmLabel: 'Retry',
+    destructive: false,
+    icon: 'reset',
+    onConfirm: () => {
+      setConfirmPrompt(null);
+      void performRecovery(command, 'retry');
+    },
+  });
+  const confirmServerState = (command: HouseholdPendingCommand) => setConfirmPrompt({
+    title: 'Review current server state',
+    message: 'The outcome of this change is not proven. Adopting the current server state discards the local provisional intent while preserving archived evidence. This does not confirm whether the original change happened.',
+    confirmLabel: 'Adopt server state',
+    destructive: true,
+    onConfirm: () => {
+      setConfirmPrompt(null);
+      void performRecovery(command, 'accept_server_state');
+    },
+  });
+  const refreshConfirmation = () => setConfirmPrompt({
+    title: 'Refresh confirmation?',
+    message: 'Check the server for evidence of pending finance writes. This does not retry a write; unresolved operations may still need review.',
+    confirmLabel: 'Refresh confirmation',
+    destructive: false,
+    icon: 'reset',
+    onConfirm: () => {
+      setConfirmPrompt(null);
+      void runBackupAction(async () => {
+        const current = owner();
+        await recoverPendingFinanceWrites({ userId: current.userId, householdContext: current.householdContext, session, action: 'readback' });
+        await refreshRecoveryState();
+        setBackupMessage('Confirmation and current server state refreshed.');
+      });
+    },
+  });
 
   useEffect(() => {
     let active = true;
@@ -360,7 +508,7 @@ export function SettingsScreen({
         readLocalPref(userId, 'haptics'),
       ]);
       if (!active) return;
-      if (theme === 'System' || theme === 'Dark' || theme === 'Light') {
+      if (theme === 'System' || theme === 'Dark' || theme === 'Light' || theme === 'Inspire') {
         setLocalThemePreference(theme);
         onSelectTheme?.(theme);
       }
@@ -471,8 +619,37 @@ export function SettingsScreen({
 
   const householdName = useMemo(() => {
     const first = displayName.split(' ')[0] || 'My';
-    return `${first}'s Household`;
-  }, [displayName]);
+    return onboardingData.householdName ?? `${first}'s Household`;
+  }, [displayName, onboardingData.householdName]);
+
+  const saveHouseholdName = async () => {
+    if (settingsUncertain) { setPrefsError('Check the unconfirmed settings save before making another change.'); return; }
+    if (!isOwner) { setPrefsError('Only the household owner can rename the household.'); return; }
+    const name = householdDraft.trim();
+    if (!name || name.length > 120) { setPrefsError('Enter a household name of 1 to 120 characters.'); return; }
+    if (savingRef.current) return;
+    if (!session) { setPrefsError('Sign in to save household settings.'); return; }
+    savingRef.current = true;
+    setSavingPrefs(true);
+    setPrefsError('');
+    setPrefsNotice('');
+    try {
+      const confirmed = await saveUserOnboardingSettingsPatch(onboardingData, { householdName: name }, session);
+      onUpdateOnboardingData(confirmed);
+      void onRefreshHouseholdContexts?.();
+      setEditingHousehold(false);
+      setPrefsNotice('Household name saved.');
+      triggerSubtleHaptic();
+    } catch (err) {
+      const outcome = settingsFailureSnapshot(err, onboardingData);
+      if (outcome.uncertain) onSettingsUncertain?.();
+      onUpdateOnboardingData(outcome.data);
+      setPrefsError(err instanceof Error ? err.message : 'Unable to save household name.');
+    } finally {
+      savingRef.current = false;
+      setSavingPrefs(false);
+    }
+  };
 
   const householdMembers: readonly {
     id: string;
@@ -485,15 +662,282 @@ export function SettingsScreen({
         id: 'owner',
         name: displayName,
         detail: session?.user?.email ?? 'Primary account holder (Verified)',
-        role: 'Owner',
+        role: verifiedContext ? toDisplayRole(verifiedContext.role) : 'Owner',
       },
     ];
-  }, [displayName, session]);
+  }, [displayName, session, verifiedContext]);
+
+  const refreshCollaborationState = useCallback(async (overrideData?: UserOnboardingData) => {
+    const targetData = overrideData ?? onboardingData;
+    const context = targetData.householdContext;
+    if (
+      !session?.user?.id
+      || session.user.id !== targetData.userId
+      || !context
+      || context.userId !== session.user.id
+      || context.householdId !== targetData.householdId
+    ) {
+      setRosterMembers([]);
+      setInvitations([]);
+      return;
+    }
+    setCollabLoading(true);
+    try {
+      const membersRes = await listHouseholdMembers(session, context);
+      setRosterMembers(membersRes.members);
+      if (context.role === 'owner') {
+        const invitesRes = await listHouseholdInvitations(session, context);
+        setInvitations(invitesRes.invitations);
+      } else {
+        setInvitations([]);
+      }
+      setCollabError('');
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : 'Unable to load household members.');
+    } finally {
+      setCollabLoading(false);
+    }
+  }, [session, onboardingData]);
+
+  const [scopedCollabKey, setScopedCollabKey] = useState(`${session?.user?.id ?? ''}:${onboardingData.householdId}`);
+  const currentCollabKey = `${session?.user?.id ?? ''}:${onboardingData.householdId}`;
+  if (scopedCollabKey !== currentCollabKey) {
+    setScopedCollabKey(currentCollabKey);
+    setLatestInvite(null);
+    setEditingHousehold(false);
+    setCollabError('');
+    setCollabNotice('');
+    setRosterMembers([]);
+    setInvitations([]);
+  }
+
+  useEffect(() => {
+    let active = true;
+    const context = onboardingHouseholdContext;
+    if (
+      !session?.user?.id
+      || session.user.id !== onboardingData.userId
+      || !context
+      || context.userId !== session.user.id
+      || context.householdId !== onboardingData.householdId
+    ) {
+      return;
+    }
+    const membersPromise = listHouseholdMembers(session, context);
+    const invitesPromise = context.role === 'owner'
+      ? listHouseholdInvitations(session, context)
+      : Promise.resolve({ invitations: [] as HouseholdInvitationSummary[] });
+    void Promise.all([membersPromise, invitesPromise]).then(([membersRes, invitesRes]) => {
+      if (!active) return;
+      setRosterMembers(membersRes.members);
+      setInvitations(invitesRes.invitations);
+      setCollabError('');
+    }).catch(err => {
+      if (!active) return;
+      setCollabError(err instanceof Error ? err.message : 'Unable to load household members.');
+    });
+    return () => { active = false; };
+  }, [
+    session,
+    onboardingData.userId,
+    onboardingData.householdId,
+    onboardingHouseholdContext,
+  ]);
+
+  const syncHouseholdAfterCollabMutation = async () => {
+    if (!session) return;
+    const fresh = await loadUserOnboardingData(session, { householdId: onboardingData.householdId });
+    onUpdateOnboardingData(fresh);
+    await onRefreshHouseholdContexts?.();
+    await refreshCollaborationState(fresh);
+  };
+
+  const runCollabAction = async (fn: () => Promise<void>) => {
+    if (collabBusy) return;
+    setCollabBusy(true);
+    setCollabError('');
+    setCollabNotice('');
+    try {
+      await fn();
+      triggerSubtleHaptic();
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : 'Unable to complete household action.');
+    } finally {
+      setCollabBusy(false);
+    }
+  };
+
+  const handleCreateInvite = () => void runCollabAction(async () => {
+    const current = owner();
+    if (current.role !== 'owner') throw new Error('Only the household owner can invite members.');
+    const result = await createHouseholdInvitation(session!, current.householdContext, {
+      inviteeEmail: inviteEmail,
+      role: inviteRole,
+    });
+    setLatestInvite(result);
+    setInviteEmail('');
+    setCollabNotice(result.delivery.message);
+    await syncHouseholdAfterCollabMutation();
+  });
+
+  const handleRotateInvite = (invitationId: string) => void runCollabAction(async () => {
+    const current = owner();
+    if (current.role !== 'owner') throw new Error('Only the household owner can rotate invitations.');
+    const result = await rotateHouseholdInvitation(session!, current.householdContext, invitationId);
+    setLatestInvite(result);
+    setCollabNotice(result.delivery.message);
+    await syncHouseholdAfterCollabMutation();
+  });
+
+  const handleRevokeInvite = (invitationId: string, emailHint: string) => {
+    setConfirmPrompt({
+      title: 'Revoke invitation?',
+      message: `Cancel the pending invitation for ${emailHint}?`,
+      confirmLabel: 'Revoke',
+      cancelLabel: 'Keep invite',
+      destructive: true,
+      onConfirm: () => {
+        setConfirmPrompt(null);
+        void runCollabAction(async () => {
+          const current = owner();
+          await cancelHouseholdInvitation(session!, current.householdContext, invitationId);
+          setCollabNotice(`Invitation for ${emailHint} revoked.`);
+          await syncHouseholdAfterCollabMutation();
+        });
+      },
+    });
+  };
+
+  const handleShareInvite = async (invite: CreatedOrRotatedInviteResult) => {
+    try {
+      const webUrl = invite.inviteWebUrl || buildHouseholdInviteWebUrl(invite.rawToken);
+      const roleDescription = invite.role === 'viewer' ? 'viewer (read-only)' : 'member (can edit finances)';
+      const shareTitle = `Join ${householdName} on DebtFree`;
+      await Share.share(
+        Platform.select({
+          ios: {
+            title: shareTitle,
+            url: webUrl,
+            message: `You're invited to join "${householdName}" on DebtFree as a ${roleDescription}.\n\nTap to join:\n${webUrl}\n\nInvite code: ${invite.rawToken}`,
+          },
+          default: {
+            title: shareTitle,
+            message: `You're invited to join "${householdName}" on DebtFree as a ${roleDescription}.\n\nTap the link to join:\n${webUrl}\n\nOr enter this invite code in Settings → Household:\n${invite.rawToken}`,
+          },
+        })
+      );
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : 'Unable to open the share sheet.');
+    }
+  };
+
+  const handleToggleMemberRole = (member: HouseholdMemberSummary) => void runCollabAction(async () => {
+    const current = owner();
+    if (current.role !== 'owner') throw new Error('Only the household owner can change member roles.');
+    const nextRole: HouseholdInvitationRole = member.role === 'viewer' ? 'member' : 'viewer';
+    await updateHouseholdMemberRole(session!, current.householdContext, {
+      memberUserId: member.userId,
+      role: nextRole,
+    });
+    setCollabNotice(`Updated member role to ${nextRole === 'member' ? 'Member' : 'Viewer'}.`);
+    await syncHouseholdAfterCollabMutation();
+  });
+
+  const handleRemoveMember = (member: HouseholdMemberSummary) => {
+    const label = member.emailHint ?? member.userId;
+    setConfirmPrompt({
+      title: 'Remove household member?',
+      message: `Remove ${label} from ${householdName}? They will immediately lose access to this household.`,
+      confirmLabel: 'Remove',
+      destructive: true,
+      onConfirm: () => {
+        setConfirmPrompt(null);
+        void runCollabAction(async () => {
+          const current = owner();
+          await removeHouseholdMember(session!, current.householdContext, member.userId);
+          setCollabNotice(`Removed ${label} from ${householdName}.`);
+          await syncHouseholdAfterCollabMutation();
+        });
+      },
+    });
+  };
+
+  const handleTransferOwnership = (member: HouseholdMemberSummary) => {
+    const label = member.emailHint ?? member.userId;
+    setConfirmPrompt({
+      title: 'Transfer household ownership?',
+      message: `Make ${label} the owner of ${householdName}? You will become a Member and will no longer control invitations or ownership.`,
+      confirmLabel: 'Transfer ownership',
+      destructive: true,
+      onConfirm: () => {
+        setConfirmPrompt(null);
+        void runCollabAction(async () => {
+          const current = owner();
+          await transferHouseholdOwnership(session!, current.householdContext, member.userId);
+          setCollabNotice(`Ownership transferred to ${label}.`);
+          await syncHouseholdAfterCollabMutation();
+        });
+      },
+    });
+  };
+
+  const handleLeaveHousehold = () => {
+    setConfirmPrompt({
+      title: 'Leave this household?',
+      message: `Leave ${householdName}? Your personal households remain separate and untouched.`,
+      confirmLabel: 'Leave household',
+      cancelLabel: 'Stay',
+      destructive: true,
+      onConfirm: () => {
+        setConfirmPrompt(null);
+        void runCollabAction(async () => {
+          const current = owner();
+          await leaveHousehold(session!, current.householdContext);
+          await onRefreshHouseholdContexts?.();
+          setCollabNotice(`You left ${householdName}.`);
+        });
+      },
+    });
+  };
+
+  const handleJoinHousehold = () => void runCollabAction(async () => {
+    if (!session) throw new Error('Sign in before joining a household.');
+    const trimmed = joinInput.trim();
+    if (!trimmed) throw new Error('Paste an invite link or invite code first.');
+    if (onAcceptHouseholdInvite) {
+      await onAcceptHouseholdInvite(trimmed);
+    } else {
+      await acceptHouseholdInvitation(session, trimmed);
+      await onRefreshHouseholdContexts?.();
+    }
+    setJoinInput('');
+    setCollabNotice('Joined household and switched your active view.');
+  });
+
+  const handleSelectHouseholdSwitch = (targetHouseholdId: string) => {
+    if (!onSwitchHousehold || switchingHouseholdId || targetHouseholdId === onboardingData.householdId) return;
+    setSwitchingHouseholdId(targetHouseholdId);
+    setCollabError('');
+    setCollabNotice('');
+    void onSwitchHousehold(targetHouseholdId)
+      .then(() => {
+        setCollabNotice('Switched active household.');
+        triggerSubtleHaptic();
+      })
+      .catch(err => {
+        setCollabError(err instanceof Error ? err.message : 'Unable to switch households.');
+      })
+      .finally(() => {
+        setSwitchingHouseholdId(null);
+      });
+  };
 
   const persistOnboardingPatch = async (
     patch: Partial<UserOnboardingData>,
     successMessage?: string,
   ) => {
+    if (settingsUncertain && !('notifications' in patch)) { setPrefsError('Check the unconfirmed settings save before making another change.'); return; }
+    if (!canEdit) { setPrefsError('View-only members cannot modify household settings.'); return; }
     if (savingRef.current) return;
     savingRef.current = true;
     setSavingPrefs(true);
@@ -509,12 +953,17 @@ export function SettingsScreen({
         validateStoredAmounts(candidate);
         onUpdateOnboardingData(candidate);
       } else {
-        const confirmed = await saveUserOnboardingData(candidate);
+        const confirmed = 'notifications' in patch
+          ? await saveUserOnboardingData(candidate, { personalOnly: true })
+          : await saveUserOnboardingSettingsPatch(onboardingData, patch, session);
         onUpdateOnboardingData(confirmed);
       }
       triggerSubtleHaptic();
       if (successMessage) setPrefsNotice(successMessage);
     } catch (err) {
+      const outcome = settingsFailureSnapshot(err, onboardingData);
+      if (outcome.uncertain) onSettingsUncertain?.();
+      onUpdateOnboardingData(outcome.data);
       setPrefsError(err instanceof Error ? err.message : 'Unable to save settings.');
     } finally {
       savingRef.current = false;
@@ -529,10 +978,18 @@ export function SettingsScreen({
     try {
       const count = await refreshPending();
       if (count > 0 || transactions.some(tx => tx.isPending)) {
-        Alert.alert('Unconfirmed finance changes', 'Some finance operations are unconfirmed or need review. Signing out may leave them unresolved on this device.', [
-          { text: 'Stay signed in', style: 'cancel' },
-          { text: 'Sign out anyway', style: 'destructive', onPress: () => { onClose(); void onSignOut(); } },
-        ]);
+        setConfirmPrompt({
+          title: 'Unconfirmed finance changes',
+          message: 'Some finance operations are unconfirmed or need review. Signing out may leave them unresolved on this device.',
+          confirmLabel: 'Sign out anyway',
+          cancelLabel: 'Stay signed in',
+          destructive: true,
+          onConfirm: () => {
+            setConfirmPrompt(null);
+            onClose();
+            void onSignOut();
+          },
+        });
         return;
       }
 
@@ -547,7 +1004,7 @@ export function SettingsScreen({
 
   // Handlers: Section 2 (Appearance & Display)
   const handleSelectTheme = (value: string) => {
-    if (value !== 'System' && value !== 'Dark' && value !== 'Light') return;
+    if (value !== 'System' && value !== 'Dark' && value !== 'Light' && value !== 'Inspire') return;
     setLocalThemePreference(value as ThemePreference);
     onSelectTheme?.(value as ThemePreference);
     triggerSubtleHaptic();
@@ -569,6 +1026,7 @@ export function SettingsScreen({
 
   // Handlers: Section 3 (Household & Regional)
   const handleSelectCurrency = (nextCode: string) => {
+    if (!isOwner) { setPrefsError('Only the household owner can change the household currency.'); return; }
     if (nextCode === currencyCode) return;
     setPrefsError('');
     try {
@@ -592,6 +1050,7 @@ export function SettingsScreen({
   };
 
   const handleSelectTimezone = (nextZone: string) => {
+    if (!canEdit) { setPrefsError('View-only members cannot change household timezone.'); return; }
     if (nextZone === onboardingData.householdTimeZone) return;
     void persistOnboardingPatch(
       { householdTimeZone: nextZone },
@@ -601,6 +1060,7 @@ export function SettingsScreen({
 
   // Handlers: Section 4 (Preferences)
   const handleSelectStrategy = (strategy: PayoffStrategy) => {
+    if (!canEdit) { setPrefsError('View-only members cannot change payoff strategy.'); return; }
     if (onboardingData.strategy === strategy) return;
     void persistOnboardingPatch(
       { strategy },
@@ -609,6 +1069,7 @@ export function SettingsScreen({
   };
 
   const handleSaveExtraPayment = () => {
+    if (!canEdit) { setPrefsError('View-only members cannot change extra monthly payment.'); return; }
     const check = validateExtraPaymentInput(extraInput, currencyCode);
     if (!check.valid) {
       setPrefsError(check.error);
@@ -625,6 +1086,7 @@ export function SettingsScreen({
   const handleToggleNotification = async (
     key: 'upcomingReminders' | 'overdueAlerts' | 'milestonesAndProgress',
   ) => {
+    if (!canEdit) { setPrefsError('View-only members cannot change notification settings.'); return; }
     if (savingRef.current) return;
     const currentPrefs = onboardingData.notifications;
     const nextValue = !currentPrefs[key];
@@ -647,7 +1109,11 @@ export function SettingsScreen({
   };
 
   // Handlers: Section 5 (Support & Legal)
-  const handleOpenExternalDoc = async (url: string) => {
+  const handleOpenExternalDoc = async (url: string | null) => {
+    if (!url) {
+      setPrefsError('This web page is not configured yet.');
+      return;
+    }
     try {
       await WebBrowser.openBrowserAsync(url);
     } catch {
@@ -655,7 +1121,27 @@ export function SettingsScreen({
     }
   };
 
+  const confirmDeleteAccount = () => {
+    if (!accountDeletionEnabled || !onDeleteAccount || deletingAccount || !session) return;
+    setConfirmPrompt({
+      title: 'Delete your account?',
+      message: 'Deleting your account cannot be undone. An owned household is removed only when the server confirms that you are its sole active member and it contains no financial data. Shared or non-empty households must be transferred first. Any unresolved, rejected, dispatched, uncertain, or stale-version finance command blocks deletion. Device finance data is removed only after account deletion is confirmed.',
+      confirmLabel: 'Delete account',
+      destructive: true,
+      onConfirm: () => {
+        setConfirmPrompt(null);
+        setDeletingAccount(true);
+        setPrefsError('');
+        void onDeleteAccount().catch(error => {
+          setDeletingAccount(false);
+          setPrefsError(error instanceof Error ? error.message : 'Account deletion could not be confirmed. Your local data was kept.');
+        });
+      },
+    });
+  };
+
   const fontScalePercent = Math.round((fontScale || 1) * 100);
+  const displayedMemberCount = session && rosterMembers.length > 0 ? rosterMembers.length : householdMembers.length;
   const settingsPageTitle: Record<SettingsPage, string> = {
     appearance: 'Appearance',
     household: 'Household',
@@ -665,23 +1151,33 @@ export function SettingsScreen({
     support: 'Help & information',
     data: 'Data & security',
   };
+  const SETTING_ROW_ICONS: Record<string, AppIconName> = {
+    'Theme': 'theme',
+    'Accent color': 'palette',
+    'Text size': 'textSize',
+    'Notifications': 'bell',
+    'Payoff preferences': 'flag',
+    'Members': 'users',
+    'Currency & timezone': 'globe',
+    'Security': 'shield',
+    'Backup & recovery': 'reset',
+    'Help & support': 'info',
+  };
   const settingGroups: { title: string; rows: { label: string; detail?: string; page?: SettingsPage }[] }[] = [
     { title: 'PREFERENCES', rows: [
       { label: 'Theme', detail: themePreference, page: 'appearance' },
-      { label: 'Accent color', detail: 'Not available' },
+      { label: 'Accent color', detail: accentColor, page: 'appearance' },
       { label: 'Text size', detail: `${fontScalePercent}%`, page: 'appearance' },
       { label: 'Notifications', detail: 'Payment & progress alerts', page: 'notifications' },
       { label: 'Payoff preferences', detail: 'Strategy and extra payment', page: 'preferences' },
     ] },
     { title: 'HOUSEHOLD', rows: [
-      { label: 'Members', detail: `${householdMembers.length} ${householdMembers.length === 1 ? 'member' : 'members'}`, page: 'household' },
+      { label: 'Members', detail: `${displayedMemberCount} ${displayedMemberCount === 1 ? 'member' : 'members'}`, page: 'household' },
       { label: 'Currency & timezone', detail: currencyCode, page: 'household' },
     ] },
     { title: 'DATA & SECURITY', rows: [
       { label: 'Security', detail: 'Account and sign-in', page: 'security' },
       { label: 'Backup & recovery', detail: 'Export and review backups', page: 'data' },
-      { label: 'Archived debts', detail: 'Unavailable' },
-      { label: 'Reset account', detail: 'Disabled for safety', page: 'data' },
     ] },
     { title: 'HELP & INFORMATION', rows: [
       { label: 'Help & support', detail: 'Guides, privacy and terms', page: 'support' },
@@ -691,22 +1187,25 @@ export function SettingsScreen({
   return (
     <View style={styles.root}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: palette.surface, borderBottomColor: palette.border, zIndex: 10, elevation: 2 }]}>
         {activeSettingsPage ? (
-          <Pressable accessibilityRole="button" accessibilityLabel={`Back to Settings from ${settingsPageTitle[activeSettingsPage]}`} hitSlop={10} onPress={() => setActiveSettingsPage(null)} style={styles.backButton}>
-            <AppIcon name="chevronLeft" size={20} color="#F9F9F6" />
+          <Pressable accessibilityRole="button" accessibilityLabel={editingHousehold ? 'Cancel household editing' : `Back to Settings from ${settingsPageTitle[activeSettingsPage]}`} disabled={savingPrefs} hitSlop={10} onPress={() => { if (editingHousehold) { setEditingHousehold(false); setPrefsError(''); } else setActiveSettingsPage(null); }} style={styles.backButton}>
+            <AppIcon name="chevronLeft" size={20} color={palette.text} />
           </Pressable>
         ) : <View style={styles.headerRightSpacer} />}
         <Text accessibilityRole="header" style={ui.title}>
-          {activeSettingsPage ? settingsPageTitle[activeSettingsPage] : 'Settings'}
+          {editingHousehold ? 'Edit household' : activeSettingsPage ? settingsPageTitle[activeSettingsPage] : 'Settings'}
         </Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Close Settings" hitSlop={10} onPress={onClose} style={styles.closeSettingsButton}>
-          <Text style={styles.closeSettingsText}>X</Text>
-        </Pressable>
+        {!activeSettingsPage ? (
+          <Pressable accessibilityRole="button" accessibilityLabel="Close Settings" disabled={savingPrefs} hitSlop={10} onPress={onClose} style={styles.closeSettingsButton}>
+            <AppIcon name="close" size={20} color={palette.muted} />
+          </Pressable>
+        ) : <View style={styles.headerRightSpacer} />}
       </View>
 
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
+        style={{ flex: 1, overflow: 'hidden' }}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 24) + 16 }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
@@ -716,28 +1215,30 @@ export function SettingsScreen({
           </View>
         ) : null}
         {!!prefsNotice ? (
-          <View style={styles.noticeBanner} accessibilityLiveRegion="polite">
-            <Text style={styles.noticeBannerText}>{prefsNotice}</Text>
+          <View style={[styles.noticeBanner, { backgroundColor: palette.tint, borderColor: palette.brand }]} accessibilityLiveRegion="polite">
+            <Text style={[styles.noticeBannerText, { color: palette.brand }]}>{prefsNotice}</Text>
           </View>
         ) : null}
 
         {activeSettingsPage === null ? (
           <View style={styles.settingsIndex}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Account and sign-in" onPress={() => setActiveSettingsPage('security')} style={[styles.profileRow, { backgroundColor: palette.tint, borderRadius: 14, padding: 13, marginBottom: 4 }]}><View style={[styles.avatarCircle, { backgroundColor: palette.hero, borderColor: palette.hero }]}><AppIcon name="user" size={22} color={palette.onHero} /></View><View style={styles.flex1}><Text style={ui.heading}>{displayName}</Text><Text style={ui.small}>{userEmail}</Text></View><AppIcon name="chevronRight" size={18} color={palette.brand} /></Pressable>
             {settingGroups.map(group => (
               <View key={group.title}>
-                <Text style={styles.sectionHeader}>{group.title}</Text>
+                <Text style={[styles.sectionHeader, { color: palette.brand }]}>{group.title}</Text>
                 <Card style={styles.menuCard}>
                   {group.rows.map((row, index) => (
                     <Pressable key={row.label} accessibilityRole="button" accessibilityState={{ disabled: !row.page }} accessibilityLabel={`${row.label}${row.detail ? `, ${row.detail}` : ''}`} disabled={!row.page} onPress={() => row.page && setActiveSettingsPage(row.page)} style={[styles.menuRow, index > 0 && ui.divider, !row.page && styles.disabledMenuRow]}>
-                      <View style={styles.flex1}><Text style={styles.menuRowTitle}>{row.label}</Text></View>
-                      {row.detail ? <Text style={styles.menuRowDetail}>{row.detail}</Text> : null}
-                      <AppIcon name="chevronRight" size={18} color="#AAB3AD" />
+                      <AppIcon name={SETTING_ROW_ICONS[row.label] ?? 'info'} size={18} color={palette.muted} />
+                      <View style={[styles.flex1, { gap: 3 }]}><Text style={styles.menuRowTitle}>{row.label}</Text>{row.detail && row.detail.length > 16 ? <Text style={[styles.menuRowDetail, { fontSize: 12 }]}>{row.detail}</Text> : null}</View>
+                      {row.detail && row.detail.length <= 16 ? <Text style={styles.menuRowDetail}>{row.detail}</Text> : null}
+                      <AppIcon name="chevronRight" size={18} color={palette.muted} />
                     </Pressable>
                   ))}
                 </Card>
               </View>
             ))}
-            {savingPrefs ? <ActivityIndicator size="small" color="#81DFD2" /> : null}
+            {savingPrefs ? <ActivityIndicator size="small" color={palette.brand} /> : null}
           </View>
         ) : null}
 
@@ -745,11 +1246,11 @@ export function SettingsScreen({
         {activeSettingsPage === 'security' && <>
         {/* SECTION 1: ACCOUNT & SECURITY                                    */}
         {/* ================================================================ */}
-        <Text style={styles.sectionHeader}>ACCOUNT & SECURITY</Text>
+        <Text style={[styles.sectionHeader, { color: palette.brand }]}>ACCOUNT & SECURITY</Text>
         <Card>
           <View style={styles.profileRow}>
-            <View style={styles.avatarCircle}>
-              <AppIcon name="user" size={22} color="#81DFD2" />
+            <View style={[styles.avatarCircle, { backgroundColor: palette.tint, borderColor: palette.brand }]}>
+              <AppIcon name="user" size={22} color={palette.brand} />
             </View>
             <View style={styles.flex1}>
               <Text style={ui.heading}>{displayName}</Text>
@@ -788,16 +1289,6 @@ export function SettingsScreen({
           </View>
 
           <View style={ui.divider}>
-            <SettingSwitchRow
-              title="Biometric unlock (Unavailable)"
-              subtitle="Hardware biometric authentication (Face ID / Fingerprint) requires native module integration and is currently unavailable in this build."
-              checked={false}
-              disabled={true}
-              onToggle={() => {}}
-            />
-          </View>
-
-          <View style={ui.divider}>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Sign Out"
@@ -809,7 +1300,7 @@ export function SettingsScreen({
               ]}
             >
               {signingOutCheck || authBusy ? (
-                <ActivityIndicator size="small" color="#E3A088" />
+                <ActivityIndicator size="small" color="#F08B78" />
               ) : (
                 <Text style={styles.signOutButtonText}>Sign Out</Text>
               )}
@@ -822,17 +1313,30 @@ export function SettingsScreen({
         {activeSettingsPage === 'appearance' && <>
         {/* SECTION 2: APPEARANCE & DISPLAY                                  */}
         {/* ================================================================ */}
-        <Text style={styles.sectionHeader}>APPEARANCE & DISPLAY</Text>
+        <Text style={[styles.sectionHeader, { color: palette.brand }]}>APPEARANCE & DISPLAY</Text>
         <Card>
           <View style={styles.fieldGroup}>
             <Text style={styles.rowTitle}>Theme</Text>
-            <Text style={styles.rowSub}>Choose how DebtFree surfaces appear</Text>
+            <Text style={styles.rowSub}>
+              {isInspire ? 'Playful teal sky & encouraging notes' : 'Choose your theme'}
+            </Text>
             <View style={{ marginTop: 8 }}>
               <Segments
                 items={THEME_OPTIONS}
                 selected={themePreference}
                 onSelect={handleSelectTheme}
               />
+            </View>
+          </View>
+
+          <View style={ui.divider}>
+            <Text style={styles.rowTitle}>Accent color</Text>
+            {isInspire ? (
+              <Text style={styles.rowSub}>Accent color applies to Dark and Light themes. Inspire uses its own coastal sky palette.</Text>
+            ) : null}
+            {appearanceError ? <Text accessibilityRole="alert" style={{ color: palette.text }}>{appearanceError}</Text> : null}
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, opacity: isInspire ? 0.5 : 1 }}>
+              {(['Indigo', 'Cobalt'] as const).map(color => <Pressable key={color} accessibilityRole="radio" accessibilityState={{ checked: accentColor === color, disabled: isInspire }} disabled={isInspire} onPress={() => { void setAccentColor(color).catch(() => Alert.alert('Unable to save accent color', 'Please try again.')); }} style={{ flex: 1, minHeight: 44, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderRadius: 9, borderColor: accentColor === color ? palette.brand : palette.border, backgroundColor: accentColor === color ? palette.tint : palette.surface }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: color === 'Indigo' ? '#5147A8' : '#0051FB' }} /><Text style={{ color: accentColor === color ? palette.brand : palette.text }}>{color}</Text></View></Pressable>)}
             </View>
           </View>
 
@@ -845,7 +1349,7 @@ export function SettingsScreen({
             </View>
             <SettingSwitchRow
               title="Dynamic Type scaling"
-              subtitle="Scale financial labels and body copy with your device accessibility size"
+              subtitle="Use your device text size"
               checked={dynamicTextEnabled}
               onToggle={handleToggleDynamicText}
             />
@@ -854,7 +1358,7 @@ export function SettingsScreen({
           <View style={ui.divider}>
             <SettingSwitchRow
               title="Haptic feedback"
-              subtitle="Subtle tactile confirmation when saving payments and preferences"
+              subtitle="Confirm saves with a vibration"
               checked={hapticsEnabled}
               onToggle={handleToggleHaptics}
             />
@@ -863,36 +1367,164 @@ export function SettingsScreen({
 
         {/* ================================================================ */}
         </>}
-        {activeSettingsPage === 'household' && <>
+        {activeSettingsPage === 'household' && editingHousehold && <Card>
+          <Text style={styles.subLabel}>Household name *</Text>
+          <TextInput accessibilityLabel="Household name, required" value={householdDraft} onChangeText={setHouseholdDraft} maxLength={120} editable={!savingPrefs && isOwner} style={[styles.modalTextInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border }]} />
+          <View style={[ui.row, { marginTop: 16, justifyContent: 'flex-end' }]}>
+            <Pressable accessibilityRole="button" disabled={savingPrefs} onPress={() => { setEditingHousehold(false); setPrefsError(''); }} style={ui.button}><Text style={ui.buttonText}>Cancel</Text></Pressable>
+            <Pressable accessibilityRole="button" disabled={savingPrefs || !isOwner} onPress={() => void saveHouseholdName()} style={ui.button}><Text style={[ui.buttonText, { color: palette.brand }]}>{savingPrefs ? 'Saving…' : 'Save'}</Text></Pressable>
+          </View>
+        </Card>}
+        {activeSettingsPage === 'household' && !editingHousehold && <>
         {/* SECTION 3: HOUSEHOLD & REGIONAL                                  */}
         {/* ================================================================ */}
-        <Text style={styles.sectionHeader}>HOUSEHOLD & REGIONAL</Text>
+        <Text style={[styles.sectionHeader, { color: palette.brand }]}>HOUSEHOLD &amp; COLLABORATION</Text>
+        {!!collabError ? (
+          <View style={styles.errorBanner} accessibilityRole="alert">
+            <Text style={styles.errorBannerText}>{collabError}</Text>
+          </View>
+        ) : null}
+        {!!collabNotice ? (
+          <View style={[styles.noticeBanner, { backgroundColor: palette.tint, borderColor: palette.brand }]} accessibilityLiveRegion="polite">
+            <Text style={[styles.noticeBannerText, { color: palette.brand }]}>{collabNotice}</Text>
+          </View>
+        ) : null}
+
+        {session && householdSummaries.length > 0 ? (
+          <Card>
+            <Text style={styles.subLabel}>Your Households</Text>
+            <Text style={[ui.small, { marginBottom: 8 }]}>
+              Switch between households you belong to. Each household keeps separate accounts and financial history.
+            </Text>
+            <View style={styles.rosterList}>
+              {householdSummaries.map(summary => {
+                const isCurrent = summary.householdId === onboardingData.householdId;
+                const isSwitchingThis = switchingHouseholdId === summary.householdId;
+                return (
+                  <View key={summary.householdId} style={[styles.rosterRow, isCurrent && { borderColor: palette.brand }]}>
+                    <View style={styles.flex1}>
+                      <View style={[ui.row, { gap: 8, alignItems: 'center' }]}>
+                        <Text style={styles.rowTitle}>{summary.householdName}</Text>
+                        <RoleBadge role={toDisplayRole(summary.role)} />
+                      </View>
+                      <Text style={styles.rowSub}>{`${summary.currencyCode} · ${isCurrent ? 'Active household' : 'Tap Switch to open'}`}</Text>
+                    </View>
+                    {isCurrent ? (
+                      <View style={[styles.statusBadge, styles.statusBadgeActive]}>
+                        <Text style={[styles.statusBadgeText, styles.statusBadgeTextActive]}>Active</Text>
+                      </View>
+                    ) : (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Switch to household ${summary.householdName}`}
+                        disabled={Boolean(switchingHouseholdId) || collabBusy}
+                        onPress={() => handleSelectHouseholdSwitch(summary.householdId)}
+                        style={[ui.button, (Boolean(switchingHouseholdId) || collabBusy) && styles.disabled]}
+                      >
+                        <Text style={[ui.buttonText, { color: palette.brand }]}>{isSwitchingThis ? 'Switching…' : 'Switch'}</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          </Card>
+        ) : null}
+
         <Card>
           <View style={[ui.row, { justifyContent: 'space-between' }]}>
             <View style={styles.flex1}>
               <Text style={styles.subLabel}>Household Name</Text>
-              <Text style={ui.heading}>{householdName}</Text>
+              <View style={[ui.row, { gap: 8, alignItems: 'center', flexWrap: 'wrap' }]}>
+                <Text style={ui.heading}>{householdName}</Text>
+                {verifiedContext ? <RoleBadge role={toDisplayRole(verifiedContext.role)} /> : null}
+              </View>
               <Text style={ui.small}>{`ID: ${onboardingData.householdId}`}</Text>
             </View>
-            {__DEV__ && onEditSetup ? (
+            {isOwner ? (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Edit income and setup"
+                accessibilityLabel="Edit household"
                 onPress={() => {
-                  onClose();
-                  onEditSetup();
+                  setHouseholdDraft(householdName);
+                  setPrefsError('');
+                  setEditingHousehold(true);
                 }}
                 style={ui.button}
               >
-                <Text style={ui.buttonText}>Edit Setup</Text>
+                <Text style={[ui.buttonText, { color: palette.brand }]}>Edit</Text>
               </Pressable>
             ) : null}
           </View>
+          {!canEdit ? (
+            <Text style={[ui.small, { marginTop: 8 }]}>
+              View-only access: you can inspect this household’s finances, switch households, or leave. Only members or owners can make edits.
+            </Text>
+          ) : null}
 
           <View style={ui.divider}>
-            <Text style={styles.subLabel}>Member Roster</Text>
+            <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
+              <Text style={styles.subLabel}>Member Roster</Text>
+              {collabLoading ? <ActivityIndicator size="small" color={palette.brand} /> : null}
+            </View>
             <View style={styles.rosterList}>
-              {householdMembers.map(member => (
+              {(session && rosterMembers.length > 0 ? rosterMembers : null)?.map(member => (
+                <View key={member.userId} style={[styles.rosterRow, { flexDirection: 'column', alignItems: 'stretch', gap: 8 }]}>
+                  <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
+                    <View style={styles.flex1}>
+                      <Text style={styles.rowTitle}>
+                        {(member.emailHint ?? (member.isSelf ? userEmail : member.userId)) + (member.isSelf ? ' (You)' : '')}
+                      </Text>
+                      <Text style={styles.rowSub}>
+                        {member.joinedAt ? `Joined ${member.joinedAt.slice(0, 10)}` : 'Active member'}
+                      </Text>
+                    </View>
+                    <RoleBadge role={toDisplayRole(member.role)} />
+                  </View>
+                  {isOwner && !member.isSelf ? (
+                    <View style={[ui.row, { gap: 8, flexWrap: 'wrap' }]}>
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={collabBusy}
+                        onPress={() => handleToggleMemberRole(member)}
+                        style={[ui.button, collabBusy && styles.disabled]}
+                      >
+                        <Text style={[ui.buttonText, { color: palette.brand }]}>
+                          {member.role === 'viewer' ? 'Make Member' : 'Make Viewer'}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={collabBusy}
+                        onPress={() => handleTransferOwnership(member)}
+                        style={[ui.button, collabBusy && styles.disabled]}
+                      >
+                        <Text style={[ui.buttonText, { color: '#F5C563' }]}>Transfer ownership</Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={collabBusy}
+                        onPress={() => handleRemoveMember(member)}
+                        style={[ui.button, collabBusy && styles.disabled]}
+                      >
+                        <Text style={[ui.buttonText, { color: '#F08B78' }]}>Remove</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                  {!isOwner && member.isSelf ? (
+                    <View style={[ui.row, { justifyContent: 'flex-start' }]}>
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={collabBusy}
+                        onPress={handleLeaveHousehold}
+                        style={[ui.button, collabBusy && styles.disabled]}
+                      >
+                        <Text style={[ui.buttonText, { color: '#F08B78' }]}>Leave household</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+              )) ?? householdMembers.map(member => (
                 <View key={member.id} style={styles.rosterRow}>
                   <View style={styles.flex1}>
                     <Text style={styles.rowTitle}>{member.name}</Text>
@@ -902,10 +1534,153 @@ export function SettingsScreen({
                 </View>
               ))}
             </View>
-            <Text style={[ui.small, { marginTop: 8, fontStyle: 'italic', color: '#8E9992' }]}>
-              Multi-member household collaboration (partner &amp; advisor invites) is not yet supported in this build. Additional members will appear here once verified on your household plan.
-            </Text>
+            {session && !isOwner && rosterMembers.length === 0 ? (
+              <View style={[ui.row, { marginTop: 10 }]}>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={collabBusy}
+                  onPress={handleLeaveHousehold}
+                  style={[ui.button, collabBusy && styles.disabled]}
+                >
+                  <Text style={[ui.buttonText, { color: '#F08B78' }]}>Leave household</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
+
+          {session && isOwner ? (
+            <View style={ui.divider}>
+              <Text style={styles.subLabel}>Invite Member (up to 3 total)</Text>
+              <Text style={[ui.small, { marginBottom: 8 }]}>
+                Invite a partner as a Member (can edit) or an advisor as a Viewer (read-only).
+              </Text>
+              <TextInput
+                accessibilityLabel="Invitee email address"
+                placeholder="partner@example.com"
+                placeholderTextColor="#6E7571"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!collabBusy}
+                value={inviteEmail}
+                onChangeText={setInviteEmail}
+                style={[styles.modalTextInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border, fontSize: 14, fontWeight: '500', letterSpacing: 0 }]}
+              />
+              <View style={[ui.row, { gap: 8, marginTop: 8 }]}>
+                {(['member', 'viewer'] as const).map(roleOption => {
+                  const selected = inviteRole === roleOption;
+                  return (
+                    <Pressable
+                      key={roleOption}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: selected }}
+                      disabled={collabBusy}
+                      onPress={() => setInviteRole(roleOption)}
+                      style={[
+                        styles.strategyOption,
+                        selected && [styles.strategyOptionSelected, { backgroundColor: palette.tint, borderColor: palette.brand }],
+                      ]}
+                    >
+                      <Text style={[styles.strategyTitle, selected && [styles.strategyTitleSelected, { color: palette.brand }]]}>
+                        {roleOption === 'member' ? 'Member (Edit)' : 'Viewer (Read-only)'}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Create household invitation"
+                disabled={collabBusy || !inviteEmail.trim()}
+                onPress={handleCreateInvite}
+                style={[styles.primaryInlineBtn, { backgroundColor: ctaBg, marginTop: 10 }, (collabBusy || !inviteEmail.trim()) && styles.disabled]}
+              >
+                <Text style={[styles.primaryInlineBtnText, { color: ctaFg }]}>{collabBusy ? 'Sending…' : 'Send Invite'}</Text>
+              </Pressable>
+
+              {latestInvite ? (
+                <View style={[styles.rosterRow, { flexDirection: 'column', alignItems: 'stretch', gap: 6, marginTop: 12, borderColor: palette.brand }]}>
+                  <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>INVITE READY TO SHARE</Text>
+                  <Text style={ui.small}>{latestInvite.delivery.message}</Text>
+                  <Text style={ui.small} selectable>{`Web Link: ${latestInvite.inviteWebUrl || buildHouseholdInviteWebUrl(latestInvite.rawToken)}`}</Text>
+                  <Text style={ui.small} selectable>{`Invite Code: ${latestInvite.rawToken}`}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void handleShareInvite(latestInvite)}
+                    style={[ui.button, { alignSelf: 'flex-start', marginTop: 4 }]}
+                  >
+                    <Text style={[ui.buttonText, { color: palette.brand }]}>Share invite link</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+
+              {invitations.length > 0 ? (
+                <View style={{ marginTop: 12, gap: 8 }}>
+                  <Text style={styles.subLabel}>Pending Invitations</Text>
+                  {invitations.map(inv => (
+                    <View key={inv.invitationId} style={[styles.rosterRow, { flexDirection: 'column', alignItems: 'stretch', gap: 6 }]}>
+                      <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
+                        <View style={styles.flex1}>
+                          <Text style={styles.rowTitle}>{inv.emailHint}</Text>
+                          <Text style={styles.rowSub}>
+                            {inv.expired ? 'Expired' : `Expires ${inv.expiresAt.slice(0, 10)} · ${inv.deliveryState}`}
+                          </Text>
+                        </View>
+                        <RoleBadge role={inv.role === 'member' ? 'Member' : 'Viewer'} />
+                      </View>
+                      <View style={[ui.row, { gap: 8, flexWrap: 'wrap' }]}>
+                        <Pressable
+                          accessibilityRole="button"
+                          disabled={collabBusy}
+                          onPress={() => handleRotateInvite(inv.invitationId)}
+                          style={[ui.button, collabBusy && styles.disabled]}
+                        >
+                          <Text style={[ui.buttonText, { color: palette.brand }]}>Resend / Rotate link</Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          disabled={collabBusy}
+                          onPress={() => handleRevokeInvite(inv.invitationId, inv.emailHint)}
+                          style={[ui.button, collabBusy && styles.disabled]}
+                        >
+                          <Text style={[ui.buttonText, { color: '#F08B78' }]}>Revoke</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          {session ? (
+            <View style={ui.divider}>
+              <Text style={styles.subLabel}>Join a Household</Text>
+              <Text style={[ui.small, { marginBottom: 8 }]}>
+                Paste an invite link or code sent to your account email. Joining switches your active view; your existing household data stays separate and is never merged.
+              </Text>
+              <TextInput
+                accessibilityLabel="Invite link or invite code"
+                placeholder="Paste invite link or code"
+                placeholderTextColor="#6E7571"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!collabBusy}
+                value={joinInput}
+                onChangeText={setJoinInput}
+                style={[styles.modalTextInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border, fontSize: 13, fontWeight: '500', letterSpacing: 0 }]}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Join household"
+                disabled={collabBusy || !joinInput.trim()}
+                onPress={handleJoinHousehold}
+                style={[styles.primaryInlineBtn, { backgroundColor: ctaBg, marginTop: 10 }, (collabBusy || !joinInput.trim()) && styles.disabled]}
+              >
+                <Text style={[styles.primaryInlineBtnText, { color: ctaFg }]}>{collabBusy ? 'Joining…' : 'Join Household'}</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
           <View style={ui.divider}>
             <View style={[ui.row, { justifyContent: 'space-between' }]}>
@@ -923,12 +1698,17 @@ export function SettingsScreen({
               <Text style={styles.lockedCaption}>
                 Currency cannot be changed while monetary records exist.
               </Text>
+            ) : !isOwner ? (
+              <Text style={styles.lockedCaption}>
+                Only the household owner can change the household currency.
+              </Text>
             ) : (
               <SelectDropdown
                 label="Change Currency"
                 sheetTitle="Select ISO 4217 Currency"
                 value={currencyCode}
                 options={currencyDropdownOptions}
+                disabled={!isOwner}
                 onSelect={handleSelectCurrency}
                 style={{ marginTop: 8 }}
               />
@@ -941,6 +1721,7 @@ export function SettingsScreen({
               sheetTitle="Select Household Timezone"
               value={activeTimeZone}
               options={timezoneOptions}
+              disabled={!canEdit}
               onSelect={handleSelectTimezone}
             />
             <Text style={[ui.small, { marginTop: 6 }]}>
@@ -956,8 +1737,13 @@ export function SettingsScreen({
         {activeSettingsPage === 'preferences' && <>
         {/* SECTION 4: PREFERENCES                                           */}
         {/* ================================================================ */}
-        <Text style={styles.sectionHeader}>PREFERENCES</Text>
+        <Text style={[styles.sectionHeader, { color: palette.brand }]}>PREFERENCES</Text>
         <Card>
+          {!canEdit ? (
+            <View style={{ backgroundColor: palette.surface, borderColor: palette.border, borderWidth: 1, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+              <Text style={ui.small}>View-only access: only household members or owners can update payoff preferences.</Text>
+            </View>
+          ) : null}
           <View style={styles.fieldGroup}>
             <Text style={styles.rowTitle}>Payoff Strategy</Text>
             <Text style={styles.rowSub}>
@@ -972,28 +1758,30 @@ export function SettingsScreen({
                   <Pressable
                     key={strategy}
                     accessibilityRole="button"
-                    accessibilityState={{ selected }}
+                    accessibilityState={{ selected, disabled: !canEdit }}
                     accessibilityLabel={
                       strategy === 'snowball'
                         ? 'Snowball: Lowest balance first'
                         : 'Avalanche: Highest APR first'
                     }
+                    disabled={!canEdit}
                     onPress={() => handleSelectStrategy(strategy)}
                     style={[
                       styles.strategyOption,
-                      selected && styles.strategyOptionSelected,
+                      selected && [styles.strategyOptionSelected, { backgroundColor: palette.tint, borderColor: palette.brand }],
+                      !canEdit && styles.disabled,
                     ]}
                   >
                     <AppIcon
                       name={strategy}
                       size={16}
-                      color={selected ? '#81DFD2' : '#AAB3AD'}
+                      color={selected ? palette.brand : palette.muted}
                     />
                     <View style={styles.flex1}>
                       <Text
                         style={[
                           styles.strategyTitle,
-                          selected && styles.strategyTitleSelected,
+                          selected && [styles.strategyTitleSelected, { color: palette.brand }],
                         ]}
                       >
                         {strategy === 'snowball' ? 'Snowball' : 'Avalanche'}
@@ -1015,10 +1803,11 @@ export function SettingsScreen({
             </Text>
             <View style={[ui.row, { marginTop: 10 }]}>
               <View style={ui.inputWrap}>
-                <Text style={styles.currencyPrefix}>{currencySymbol}</Text>
+                <Text style={[styles.currencyPrefix, { color: palette.brand }]}>{currencySymbol}</Text>
                 <TextInput
                   accessibilityLabel="Extra monthly payment"
                   keyboardType="decimal-pad"
+                  editable={canEdit}
                   value={extraInput}
                   onChangeText={val =>
                     setExtraDraft(prev => ({
@@ -1035,44 +1824,51 @@ export function SettingsScreen({
                   style={styles.moneyInput}
                 />
               </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Save extra monthly payment"
-                disabled={savingPrefs}
-                onPress={handleSaveExtraPayment}
-                style={[styles.primaryInlineBtn, savingPrefs && styles.disabled]}
-              >
-                <Text style={styles.primaryInlineBtnText}>Save</Text>
-              </Pressable>
+              {canEdit ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Save extra monthly payment"
+                  disabled={savingPrefs}
+                  onPress={handleSaveExtraPayment}
+                  style={[styles.primaryInlineBtn, { backgroundColor: ctaBg }, savingPrefs && styles.disabled]}
+                >
+                  <Text style={[styles.primaryInlineBtnText, { color: ctaFg }]}>Save</Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
 
         </Card>
         </>}
         {activeSettingsPage === 'notifications' && <>
-        <Text style={styles.sectionHeader}>NOTIFICATIONS</Text>
+        <Text style={[styles.sectionHeader, { color: palette.brand }]}>NOTIFICATIONS</Text>
         <Card>
           <View>
+            {!canEdit ? (
+              <View style={{ backgroundColor: palette.surface, borderColor: palette.border, borderWidth: 1, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                <Text style={ui.small}>View-only access: only household members or owners can change notification preferences.</Text>
+              </View>
+            ) : null}
             <Text style={[styles.subLabel, { marginBottom: 4 }]}>Notification Alerts</Text>
             <SettingSwitchRow
               title="Upcoming payment reminders"
               subtitle="Receive a heads-up before scheduled bills and minimums are due"
               checked={onboardingData.notifications.upcomingReminders}
-              disabled={savingPrefs}
+              disabled={savingPrefs || !canEdit}
               onToggle={() => void handleToggleNotification('upcomingReminders')}
             />
             <SettingSwitchRow
               title="Past-due alerts"
               subtitle="Get notified immediately when an obligation becomes overdue"
               checked={onboardingData.notifications.overdueAlerts}
-              disabled={savingPrefs}
+              disabled={savingPrefs || !canEdit}
               onToggle={() => void handleToggleNotification('overdueAlerts')}
             />
             <SettingSwitchRow
               title="Milestones & progress"
               subtitle="Celebrate debt payoff milestones and monthly progress summaries"
               checked={onboardingData.notifications.milestonesAndProgress}
-              disabled={savingPrefs}
+              disabled={savingPrefs || !canEdit}
               onToggle={() => void handleToggleNotification('milestonesAndProgress')}
             />
             <Text style={[ui.small, { marginTop: 8, fontStyle: 'italic', color: '#8E9992' }]}>
@@ -1086,7 +1882,7 @@ export function SettingsScreen({
         {activeSettingsPage === 'support' && <>
         {/* SECTION 5: SUPPORT & LEGAL                                       */}
         {/* ================================================================ */}
-        <Text style={styles.sectionHeader}>SUPPORT & LEGAL</Text>
+        <Text style={[styles.sectionHeader, { color: palette.brand }]}>SUPPORT & LEGAL</Text>
         <Card>
           {(
             [
@@ -1106,7 +1902,7 @@ export function SettingsScreen({
                 <Text style={styles.rowTitle}>{item.label}</Text>
                 <Text style={styles.rowSub}>{item.sub}</Text>
               </View>
-              <AppIcon name="chevronRight" size={18} color="#81DFD2" />
+              <AppIcon name="chevronRight" size={18} color={palette.brand} />
             </Pressable>
           ))}
         </Card>
@@ -1116,37 +1912,30 @@ export function SettingsScreen({
         {activeSettingsPage === 'data' && <>
         {/* SECTION 6: DANGER ZONE                                           */}
         {/* ================================================================ */}
-        <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }]}>
-          <Text style={[styles.sectionHeader, { color: '#E3A088', marginTop: 0, marginBottom: 0 }]}>DANGER ZONE</Text>
-          <View style={[ui.badge, { backgroundColor: '#3A2825', borderColor: '#E3A088', borderWidth: 1 }]}>
-            <Text style={[ui.badgeText, { color: '#E3A088', fontSize: 10 }]}>BLOCKED / DEFERRED</Text>
-          </View>
-        </View>
+        <Text style={[styles.sectionHeader, { color: '#F08B78' }]}>ACCOUNT DELETION</Text>
         <Card style={styles.dangerCard}>
-          <Text style={ui.heading}>Reset Financial Data</Text>
-          <Text style={ui.small}>
-            Permanently erase tracked debt accounts, ledger transactions, recurring bills, and onboarding state across both local cache and cloud database.
-          </Text>
-          <Text style={[ui.small, { color: '#E3A088', fontStyle: 'italic', marginTop: 4 }]}>
-            Operational safety block: Full atomic reset is blocked pending execution of forward migration (20261106140000_reset_financial_data_atomic.sql) and native OS biometric verification. This destructive control is disabled to prevent orphaned financial records.
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Reset Financial Data (Disabled)"
-            disabled={true}
-            style={[styles.dangerButton, styles.disabled, { opacity: 0.5 }]}
-          >
-            <AppIcon name="reset" size={16} color="#AAB3AD" />
-            <Text style={[styles.dangerButtonText, { color: '#AAB3AD' }]}>Reset Financial Data (Disabled)</Text>
-          </Pressable>
+          <Text style={ui.heading}>Delete account and data</Text>
+          <Text style={ui.small}>Permanently remove your DebtFree sign-in and associated cloud financial data. Financial data reset and backup restore are not available in this release.</Text>
+          {accountDeletionEnabled && session ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Delete account and data" disabled={deletingAccount || authBusy} onPress={confirmDeleteAccount} style={[styles.dangerButton, (deletingAccount || authBusy) && styles.disabled]}>
+              {deletingAccount ? <ActivityIndicator size="small" color="#F08B78" /> : <AppIcon name="reset" size={16} color="#F08B78" />}
+              <Text style={styles.dangerButtonText}>{deletingAccount ? 'Deleting account…' : 'Delete account'}</Text>
+            </Pressable>
+          ) : <Text style={styles.rowSub}>Account deletion is not configured in this build yet.</Text>}
+          {process.env.EXPO_PUBLIC_ACCOUNT_DELETION_URL ? (
+            <Pressable accessibilityRole="link" onPress={() => void handleOpenExternalDoc(process.env.EXPO_PUBLIC_ACCOUNT_DELETION_URL ?? null)} style={styles.linkRow}>
+              <Text style={styles.rowTitle}>Request deletion on the DebtFree website</Text>
+              <AppIcon name="chevronRight" size={18} color={palette.brand} />
+            </Pressable>
+          ) : null}
         </Card>
 
-        <Text style={styles.sectionHeader}>BACKUP & RECOVERY</Text>
+        <Text style={[styles.sectionHeader, { color: palette.brand }]}>BACKUP & RECOVERY</Text>
         <Card>
           <Text style={ui.heading}>Native backup</Text>
-          <Text style={ui.small}>Export a validated full-household JSON snapshot. Keep it private. Paste JSON below to review a backup.</Text>
-          <Text style={ui.small}>{pendingStatus}</Text>
-          {pendingOperations.map((command, index) => {
+          <Text style={ui.small}>Export a validated JSON snapshot or review a pasted backup. Full restore is not available in this release.</Text>
+          <Text style={ui.small}>{visiblePendingStatus}</Text>
+          {visiblePendingOperations.map((command, index) => {
             const archived = Boolean(command.resolution);
             const rejected = command.failure?.kind === 'rejected';
             const uncertain = command.dispatchState === 'uncertain' || command.dispatchState === 'dispatched';
@@ -1169,13 +1958,17 @@ export function SettingsScreen({
           <Pressable accessibilityRole="button" disabled={backupBusy} onPress={exportBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export backup JSON</Text></Pressable>
           <TextInput accessibilityLabel="Native backup JSON" multiline value={backupText} onChangeText={value => { setBackupText(value); setBackupMessage(''); }} placeholder="Paste backup JSON to review" placeholderTextColor="#6E7571" style={styles.devJsonInput} />
           <Pressable accessibilityRole="button" disabled={backupBusy || !backupText.trim()} onPress={preflightBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Validate and review</Text></Pressable>
-          <Text style={ui.small}>Restore unavailable: the authenticated atomic restore service and receipt verification have not been implemented and verified.</Text>
-          <Pressable accessibilityRole="button" accessibilityState={{ disabled: true }} disabled style={[styles.devSecondaryButton, styles.disabled]}><Text style={styles.devSecondaryButtonText}>Restore unavailable</Text></Pressable>
           <Text style={ui.small}>{checkpoint ? `Checkpoint: ${checkpoint.status}; ${checkpoint.cursor} of ${checkpoint.plan.operations.length} operations. ${checkpoint.plan.conflicts} conflicts.` : 'No checkpoint found.'}</Text>
           {checkpoint ? <Pressable accessibilityRole="button" disabled={backupBusy} onPress={() => void runBackupAction(async () => { await Share.share({ title: 'DebtFree recovery checkpoint JSON', message: JSON.stringify(checkpoint, null, 2) }); })} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export checkpoint JSON</Text></Pressable> : null}
           {!!backupMessage && <Text accessibilityRole="alert" style={styles.rowSub}>{backupMessage}</Text>}
         </Card>
         </>}
+
+        <InspireQuote
+          slot="settingsFooter"
+          color="#0B89A8"
+          style={{ textAlign: 'center', marginTop: 10, paddingHorizontal: 12 }}
+        />
       </ScrollView>
 
       {/* Support & Legal Reader Modal */}
@@ -1209,16 +2002,16 @@ export function SettingsScreen({
                         </Text>
                       ))}
                     </View>
-                    <View style={[ui.row, { marginTop: 16 }]}>
+                    {SUPPORT_DOCS[activeDoc].url ? <View style={[ui.row, { marginTop: 16 }]}>
                       <Pressable
                         accessibilityRole="button"
                         accessibilityLabel="Open full page in browser"
                         onPress={() => void handleOpenExternalDoc(SUPPORT_DOCS[activeDoc].url)}
-                        style={[styles.primaryModalBtn, styles.flex1]}
+                        style={[styles.primaryModalBtn, { backgroundColor: ctaBg }, styles.flex1]}
                       >
-                        <Text style={styles.primaryModalBtnText}>Open in Browser</Text>
+                        <Text style={[styles.primaryModalBtnText, { color: ctaFg }]}>Open in Browser</Text>
                       </Pressable>
-                    </View>
+                    </View> : <Text style={[ui.small, { marginTop: 16 }]}>The official web page will be configured before public release.</Text>}
                   </>
                 ) : null}
               </View>
@@ -1226,6 +2019,18 @@ export function SettingsScreen({
           </View>
         </TouchableWithoutFeedback>
       </Modal>
+
+      <ConfirmModal
+        visible={confirmPrompt !== null}
+        title={confirmPrompt?.title ?? ''}
+        message={confirmPrompt?.message ?? ''}
+        confirmLabel={confirmPrompt?.confirmLabel}
+        cancelLabel={confirmPrompt?.cancelLabel}
+        destructive={confirmPrompt?.destructive ?? true}
+        icon={confirmPrompt?.icon ?? 'warning'}
+        onConfirm={() => confirmPrompt?.onConfirm()}
+        onCancel={() => setConfirmPrompt(null)}
+      />
 
     </View>
   );
@@ -1243,17 +2048,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#242926',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#353D38',
+    backgroundColor: '#121614', paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#222A25',
   },
   backButton: {
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: '#353D39',
+    backgroundColor: '#1C2420', borderWidth: 1, borderColor: '#28372E',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1269,7 +2070,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#353D39',
+    backgroundColor: '#1C2420', borderWidth: 1, borderColor: '#28372E',
   },
   closeSettingsText: {
     color: '#F9F9F6',
@@ -1278,7 +2079,7 @@ const styles = StyleSheet.create({
     lineHeight: 28,
   },
   settingsIndex: {
-    gap: 8,
+    gap: 6,
   },
   menuCard: {
     padding: 0,
@@ -1287,12 +2088,12 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   menuRow: {
-    minHeight: 55,
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 8,
   },
   disabledMenuRow: {
     opacity: 0.55,
@@ -1307,18 +2108,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   scrollContent: {
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 48,
-    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 32,
+    gap: 10,
   },
   sectionHeader: {
-    color: '#81DFD2',
-    fontSize: 11,
+    color: '#76DCB9',
+    fontSize: 12,
     fontWeight: '800',
     letterSpacing: 0.9,
-    marginTop: 6,
-    paddingHorizontal: 2,
+    marginTop: 4,
+    paddingHorizontal: 16,
   },
   subLabel: {
     color: '#AAB3AD',
@@ -1366,11 +2167,11 @@ const styles = StyleSheet.create({
     borderColor: '#3A423E',
   },
   statusBadgeText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
   },
   statusBadgeTextActive: {
-    color: '#81DFD2',
+    color: '#76DCB9',
   },
   statusBadgeTextMuted: {
     color: '#AAB3AD',
@@ -1389,8 +2190,8 @@ const styles = StyleSheet.create({
   },
   rowSub: {
     color: '#AAB3AD',
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 13,
+    lineHeight: 18,
     marginTop: 2,
   },
   toggleTrack: {
@@ -1402,7 +2203,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   toggleTrackOn: {
-    backgroundColor: '#369B97',
+    backgroundColor: '#76DCB9',
   },
   toggleThumb: {
     width: 20,
@@ -1417,14 +2218,12 @@ const styles = StyleSheet.create({
   signOutButton: {
     minHeight: 44,
     borderRadius: 10,
-    backgroundColor: '#2E2624',
-    borderWidth: 1,
-    borderColor: '#664338',
+    backgroundColor: 'rgba(240, 139, 120, 0.12)', borderWidth: 1, borderColor: '#5C382E',
     alignItems: 'center',
     justifyContent: 'center',
   },
   signOutButtonText: {
-    color: '#E3A088',
+    color: '#F08B78',
     fontSize: 14,
     fontWeight: '700',
   },
@@ -1440,12 +2239,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-    backgroundColor: '#222724',
+    backgroundColor: '#141816',
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: '#343C37',
+    borderColor: '#222A25',
   },
   roleLegendRow: {
     flexDirection: 'row',
@@ -1461,7 +2260,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   roleBadgeText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
   },
   lockedBadge: {
@@ -1473,15 +2272,15 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   lockedBadgeText: {
-    color: '#F2C94C',
-    fontSize: 10,
+    color: '#F5C563',
+    fontSize: 12,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
   lockedCaption: {
     color: '#AAB3AD',
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 13,
+    lineHeight: 18,
     marginTop: 6,
   },
   strategyOption: {
@@ -1489,16 +2288,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#1F201F',
-    borderWidth: 1,
-    borderColor: '#3C443F',
+    backgroundColor: '#141816', borderWidth: 1, borderColor: '#222A25',
     borderRadius: 11,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
   strategyOptionSelected: {
-    backgroundColor: '#263B36',
-    borderColor: '#81DFD2',
+    backgroundColor: '#1C2721', borderColor: '#76DCB9',
   },
   strategyTitle: {
     color: '#D5DDD8',
@@ -1510,10 +2306,10 @@ const styles = StyleSheet.create({
   },
   strategySub: {
     color: '#AAB3AD',
-    fontSize: 11,
+    fontSize: 12,
   },
   currencyPrefix: {
-    color: '#81DFD2',
+    color: '#76DCB9',
     fontSize: 15,
     fontWeight: '700',
   },
@@ -1527,12 +2323,12 @@ const styles = StyleSheet.create({
     minHeight: 42,
     paddingHorizontal: 18,
     borderRadius: 10,
-    backgroundColor: '#81DFD2',
+    backgroundColor: '#76DCB9',
     alignItems: 'center',
     justifyContent: 'center',
   },
   primaryInlineBtnText: {
-    color: '#1F201F',
+    color: '#0C0E0D',
     fontSize: 14,
     fontWeight: '700',
   },
@@ -1570,14 +2366,14 @@ const styles = StyleSheet.create({
   devBadge: {
     backgroundColor: '#3A3324',
     borderWidth: 1,
-    borderColor: '#F2C94C',
+    borderColor: '#F5C563',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
   },
   devBadgeText: {
-    color: '#F2C94C',
-    fontSize: 10,
+    color: '#F5C563',
+    fontSize: 12,
     fontWeight: '800',
   },
   devButton: {
@@ -1585,12 +2381,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: '#2E3B37',
     borderWidth: 1,
-    borderColor: '#81DFD2',
+    borderColor: '#76DCB9',
     alignItems: 'center',
     justifyContent: 'center',
   },
   devButtonText: {
-    color: '#81DFD2',
+    color: '#76DCB9',
     fontSize: 13,
     fontWeight: '700',
   },
@@ -1605,12 +2401,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   devSecondaryButtonText: {
-    color: '#F2C94C',
+    color: '#F5C563',
     fontSize: 12,
     fontWeight: '700',
   },
   devSuccessText: {
-    color: '#81DFD2',
+    color: '#76DCB9',
     fontSize: 12,
     fontWeight: '600',
   },
@@ -1634,7 +2430,7 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   noticeBannerText: {
-    color: '#81DFD2',
+    color: '#76DCB9',
     fontSize: 13,
     fontWeight: '600',
   },
@@ -1702,7 +2498,7 @@ const styles = StyleSheet.create({
     borderColor: '#46786F',
   },
   biometricGateText: {
-    color: '#F2C94C',
+    color: '#F5C563',
     fontSize: 13,
     fontWeight: '700',
   },
@@ -1723,12 +2519,12 @@ const styles = StyleSheet.create({
   primaryModalBtn: {
     minHeight: 44,
     borderRadius: 10,
-    backgroundColor: '#81DFD2',
+    backgroundColor: '#76DCB9',
     alignItems: 'center',
     justifyContent: 'center',
   },
   primaryModalBtnText: {
-    color: '#1F201F',
+    color: '#0C0E0D',
     fontSize: 14,
     fontWeight: '700',
   },

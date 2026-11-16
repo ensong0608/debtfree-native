@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1680px;
+    height: 1060px;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 0%, #162244 0%, #090E1A 70%);
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #F3F6FC;
+    position: relative;
+  }
+  .topbar {
+    position: absolute; left: 36px; right: 36px; top: 22px; height: 64px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding-bottom: 14px;
+  }
+  .brand-row { display: flex; align-items: center; gap: 14px; }
+  .brand-pill {
+    background: linear-gradient(135deg, #0051FB, #27EEE9);
+    color: #070D5B; font-weight: 800; font-size: 13px; letter-spacing: 0.06em;
+    padding: 6px 12px; border-radius: 999px; text-transform: uppercase;
+  }
+  h1 { font-size: 25px; font-weight: 700; letter-spacing: -0.02em; color: #FFFFFF; }
+  .subtitle { font-size: 14px; color: #9FB0D1; margin-top: 2px; }
+  .legend { display: flex; gap: 16px; align-items: center; font-size: 13px; color: #C7D4EC; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .phone-frame {
+    position: absolute;
+    border-radius: 28px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.65), 0 0 0 2px rgba(255,255,255,0.14);
+    background: #000;
+  }
+  .phone-frame img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .phone-caption {
+    position: absolute;
+    font-size: 13px; font-weight: 600; color: #BFD0F0;
+    text-align: center;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px;
+    padding: 5px 14px;
+  }
+  .annot-box {
+    position: absolute;
+    border: 2.5px dashed;
+    border-radius: 10px;
+    z-index: 5;
+  }
+  .annot-num {
+    position: absolute;
+    top: -12px; left: -12px;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    color: #080C18;
+    font-weight: 800; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  svg.leaders {
+    position: absolute; left: 0; top: 0; width: 1680px; height: 1060px;
+    pointer-events: none; z-index: 6;
+  }
+  .callout-card {
+    position: absolute;
+    background: rgba(17, 25, 45, 0.94);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 13px 15px;
+    box-shadow: 0 14px 32px rgba(0,0,0,0.45);
+    z-index: 7;
+  }
+  .callout-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .pill {
+    font-size: 11px; font-weight: 800; color: #090D18;
+    padding: 3px 9px; border-radius: 999px; letter-spacing: 0.04em;
+  }
+  .screen-tag { font-size: 11px; color: #8CA0C6; font-weight: 600; }
+  .callout-title { font-size: 14.5px; font-weight: 700; color: #FFFFFF; margin-bottom: 4px; }
+  .callout-body { font-size: 12.8px; line-height: 1.42; color: #CFD9ED; }
+  .callout-meta { font-size: 11px; color: #7DA2E8; margin-top: 6px; font-weight: 600; }
+  .footer-bar {
+    position: absolute; left: 36px; right: 36px; bottom: 20px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 12px;
+    padding: 11px 18px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 13px; color: #B9C8E4;
+  }
+  .footer-bar strong { color: #27EEE9; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <div class="brand-row">
+        <span class="brand-pill">BitLess Visual Audit · 2026-11-13</span>
+        <h1>Accounts & Strategy: Orphaned Filter, Line Wrap & Triple Header Stack</h1>
+      </div>
+      <div class="subtitle">Category dropdown leaves an empty left gutter, Discover violates the unsplit Est. payoff rule, and Strategy stacks 3 navigation tiers above Payoff Order</div>
+    </div>
+    <div class="legend">
+      <span><i class="dot" style="background:#FF4D6A"></i>Major UX / Layout Issue</span>
+      <span><i class="dot" style="background:#FFB020"></i>Polish / Hierarchy / Brand Alignment</span>
+    </div>
+  </div>
+
+  <div class="phone-frame" style="left:452px;top:112px;width:368px;height:798px;">
+    <img src="file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/scratch/visual-audit-2026-11-13/light/04-accounts-list.png" />
+  </div>
+  <div class="phone-caption" style="left:452px;top:922px;width:368px;">Accounts List · light/04-accounts-list.png</div>
+
+  <div class="phone-frame" style="left:860px;top:112px;width:368px;height:798px;">
+    <img src="file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/scratch/visual-audit-2026-11-13/dark/11-accounts-strategy.png" />
+  </div>
+  <div class="phone-caption" style="left:860px;top:922px;width:368px;">Debt Strategy (Dark) · dark/11-accounts-strategy.png</div>
+
+  
+      <div class="annot-box" style="left:463.0px;top:371.4px;width:345.9px;height:49.5px;border-color:#FFB020;background:rgba(255, 176, 32, 0.14);">
+        <span class="annot-num" style="background:#FFB020;">1</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:466.7px;top:637.1px;width:338.6px;height:76.6px;border-color:#FF4D6A;background:rgba(255, 77, 106, 0.14);">
+        <span class="annot-num" style="background:#FF4D6A;">2</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:466.7px;top:495.0px;width:338.6px;height:134.1px;border-color:#FFB020;background:rgba(255, 176, 32, 0.14);">
+        <span class="annot-num" style="background:#FFB020;">3</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:871.0px;top:187.8px;width:345.9px;height:207.5px;border-color:#FF4D6A;background:rgba(255, 77, 106, 0.14);">
+        <span class="annot-num" style="background:#FF4D6A;">4</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:871.0px;top:694.5px;width:345.9px;height:59.8px;border-color:#FF4D6A;background:rgba(255, 77, 106, 0.14);">
+        <span class="annot-num" style="background:#FF4D6A;">5</span>
+      </div>
+    
+  <svg class="leaders" viewBox="0 0 1680 1060">
+      <path d="M 463.0 396.1 C 440.1 396.1, 435.0 234.0, 412.0 234.0"
+            fill="none" stroke="#FFB020" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="463.0" cy="396.1" r="5" fill="#FFB020" />
+      <circle cx="412.0" cy="234.0" r="4.5" fill="#FFB020" />
+    
+
+      <path d="M 466.7 675.4 C 442.1 675.4, 436.6 509.0, 412.0 509.0"
+            fill="none" stroke="#FF4D6A" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="466.7" cy="675.4" r="5" fill="#FF4D6A" />
+      <circle cx="412.0" cy="509.0" r="4.5" fill="#FF4D6A" />
+    
+
+      <path d="M 466.7 562.1 C 442.1 562.1, 436.6 744.0, 412.0 744.0"
+            fill="none" stroke="#FFB020" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="466.7" cy="562.1" r="5" fill="#FFB020" />
+      <circle cx="412.0" cy="744.0" r="4.5" fill="#FFB020" />
+    
+
+      <path d="M 1217.0 260.4 C 1239.9 260.4, 1245.0 234.0, 1268.0 234.0"
+            fill="none" stroke="#FF4D6A" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="1217.0" cy="260.4" r="5" fill="#FF4D6A" />
+      <circle cx="1268.0" cy="234.0" r="4.5" fill="#FF4D6A" />
+    
+
+      <path d="M 1217.0 724.5 C 1239.9 724.5, 1245.0 604.0, 1268.0 604.0"
+            fill="none" stroke="#FF4D6A" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="1217.0" cy="724.5" r="5" fill="#FF4D6A" />
+      <circle cx="1268.0" cy="604.0" r="4.5" fill="#FF4D6A" />
+    </svg>
+  
+      <div class="callout-card" style="left:36px;top:190px;width:376px;border-left:4px solid #FFB020;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FFB020;">1 · POLISH</span>
+          <span class="screen-tag">Filter Row Alignment</span>
+        </div>
+        <div class="callout-title">Hey! Lonely filter dropdown leaves 55% dead space</div>
+        <div class="callout-body">"All categories v" floats right-aligned on its own row above "Search debts | Name". Move it into a clean horizontal chip strip or inline bar.</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:36px;top:465px;width:376px;border-left:4px solid #FF4D6A;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FF4D6A;">2 · MAJOR</span>
+          <span class="screen-tag">UI_PREFERENCES · Est. Payoff Rule</span>
+        </div>
+        <div class="callout-title">Hey! Discover splits "Est. May 2028" onto 2 lines!</div>
+        <div class="callout-body">Booking & Chase fit on 1 subtitle line, while Discover wraps "23.45% APR ·\nEst. May 2028" at 115% scale — breaking the "keep Est. <Payoff> unsplit" rule.</div>
+        <div class="callout-meta">Source: Manager Audit · UI_PREFERENCES</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:36px;top:700px;width:376px;border-left:4px solid #FFB020;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FFB020;">3 · POLISH</span>
+          <span class="screen-tag">Surface Consistency</span>
+        </div>
+        <div class="callout-title">Hey! Flat hairline rows vs rounded cards elsewhere</div>
+        <div class="callout-body">CARDS & LOANS uses bare transparent hairline dividers on cream canvas, contrasting with crisp elevated cards on Budget, Progress, and Settings.</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:1268px;top:190px;width:376px;border-left:4px solid #FF4D6A;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FF4D6A;">4 · MAJOR</span>
+          <span class="screen-tag">Header Stack Compression</span>
+        </div>
+        <div class="callout-title">Hey! Triple stacked headers crush Payoff Order</div>
+        <div class="callout-body">"Accounts | Strategy" tabs + "Debt strategy | Mortgage strategy" pills + dark hero eat 36% of the viewport before "Your method" even begins.</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:1268px;top:560px;width:376px;border-left:4px solid #FF4D6A;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FF4D6A;">5 · MAJOR</span>
+          <span class="screen-tag">Bottom CTA + Dock Clip</span>
+        </div>
+        <div class="callout-title">Hey! "02 Discover" cut in half behind CTA dock!</div>
+        <div class="callout-body">The two-tier "+ Add Debt Account" dock cuts right through "02 Discover". Merging Strategy sub-pills into the hero frees enough height to show 01 & 02.</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+  <div class="footer-bar">
+    <span><strong>Audit Condition:</strong> Pixel 1440×3120 · OS Font Scale 115% · Dynamic Type ON (ignore translucent Android DevTools gear)</span>
+    <span><strong>Takeaway:</strong> Merge Category filter into Search/Sort bar, keep Discover APR·Est. on 1 line, and combine Strategy header toggles.</span>
+  </div>
+</body>
+</html>

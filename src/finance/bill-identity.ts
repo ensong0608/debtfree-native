@@ -21,3 +21,8 @@ export function extractBillIdFromTxId(txId: string): string | null {
   const parts = txId.split(':');
   return parts.length >= 2 && parts[1] ? parts[1] : null;
 }
+
+/** Match only explicit stored bill identifiers, never display names. */
+export function transactionHasBillId(tx: { id: string; memo?: string | null }, billId: string): boolean {
+  return extractBillIdFromTxId(tx.id) === billId || extractBillIdsFromMemo(tx.memo).has(billId);
+}

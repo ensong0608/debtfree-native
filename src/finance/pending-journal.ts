@@ -34,7 +34,7 @@ export type PendingCommand = {
   failure?: { kind: 'rejected' | 'uncertain'; message: string };
   reviewReason?: string;
   diagnostic?: { sourceDomain: string; raw: string; reason: string };
-  resolution?: { kind: 'accepted_server_state'; at: string; acknowledged: true; evidence: { domains: Record<string, { authoritative: true; complete: true; rowCount: number }>; observedMembers: Array<{ domain: string; rowId: string; row: unknown | null }> } };
+  resolution?: { kind: 'accepted_server_state'; at: string; acknowledged: true; evidence: { domains: Record<string, { authoritative: true; complete: true; rowCount: number }>; observedMembers: { domain: string; rowId: string; row: unknown | null }[] } };
 };
 
 type JournalEnvelope = { version: 1; userId: string; commands: PendingCommand[] };
@@ -302,3 +302,172 @@ export function createPendingJournal(store: KeyValueStore, options: { key?: (use
     },
   };
 }
+
+/** Commands in v2 must explicitly carry the server-verified membership identity. */
+export type HouseholdPendingCommand = PendingCommand & { householdId: string; membershipVersion: string };
+type HouseholdEnvelope = { version: 2; userId: string; householdId: string; membershipVersion: string; commands: HouseholdPendingCommand[] };
+
+// Explicit extension also permits Node's native TypeScript test runner to resolve this module.
+// @ts-ignore -- React Native's bundler supports TypeScript extensions.
+import { parseHouseholdContext, householdStorageKey } from '../household-context.ts';
+import type { HouseholdContext } from '../household-context';
+
+const v2Adapters = new WeakMap<KeyValueStore, Map<string, KeyValueStore>>();
+
+export function pendingJournalV2Key(context: HouseholdContext): string {
+  const c = parseHouseholdContext(context?.userId, context);
+  return householdStorageKey(c.userId, c.householdId, `pending-journal-v2:${c.membershipVersion}`);
+}
+
+function pendingJournalV2IndexKey(userId: string, householdId: string): string {
+  return householdStorageKey(userId, householdId, 'pending-journal-v2-index');
+}
+
+type HouseholdJournalIndex = { version: 1; userId: string; householdId: string; membershipVersions: string[] };
+
+function validateHouseholdJournalIndex(value: unknown, userId: string, householdId: string): HouseholdJournalIndex {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Household journal index is malformed.');
+  const index = value as Partial<HouseholdJournalIndex>;
+  if (index.version !== 1 || index.userId !== userId || index.householdId !== householdId || !Array.isArray(index.membershipVersions)) {
+    throw new Error('Household journal index belongs to a different context.');
+  }
+  const versions = index.membershipVersions;
+  if (versions.some(version => typeof version !== 'string' || !/^[1-9][0-9]*$/.test(version))) {
+    throw new Error('Household journal index contains an invalid membership version.');
+  }
+  if (new Set(versions).size !== versions.length) throw new Error('Household journal index contains duplicate versions.');
+  return index as HouseholdJournalIndex;
+}
+
+async function ensureV2JournalVersionIndexed(store: KeyValueStore, context: HouseholdContext): Promise<void> {
+  const c = parseHouseholdContext(context.userId, context);
+  const key = pendingJournalV2IndexKey(c.userId, c.householdId);
+  await lock(store, key, async () => {
+    const raw = await store.getItem(key);
+    const index = raw === null
+      ? { version: 1 as const, userId: c.userId, householdId: c.householdId, membershipVersions: [] as string[] }
+      : validateHouseholdJournalIndex(JSON.parse(raw), c.userId, c.householdId);
+    if (!index.membershipVersions.includes(c.membershipVersion)) {
+      index.membershipVersions.push(c.membershipVersion);
+      // Register before writing any command so an interrupted write remains discoverable.
+      await store.setItem(key, JSON.stringify(index));
+    }
+  });
+}
+
+/** Read every indexed membership-version journal for one household without mutation. */
+export async function preflightHouseholdPendingJournalsV2(
+  store: KeyValueStore,
+  userId: string,
+  householdId: string,
+  currentMembershipVersion: string,
+) {
+  const context = parseHouseholdContext(userId, { userId, householdId, role: 'viewer', membershipVersion: currentMembershipVersion });
+  const indexKey = pendingJournalV2IndexKey(context.userId, context.householdId);
+  const rawIndex = await store.getItem(indexKey);
+  if (rawIndex === null) {
+    return { indexPresent: false, membershipVersions: [] as string[], commands: [] as HouseholdPendingCommand[], staleVersions: [] as string[], unresolved: 0, dispatched: 0, uncertain: 0 };
+  }
+
+  const index = validateHouseholdJournalIndex(JSON.parse(rawIndex), context.userId, context.householdId);
+  const commands: HouseholdPendingCommand[] = [];
+  for (const membershipVersion of index.membershipVersions) {
+    const key = pendingJournalV2Key({ ...context, membershipVersion });
+    const raw = await store.getItem(key);
+    if (raw === null) continue;
+    const envelope = JSON.parse(raw) as Partial<HouseholdEnvelope>;
+    if (envelope.version !== 2 || envelope.userId !== context.userId || envelope.householdId !== context.householdId
+        || envelope.membershipVersion !== membershipVersion || !Array.isArray(envelope.commands)) {
+      throw new Error('A household journal envelope is malformed or mismatched; preserve it for recovery.');
+    }
+    for (const command of envelope.commands) {
+      validateCommand(command, context.userId);
+      if (command.householdId !== context.householdId || command.membershipVersion !== membershipVersion) {
+        throw new Error('A household journal command is bound to a different context; preserve it for recovery.');
+      }
+      commands.push(clone(command));
+    }
+  }
+
+  return {
+    indexPresent: true,
+    membershipVersions: [...index.membershipVersions],
+    staleVersions: index.membershipVersions.filter(version => version !== context.membershipVersion),
+    commands,
+    unresolved: commands.filter(command => !command.resolution).length,
+    dispatched: commands.filter(command => command.dispatchState === 'dispatched').length,
+    uncertain: commands.filter(command => command.dispatchState === 'uncertain' || command.failure?.kind === 'uncertain').length,
+  };
+}
+
+/** Explicitly bound to one verified context; this API never reads or migrates v1. */
+export function createPendingJournalV2(store: KeyValueStore, context: HouseholdContext) {
+  const c = parseHouseholdContext(context?.userId, context);
+  const key = pendingJournalV2Key(c);
+  const validate = (command: HouseholdPendingCommand) => {
+    validateCommand(command, c.userId);
+    if (command.householdId !== c.householdId || command.membershipVersion !== c.membershipVersion) {
+      throw new Error('Command household or membership version does not match the journal context.');
+    }
+  };
+  let adapters = v2Adapters.get(store);
+  if (!adapters) { adapters = new Map(); v2Adapters.set(store, adapters); }
+  let adapter = adapters.get(key);
+  if (!adapter) {
+    const check = (value: HouseholdEnvelope) => {
+      if (!value || value.version !== 2 || value.userId !== c.userId || value.householdId !== c.householdId || value.membershipVersion !== c.membershipVersion || !Array.isArray(value.commands)) {
+        throw new Error('Pending journal context or membership version mismatch.');
+      }
+      value.commands.forEach(validate);
+      return value;
+    };
+    adapter = {
+      async getItem() {
+        const raw = await store.getItem(key);
+        if (raw === null) return null;
+        const value = check(JSON.parse(raw));
+        return JSON.stringify({ version: 1, userId: c.userId, commands: value.commands });
+      },
+      async setItem(_ignored, raw) {
+        const value = JSON.parse(raw) as JournalEnvelope;
+        validateEnvelope(value, c.userId);
+        const envelope: HouseholdEnvelope = { version: 2, userId: c.userId, householdId: c.householdId, membershipVersion: c.membershipVersion, commands: value.commands as HouseholdPendingCommand[] };
+        check(envelope);
+        await store.setItem(key, JSON.stringify(envelope));
+      },
+      async removeItem() { throw new Error('Removing the journal envelope is not supported.'); },
+    };
+    adapters.set(key, adapter);
+  }
+  const journal = createPendingJournal(adapter);
+  return {
+    async save(command: HouseholdPendingCommand) { await ensureV2JournalVersionIndexed(store, c); validate(command); return journal.save(command) as Promise<HouseholdPendingCommand>; },
+    async list() { await ensureV2JournalVersionIndexed(store, c); return journal.list(c.userId) as Promise<HouseholdPendingCommand[]>; },
+    async get(commandId: string) { await ensureV2JournalVersionIndexed(store, c); return journal.get(c.userId, commandId) as Promise<HouseholdPendingCommand | undefined>; },
+    async update(commandId: string, patch: Partial<Omit<HouseholdPendingCommand, 'commandId' | 'kind' | 'userId' | 'householdId' | 'membershipVersion' | 'createdAt' | 'expectedVersions'>>) {
+      if ('userId' in patch || 'householdId' in patch || 'membershipVersion' in patch) throw new Error('Cannot change command context.');
+      await ensureV2JournalVersionIndexed(store, c);
+      return journal.update(c.userId, commandId, patch) as Promise<HouseholdPendingCommand>;
+    },
+    async remove(commandId: string) { await ensureV2JournalVersionIndexed(store, c); return journal.remove(c.userId, commandId); },
+    async summarize() { await ensureV2JournalVersionIndexed(store, c); return journal.summarize(c.userId); },
+    async markRejected(commandId: string, message: string) { await ensureV2JournalVersionIndexed(store, c); return journal.markRejected(c.userId, commandId, message); },
+    async acceptServerState(commandId: string, evidence: ReadbackEvidence, acknowledged: boolean) { await ensureV2JournalVersionIndexed(store, c); return journal.acceptServerState(c.userId, commandId, evidence, acknowledged); },
+    async evaluateReadback(commandId: string, evidence: ReadbackEvidence) { await ensureV2JournalVersionIndexed(store, c); return journal.evaluateReadback(c.userId, commandId, evidence); },
+  };
+}
+
+/** Inspect legacy evidence without assigning a household or changing stored bytes. */
+export async function preflightLegacyPendingJournal(store: KeyValueStore, userId: string, options: { key?: (userId: string) => string } = {}) {
+  // Validate the authenticated identifier using the shared context key primitive.
+  householdStorageKey(userId, 'legacy-preflight', 'pending-journal');
+  const commands = await createPendingJournal(store, options).list(userId);
+  return {
+    commands: commands.filter(command => !command.resolution || command.failure?.kind === 'rejected' || command.failure?.kind === 'uncertain' || command.dispatchState === 'dispatched' || command.dispatchState === 'uncertain'),
+    unresolved: commands.filter(command => !command.resolution).length,
+    rejected: commands.filter(command => command.failure?.kind === 'rejected').length,
+    dispatched: commands.filter(command => command.dispatchState === 'dispatched').length,
+    uncertain: commands.filter(command => command.dispatchState === 'uncertain' || command.failure?.kind === 'uncertain').length,
+  };
+}
+

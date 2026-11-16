@@ -1,0 +1,186 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><style>
+#hero-studies{font-family:Arial,sans-serif;color:var(--foreground);}
+#hero-studies .study-controls{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:16px}
+#hero-studies .study-controls button{font:500 13px Arial;padding:11px 14px;border-radius:20px;border:1px solid var(--border);background:var(--card);color:var(--foreground);cursor:pointer}
+#hero-studies .study-controls button[aria-pressed=true]{background:#0051FB;color:white;border-color:#0051FB}
+#hero-studies .stage{max-width:430px;margin:auto;position:relative;container-type:inline-size;border-radius:16px;overflow:hidden;box-shadow:0 10px 32px #070d5b18}
+#hero-studies .source{display:block;width:100%;height:auto}
+#hero-studies .hero{box-sizing:border-box;position:absolute;left:3.87%;top:15.2%;width:92.26%;height:30.4%;border-radius:4.6cqw;padding:4.5cqw;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;isolation:isolate;font-family:Arial,sans-serif}
+#hero-studies .topline{display:flex;justify-content:space-between;align-items:center;gap:8px}
+#hero-studies .title{font-size:5.05cqw;font-weight:700;letter-spacing:-.13cqw;white-space:nowrap}
+#hero-studies .info{font-size:3.1cqw;opacity:.7;margin-left:1cqw}
+#hero-studies .badge{font-size:2.9cqw;font-weight:600;letter-spacing:.1cqw;border-radius:20px;padding:1.5cqw 2.4cqw;white-space:nowrap}
+#hero-studies .scope{font-size:3.55cqw;margin-top:2.9cqw}
+#hero-studies .date-row{display:flex;align-items:center;justify-content:space-between;gap:2cqw;margin:1.8cqw 0 0}
+#hero-studies .date{font-size:8.4cqw;letter-spacing:-.38cqw;font-weight:750;white-space:nowrap}
+#hero-studies .countdown{padding-left:4.3cqw;min-width:17.5cqw;border-left:1px solid #ffffff40}
+#hero-studies .count{font-size:7.5cqw;line-height:1.05;font-weight:700;letter-spacing:-.2cqw}
+#hero-studies .unit{font-size:3.2cqw;line-height:1.38;font-weight:500;letter-spacing:.1cqw;margin-top:1cqw}
+#hero-studies .segments{display:flex;gap:1.4cqw;height:2.4cqw}
+#hero-studies .segments span{flex:1;background:var(--track);border-radius:20px;overflow:hidden}
+#hero-studies .segments span:nth-child(-n+2){background:var(--fill)}
+#hero-studies .segments span:nth-child(3){background:linear-gradient(90deg,var(--fill) 22%,var(--track) 22%)}
+#hero-studies .footer{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:3.45cqw;white-space:nowrap}
+#hero-studies .strategy{font-weight:700}
+#hero-studies .decoration{position:absolute;z-index:-1;pointer-events:none}
+#hero-studies .blue{background:linear-gradient(125deg,#070D5B 0%,#0739BF 55%,#0051FB 100%);color:#fff;border:1px solid #0051FB;box-shadow:0 8px 18px #0051fb28;--fill:#27EEE9;--track:#ffffff35}
+#hero-studies .blue .scope,.blue .footer{color:#d8eaff}
+#hero-studies .blue .badge{background:#ffffff20;color:#fff;border:1px solid #ffffff40}
+#hero-studies .blue .strategy{color:#98EDC1}
+#hero-studies .blue .decoration{width:58cqw;height:58cqw;right:-20cqw;top:-29cqw;border-radius:50%;border:7cqw solid #abdffd12}
+#hero-studies .sky{background:linear-gradient(122deg,#effaff 0%,#d8efff 58%,#ABDFFD 100%);color:#070D5B;border:1px solid #91cce9;box-shadow:0 7px 18px #0051fb10;--fill:#0051FB;--track:#070d5b17}
+#hero-studies .sky .scope,.sky .footer{color:#38516d}
+#hero-studies .sky .badge{background:#ffffffb0;color:#244f91;border:1px solid #fff}
+#hero-studies .sky .countdown{border-color:#070d5b26}
+#hero-studies .sky .strategy{color:#0051FB}
+#hero-studies .sky .decoration{width:63cqw;height:42cqw;right:-17cqw;bottom:-24cqw;border-radius:50%;background:#98edc175;filter:blur(14px)}
+#hero-studies .white{background:#fff;color:#23232b;border:1px solid #cbd8fa;border-top:1.3cqw solid #0051FB;box-shadow:0 7px 22px #0051fb12;padding-top:3.3cqw;--fill:#0051FB;--track:#dce4ef}
+#hero-studies .white .scope,.white .footer{color:#656573}
+#hero-studies .white .badge{background:#eef4ff;color:#0051FB;border:1px solid #dbe6ff}
+#hero-studies .white .date{color:#070D5B}
+#hero-studies .white .countdown{border:0;background:#eef5ff;border-radius:3.2cqw;padding:2cqw 2.5cqw;min-width:16cqw;box-sizing:border-box}
+#hero-studies .white .count{color:#0051FB;font-size:7cqw}
+#hero-studies .white .unit{font-size:2.9cqw;color:#3d5278}
+#hero-studies .white .strategy{color:#0051FB}
+#hero-studies .white .decoration{display:none}
+#hero-studies .sheen{position:absolute;inset:-80% -70%;z-index:2;pointer-events:none;opacity:0;background:linear-gradient(110deg,transparent 40%,#ffffff24 49%,transparent 58%);transform:translateX(-60%)}
+#hero-studies .playing .sheen{animation:hero-sweep 1600ms ease-in-out 1}
+#hero-studies .playing.sky .decoration{animation:sky-drift 2200ms ease-out 1}
+#hero-studies .playing.white{animation:white-lift 900ms ease-out 1}
+#hero-studies .playing.sky .sheen,#hero-studies .playing.white .sheen{animation:none}
+@keyframes hero-sweep{15%{opacity:1}85%{opacity:1}100%{opacity:0;transform:translateX(60%)}}
+@keyframes sky-drift{0%{transform:translate(-10cqw,4cqw)}100%{transform:translate(0,0)}}
+@keyframes white-lift{0%{transform:translateY(5px);box-shadow:0 2px 4px #0051fb08}100%{transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){#hero-studies .playing,#hero-studies .playing *{animation:none!important}}
+#hero-studies .motion-row{display:flex;align-items:center;justify-content:center;gap:12px;margin:14px 0 4px}
+#hero-studies .motion-row button{background:var(--card);color:var(--foreground);border:1px solid var(--border);padding:10px 15px;border-radius:20px;font:500 13px Arial;cursor:pointer}
+#hero-studies .motion-label{font:12px Arial;color:var(--muted-foreground)}
+</style>
+<div id="hero-studies">
+ <div class="study-controls" role="group" aria-label="Home hero design">
+  <button aria-pressed="true" data-style="blue">Signature Plus</button>
+  <button aria-pressed="false" data-style="horizon">Blue Horizon</button>
+  <button aria-pressed="false" data-style="halo">Blue Halo</button>
+ </div>
+ <div class="stage original-stage" aria-label="Home screen concept with redesigned estimate card">
+  <img class="source" src="C:/Users/lawre/.t3/userdata/attachments/049903aa-e87d-460e-a2e3-8b0a9877939a-19190827-3ad9-4ac7-a424-fc65df4425a3.jpg" alt="Existing BitLess Home screen supplied by the owner. Surrounding layout remains unchanged.">
+  <section class="hero blue" aria-label="Debt-free estimate visual study">
+   <div class="decoration" aria-hidden="true"></div><div class="contour" aria-hidden="true"></div><div class="sheen" aria-hidden="true"></div>
+   <div><div class="topline"><div class="title">Debt-Free Date <span class="info">ⓘ</span></div><span class="badge">ESTIMATE</span></div><div class="scope">Cards / Loans &amp; Auto</div></div>
+   <div class="date-row"><div class="date">DEC <span class="year">2027</span></div><div class="countdown"><div class="count">13</div><div class="unit">MONTHS<br>TO GO</div></div></div>
+   <div class="segments" aria-label="Existing seven-segment progress indicator, illustrative values from supplied screenshot"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+   <div class="footer"><span>Keep building your freedom.</span><span class="strategy">Snowball ›</span></div>
+  </section>
+ </div>
+ <div class="stage horizon-stage" aria-label="Blue Horizon full Home design" hidden>
+  <div class="horizon-home">
+   <div class="horizon-top">
+    <div class="h-orbit" aria-hidden="true"></div><div class="h-light" aria-hidden="true"></div>
+    <div class="h-header"><div class="h-brand"><span class="logo-crop"><img src="C:/Users/lawre/.t3/userdata/attachments/049903aa-e87d-460e-a2e3-8b0a9877939a-19190827-3ad9-4ac7-a424-fc65df4425a3.jpg" alt="BitLess logo"></span>BitLess</div><span class="h-settings" aria-label="Settings preview">⚙</span></div>
+    <div class="h-greeting">Hi, Lawrence</div>
+    <div class="h-eyebrow">DEBT-FREE DATE <span>ESTIMATE</span></div>
+    <div class="h-date">December<span>2027<span class="h-count"><b>13</b> months to go</span></span></div>
+    <div class="h-scope">Cards / Loans &amp; Auto</div>
+    <div class="h-track" aria-label="Illustrative existing progress"><span></span></div>
+    <div class="h-hero-footer"><span>Keep building your freedom.</span><span class="h-strategy">Snowball ↗</span></div>
+   </div>
+   <div class="h-content">
+    <div class="h-section"><strong>Your accounts</strong><span>Cards &amp; Loans · 9</span></div>
+    <div class="h-accounts">
+     <div class="h-account-main"><div><div class="h-muted">Current balance</div><div class="h-balance">$44,108<span>.71</span></div></div><div class="h-ring"><div>−17%<small>change</small></div></div></div>
+     <div class="h-reference"><span>vs entered reference</span><strong>−$9,252<span>.01</span></strong></div>
+     <div class="h-pages" aria-label="Cards and Loans selected, Home and Auto also available"><b></b><i></i><i></i></div>
+    </div>
+    <div class="h-section h-strategy-heading"><strong>Payoff strategy</strong><span>See all ›</span></div>
+    <div class="h-next"><div class="h-next-top"><span class="h-tag">SNOWBALL</span><span>Cards &amp; Loans</span></div><div class="h-next-main"><span class="h-rank">1</span><div><strong>Discover</strong><span>Next projected payoff</span></div><div class="h-payoff">Dec<span>2026</span></div></div></div>
+   </div>
+   <div class="h-nav"><img src="C:/Users/lawre/.t3/userdata/attachments/049903aa-e87d-460e-a2e3-8b0a9877939a-19190827-3ad9-4ac7-a424-fc65df4425a3.jpg" alt="Existing Home, Accounts, Transactions, Budget and Progress navigation"></div>
+  </div>
+ </div>
+ <div class="motion-row"><button id="hero-replay">Replay subtle motion</button><span class="motion-label" aria-live="polite">Soft sweep across the blue surface</span></div>
+</div>
+<style>
+#hero-studies [hidden]{display:none!important}
+#hero-studies .stage{overflow:visible;box-shadow:none;border-radius:18px}
+#hero-studies .source{border-radius:18px}
+#hero-studies .blue{background:radial-gradient(ellipse at 100% 0%,#0064ff 0%,transparent 60%),linear-gradient(125deg,#070D5B,#0051FB);border:1px solid #276cff;box-shadow:0 9px 16px #0051fb24,inset 0 1px 0 #ffffff40}
+#hero-studies .blue .decoration{width:70cqw;height:70cqw;right:-34cqw;top:-36cqw;border-width:1px;border-color:#abdffd44;box-shadow:0 0 0 5cqw #abdffd09,0 0 0 10cqw #abdffd08}
+#hero-studies .blue .countdown{padding:1.4cqw 2.5cqw;min-width:17cqw;box-sizing:border-box;border:1px solid #ffffff24;border-radius:3cqw;background:#070d5b25}
+#hero-studies .blue .badge{border-color:#abdffd65;background:#ffffff16}
+#hero-studies .blue .year{font-weight:500}
+#hero-studies .blue .strategy{background:#ffffff16;border:1px solid #ffffff24;border-radius:18px;padding:1.4cqw 2cqw}
+#hero-studies .hero .contour{position:absolute;inset:0;z-index:-1;pointer-events:none}
+#hero-studies .halo{color:#fff;--fill:#27EEE9;--track:#ffffff28;border:1.3px solid transparent;background:linear-gradient(128deg,#070D5B 0%,#0637ac 58%,#0051FB 100%) padding-box,linear-gradient(125deg,#f5fcff 0%,#ABDFFD 15%,#0051FB 39%,#27EEE9 67%,#d8f4ff 83%,#0051FB 100%) border-box;box-shadow:0 12px 20px -7px #070d5b65,0 5px 12px #0051fb28,0 0 16px #27eee916,inset 0 1px 0 #ffffff65}
+#hero-studies .halo .scope,#hero-studies .halo .footer{color:#d8eaff}
+#hero-studies .halo .badge{background:linear-gradient(130deg,#ffffff30,#ffffff0a);color:#e9f9ff;border:1px solid #abdffd70;box-shadow:inset 0 1px 0 #ffffff40}
+#hero-studies .halo .strategy{color:#98EDC1}
+#hero-studies .halo .decoration{width:79cqw;height:65cqw;right:-35cqw;top:-31cqw;border:1px solid #abdffd55;border-radius:50%;transform:rotate(-28deg);box-shadow:0 0 0 4cqw #abdffd08,0 0 0 8cqw #abdffd07,0 0 0 12cqw #abdffd06}
+#hero-studies .halo .contour{background:linear-gradient(135deg,transparent 30%,#abdffd0d 39%,#ffffff12 40%,transparent 41%,transparent 68%,#27eee910 100%)}
+#hero-studies .halo .date{color:#fff;text-shadow:0 1px 0 #abdffd55,0 0 16px #abdffd20}
+#hero-studies .halo .countdown{border-color:#abdffd50}
+#hero-studies .halo.playing .sheen{animation:hero-sweep 2800ms cubic-bezier(.25,.1,.25,1) 1}
+#hero-studies .halo.playing .decoration{animation:halo-orbit 3s ease-out 1}
+@keyframes halo-orbit{0%{transform:rotate(-38deg) translate(1cqw,-1cqw)}100%{transform:rotate(-28deg)}}
+#hero-studies .horizon-home{font-family:Arial,sans-serif;background:#f4f7fd;border-radius:18px;overflow:hidden;color:#070d5b}
+#hero-studies .horizon-top{position:relative;isolation:isolate;overflow:hidden;background:radial-gradient(ellipse at 100% 90%,#0051FB 0%,transparent 67%),linear-gradient(135deg,#070D5B,#08268e);color:#fff;padding:5cqw 6cqw 8cqw;border-radius:0 0 8cqw 8cqw}
+#hero-studies .h-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:7cqw}
+#hero-studies .h-brand{font-size:6cqw;font-weight:700;display:flex;align-items:center;gap:2.1cqw;letter-spacing:-.25cqw}
+#hero-studies .logo-crop{display:block;width:6cqw;height:6cqw;border-radius:1.4cqw;overflow:hidden;position:relative;background:#0051FB}
+#hero-studies .logo-crop img{position:absolute;width:100cqw;max-width:none;left:-3.85cqw;top:-4.9cqw}
+#hero-studies .h-settings{display:grid;place-items:center;width:9cqw;height:9cqw;border:1px solid #abdffd40;background:#ffffff0c;border-radius:50%;font-size:5.5cqw;color:#e3f7ff}
+#hero-studies .h-greeting{font-size:4.1cqw;color:#d0e7ff;margin-bottom:6.5cqw}
+#hero-studies .h-eyebrow{font-size:3cqw;letter-spacing:.4cqw;display:flex;align-items:center;gap:3cqw;font-weight:600;color:#d0e7ff}
+#hero-studies .h-eyebrow span{font-size:2.4cqw;letter-spacing:.2cqw;padding:1cqw 1.8cqw;border:1px solid #abdffd50;border-radius:20px}
+#hero-studies .h-date{font-size:12.7cqw;letter-spacing:-.7cqw;line-height:1.06;font-weight:700;margin:4cqw 0 3cqw}
+#hero-studies .h-date>span{display:flex;align-items:center;gap:5cqw;font-weight:500}
+#hero-studies .h-count{display:inline-flex;align-items:center;gap:1.2cqw;font-size:3.15cqw;letter-spacing:0;border-radius:20px;border:1px solid #abdffd50;background:#ffffff0e;padding:1.8cqw 2.5cqw;white-space:nowrap}
+#hero-studies .h-count b{font-size:4.8cqw;font-weight:600;color:#98EDC1}
+#hero-studies .h-scope{font-size:3.4cqw;color:#cce4ff;margin-bottom:7cqw}
+#hero-studies .h-track{height:1.4cqw;background:#ffffff25;border-radius:10px;overflow:hidden;margin-bottom:4cqw}
+#hero-studies .h-track span{display:block;width:31.7%;height:100%;background:linear-gradient(90deg,#27EEE9,#98EDC1);border-radius:10px}
+#hero-studies .h-hero-footer{display:flex;justify-content:space-between;align-items:center;font-size:3.15cqw;color:#d5e9ff;gap:1cqw}
+#hero-studies .h-strategy{font-weight:600;color:#98EDC1;white-space:nowrap}
+#hero-studies .h-orbit{position:absolute;z-index:-1;width:100cqw;height:65cqw;border-radius:50%;border:1px solid #abdffd30;right:-40cqw;top:20cqw;transform:rotate(-45deg);box-shadow:0 0 0 7cqw #abdffd04,0 0 0 15cqw #abdffd04,0 0 0 23cqw #abdffd03}
+#hero-studies .h-light{position:absolute;right:-28cqw;top:29cqw;width:70cqw;height:70cqw;background:radial-gradient(circle,#27eee930,transparent 68%);z-index:-1}
+#hero-studies .h-content{padding:7cqw 5cqw 5cqw}
+#hero-studies .h-section{display:flex;align-items:center;justify-content:space-between;gap:2cqw;padding:0 1cqw;margin-bottom:3.5cqw}
+#hero-studies .h-section strong{font-size:4.7cqw;letter-spacing:-.13cqw}
+#hero-studies .h-section>span{font-size:3cqw;color:#596681}
+#hero-studies .h-accounts{background:#fff;border-radius:5cqw;padding:5cqw;box-shadow:0 3px 14px #070d5b06;border:1px solid #e4ebf7}
+#hero-studies .h-account-main{display:flex;align-items:center;justify-content:space-between;gap:3cqw}
+#hero-studies .h-muted{font-size:3.4cqw;color:#596681;margin-bottom:1.7cqw}
+#hero-studies .h-balance{font-size:7.7cqw;letter-spacing:-.35cqw;font-weight:700;white-space:nowrap}
+#hero-studies .h-balance>span{font-size:4.5cqw;letter-spacing:-.15cqw}
+#hero-studies .h-ring{width:18cqw;height:18cqw;flex-shrink:0;border-radius:50%;background:conic-gradient(#087f72 0% 17%,#e7edf4 17% 100%);display:grid;place-items:center;transform:rotate(-30deg)}
+#hero-studies .h-ring>div{width:14cqw;height:14cqw;border-radius:50%;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:4.8cqw;font-weight:700;transform:rotate(30deg)}
+#hero-studies .h-ring small{font-size:2.5cqw;color:#596681;font-weight:400;margin-top:.4cqw}
+#hero-studies .h-reference{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #edf1f7;padding-top:3.5cqw;margin-top:4cqw;font-size:3.25cqw;color:#596681}
+#hero-studies .h-reference strong{font-size:4.6cqw;letter-spacing:-.1cqw;color:#087647}
+#hero-studies .h-reference strong span{font-size:3.1cqw}
+#hero-studies .h-pages{display:flex;justify-content:center;gap:1cqw;margin-top:4cqw}
+#hero-studies .h-pages>*{height:1cqw;width:1cqw;background:#d9dfed;border-radius:8px}
+#hero-studies .h-pages>b{width:4.5cqw;background:#0051FB}
+#hero-studies .h-strategy-heading{margin-top:6.5cqw}
+#hero-studies .h-strategy-heading>span{color:#0051FB;font-weight:600}
+#hero-studies .h-next{border-radius:5cqw;padding:4cqw 5cqw;background:#e7effe;border:1px solid #d6e3fc}
+#hero-studies .h-next-top{display:flex;justify-content:space-between;align-items:center;font-size:3cqw;color:#596681;margin-bottom:3.5cqw}
+#hero-studies .h-tag{font-size:2.5cqw;font-weight:700;letter-spacing:.2cqw;color:#0051FB}
+#hero-studies .h-next-main{display:flex;align-items:center;gap:3cqw}
+#hero-studies .h-rank{display:grid;place-items:center;background:#fff;border-radius:3cqw;width:9cqw;height:10cqw;font-size:4.5cqw;color:#0051FB}
+#hero-studies .h-next-main>div:nth-child(2){flex:1;display:flex;flex-direction:column;gap:1.3cqw}
+#hero-studies .h-next-main strong{font-size:4.5cqw;letter-spacing:-.1cqw}
+#hero-studies .h-next-main>div:nth-child(2)>span{font-size:2.8cqw;color:#596681}
+#hero-studies .h-payoff{font-size:4.5cqw;font-weight:600;color:#0051FB;display:flex;flex-direction:column;align-items:flex-end}
+#hero-studies .h-payoff span{font-size:3.2cqw;color:#596681;font-weight:400;margin-top:1cqw}
+#hero-studies .h-nav{position:relative;height:15.4cqw;overflow:hidden;background:white}
+#hero-studies .h-nav img{position:absolute;bottom:0;left:0;width:100%;max-width:none}
+#hero-studies .horizon-home.playing .h-orbit{animation:horizon-orbit 3s ease-out 1}
+#hero-studies .horizon-home.playing .h-light{animation:horizon-light 3s ease-out 1}
+@keyframes horizon-orbit{0%{transform:rotate(-60deg) translateY(5cqw)}100%{transform:rotate(-45deg)}}
+@keyframes horizon-light{0%{transform:translate(-8cqw,5cqw);opacity:.4}100%{transform:translate(0,0);opacity:1}}
+@media(prefers-reduced-motion:reduce){#hero-studies .playing,#hero-studies .playing *{animation:none!important}}
+</style>
+<script>
+(()=>{const root=document.getElementById('hero-studies');const hero=root.querySelector('.hero');const original=root.querySelector('.original-stage');const horizon=root.querySelector('.horizon-stage');const home=root.querySelector('.horizon-home');const label=root.querySelector('.motion-label');let selected='blue';const descriptions={blue:'Soft sweep across the blue surface',horizon:'Slow orbital light behind the date',halo:'Metallic sheen with a gentle orbital shift'};root.querySelectorAll('[data-style]').forEach(button=>button.addEventListener('click',()=>{selected=button.dataset.style;root.querySelectorAll('[data-style]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));original.hidden=selected==='horizon';horizon.hidden=selected!=='horizon';hero.className='hero '+(selected==='horizon'?'blue':selected);home.classList.remove('playing');label.textContent=descriptions[selected]}));root.querySelector('#hero-replay').addEventListener('click',()=>{const target=selected==='horizon'?home:hero;target.classList.remove('playing');void target.offsetWidth;target.classList.add('playing')});})();
+</script>
+</body></html>

@@ -1,0 +1,555 @@
+﻿==================================================
+FILE: account-detail.png
+==================================================
+[54, 107] 4:44
+[221, 171] Accounts
+[493, 226] Chase
+[566, 226] Credit card
+[732, 184] Overview
+[945, 113] CURRENT BALANCE
+[736, 588] Transactions
+[522, 1284] x
+[735, 1106] Detail
+[1038, 117] $10,025.00
+[1251, 113] 43% below adjusted reference O
+[1504, 106] APR
+[1568, 107] 24.250/0
+[1793, 119] Due day
+[1930, 119] Estimated payoff
+[2070, 118] Credit limit
+[2269, 60] Balance history
+[1504, 790] Minimum / month
+[1561, 790] $189.45
+[1790, 1246] 2nd
+[1931, 1125] Jun 2027
+[2065, 1083] $20,000.00
+[2268, 1284] O
+[2518, 689] 000
+[2627, 447] No statement history
+[2722, 367] Add a statement to begin your history.
+[2957, 594] Edit account
+==================================================
+FILE: accounts-light.png
+==================================================
+[54, 107] 4:44
+[221, 171] Accounts
+[392, 291] Accounts
+[626, 113] TOTAL BALANCE
+[717, 117] $371 ,667.99
+[875, 113] 4 accounts
+[1094, 112] Accounts
+[1322, 124] Q Search debts
+[1526, 114] CARDS & LOANS
+[1644, 282] Chase
+[1718, 282] 24.25% APR Est. Jun 2027
+[1870, 284] Discover
+[1943, 282] 23.45% APR Est. Dec 2028
+[2122, 115] HOME & AUTO
+[2242, 280] Auto Loan
+[2314, 282] 3.451% APR Est. Jan 2029
+[2467, 284] Mortgage loan
+[396, 967] Strategy
+[1097, 870] All categories
+[1327, 1020] Name
+[1521, 1052] $39,1 31.99
+[1667, 983] $10,025.00
+[1892, 983] $29,106.99
+[2117, 1028] $332,536m
+[2263, 983] $20,104.00
+[2606, 465] + Add Debt Account
+[2850, 505] Accounts
+==================================================
+FILE: accounts.png
+==================================================
+[54, 107] 4:38
+[221, 171] Accounts
+[392, 291] Accounts
+[626, 113] TOTAL BALANCE
+[717, 117] $371 ,667.99
+[875, 113] 4 accounts
+[1094, 112] Accounts
+[1322, 124] Q Search debts
+[1526, 114] CARDS & LOANS
+[1644, 282] Chase
+[1718, 282] 24.25% APR Est. Jun 2027
+[1870, 284] Discover
+[1943, 282] 23.45% APR Est. Dec 2028
+[2122, 115] HOME & AUTO
+[2242, 280] Auto Loan
+[2314, 282] 3.451% APR Est. Jan 2029
+[2467, 284] Mortgage loan
+[396, 967] Strategy
+[1097, 870] All categories
+[1327, 1020] Name
+[1521, 1052] $39,1 31.99
+[1667, 983] $10,025.00
+[1892, 983] $29,106.99
+[2117, 1028] $332,536m
+[2263, 983] $20,104.00
+[2606, 465] + Add Debt Account
+[2850, 505] Accounts
+==================================================
+FILE: add-transaction.png
+==================================================
+[54, 107] 4:45 IO
+[403, 56] Add transaction
+[585, 59] Payee or Description (optional)
+[727, 102] Add a note (optional)
+[879, 57] Transaction date *
+[1022, 103] 2026-1 1-12
+[1188, 56] Applies to payment cycle (optional)
+[1324, 113] No due cycle
+[1494, 57] Amount *
+[1637, 104] 0.00
+[1805, 58] Category *
+[1941, 120] v Payment
+[2126, 57] Target Debt Account *
+[2260, 207] Auto Loan
+[2496, 96] PAYMENT BREAKDOWN (OPTIONAL)
+[2557, 97] If unknown, full payment is recorded in cashflow while loan
+[2613, 97] principal remains unchanged.
+[2697, 97] Principal reduction
+[2800, 142] 0.00
+[2930, 97] Interest paid
+[3031, 142] 0.00
+[405, 1287] x
+==================================================
+FILE: budget.png
+==================================================
+[54, 107] 4:39
+[218, 175] Budget
+[445, 175] hthly Income
+[558, 121] $8,000.00
+[858, 119] Budget
+[917, 119] $6,436.44
+[1148, 163] Tracked debt-to-income
+[878, 802] Free Cash
+[552, 1202] Edit
+[878, 1224] free
+[941, 802] $1 ,563.56
+[1142, 1119] 32.2%
+[1223, 163] $3,297.45 in listed monthly minimums + $10,250.20 gross
+[1282, 164] monthly income. Tracked accounts only.
+[1502, 119] Income sources
+[1733, 116] Budget breakdown
+[1739, 907] < Nov 2026
+[1871, 115] Purchases follow the selected month. Income, bills and debt
+[1929, 114] commitments use current settings.
+[2051, 262] Debt payments
+[2063, 631] 25%
+[2117, 261] Card minimums + extra
+[2330, 262] Housing & Rent
+[2341, 642] 46%
+[2397, 261] 3 active bills
+[2072, 1026] $2,039.45
+[2350, 1026] $3,649.00
+[2606, 422] + Add Monthly Expense
+==================================================
+FILE: home-light.png
+==================================================
+[54, 107] 4:46
+[222, 172] BitLess
+[425, 61] HV'JdOnTkNowM3
+[741, 125] DEBT-FREE ESTIMATE
+[730, 622] O
+[954, 124] Jan 2029
+[1217, 152] 26 months to go
+[1543, 116] Your accounts
+[1679, 118] Cards & Loans
+[1776, 121] $39,131.99
+[1918, 118] 2 accounts
+[2039, 119] Balance change vs entered reference
+[2111, 155] $1 5,160.01 • Lower balance
+[2456, 116] Payoff strategy
+[2608, 275] Chase
+[2669, 276] Next in your plan
+[2858, 263] S Home
+[739, 1128] ESTIMATE
+[1217, 1066] Avalanche >
+[1540, 1225] O
+[2464, 1134] See all >
+[2604, 1052] $10,025.00
+[2670, 1048] Est. Jun 2027
+==================================================
+FILE: home-welcome.png
+==================================================
+[54, 107] 4:36 IO
+[222, 172] BitLess
+[425, 61] HijUdOnTkNowM3
+[741, 125] DEBT-FREE ESTIMATE O
+[954, 124] Jan 2029
+[1218, 153] 26 months to go
+[1543, 116] Your accounts
+[1679, 118] Cards & Loans
+[1776, 121] $39,131.99
+[740, 1128] ESTIMATE
+[1217, 1066] Avalanche >
+[1540, 1225] O
+[2293, 60] Good afternoon, UdOnTkNowM3
+[2435, 57] A little momentum goes a long way.
+[2588, 60] No known items need attention
+[2682, 56] You're keeping on top of your plan. Keep it up!
+[2933, 523] Continue to Home
+==================================================
+FILE: milestones.png
+==================================================
+[54, 107] 4:39
+[221, 175] Progress
+[381, 185] Overview
+[1105, 112] Your path
+[380, 620] Utilization
+[633, 483] YOUR PROGRESS
+[731, 487] 2 achievements
+[874, 486] 1 in progress • 5 locked
+[1321, 295] First payment recorded
+[1451, 294] Recorded • 2026-11-06
+[1664, 295] First $1 ,OOO.OO paydown
+[1794, 294] Recorded
+[2079, 112] NEXT UNLOCK • CURRENT GOAL
+[2167, 110] Credit utilization s 30%
+[2263, 110] Current state • not a historical award
+[2461, 116] Payoff milestones
+[2549, 115] Locked • complete history needed
+[2826, 496] a
+[2833, 675] a
+[376, 1051] Milestones
+[1102, 1228] O
+[1319, 1229] O
+[1662, 1229] O
+[2082, 1209] 60.2%
+[2850, 1063] Progress
+==================================================
+FILE: progress-dark.png
+==================================================
+[54, 107] 4:41
+[221, 175] Progress
+[377, 184] Overview
+[584, 59] BALANCE SCOPE
+[761, 246] Cards & Loans
+[825, 186] Credit cards + personal loans
+[1046, 119] BALANCE SNAPSHOT
+[1112, 118] Cards & Loans
+[1321, 118] Current balance
+[1392, 120] $39,131 .99
+[1535, 117] Adjusted reference
+[1594, 118] $54,292.00
+[1873, 115] Recorded activity
+[380, 619] Utilization
+[380, 1052] Milestones
+[577, 1284] O
+[763, 912] Home & Auto
+[826, 888] Mortgage + auto loans
+[1071, 1225] O
+[1426, 1023] 72%
+[1517, 1006] current / ref.
+[1880, 872] Current month
+[2126, 105] PAYMENTS
+[2182, 105] RECORDED
+[2258, 105] $6,444.00
+[2366, 105] 10 confirmed
+[2423, 104] entries
+[2267, 473] O
+[2083, 652] Balance reduction
+[2212, 652] Interest & fees
+[2336, 651] Other debt charges
+[2465, 652] Net balance change
+[2833, 675] a
+[2074, 1123] $5,746.00
+[2201, 1169] $100.00
+[2327, 1201] $49.99
+[2454, 1102] -$5,596.01
+[2850, 1063] Progress
+==================================================
+FILE: progress-overview.png
+==================================================
+[54, 107] 4:39
+[221, 175] Progress
+[377, 184] Overview
+[592, 59] BALANCE SCOPE
+[380, 620] Utilization
+[768, 246] Cards & Loans
+[832, 186] Credit cards + personal loans
+[1054, 119] BALANCE SNAPSHOT
+[1120, 118] Cards & Loans
+[1329, 118] Current balance
+[1399, 120] $39,131.99
+[1418, 565] 28%
+[1542, 117] Adjusted reference
+[1601, 118] $54,292.00
+[1880, 116] Recorded activity
+[380, 1052] Milestones
+[584, 1284] O
+[770, 912] Home & Auto
+[833, 888] Mortgage + auto loans
+[1078, 1225] O
+[1433, 1023] 72%
+[1524, 1006] current / ref.
+[1887, 872] Current month
+[2134, 105] PAYMENTS
+[2190, 105] RECORDED
+[2265, 105] $6,444.00
+[2374, 105] 10 confirmed
+[2430, 104] entries
+[2274, 473] O
+[2090, 652] Balance reduction
+[2219, 652] Interest & fees
+[2343, 651] Other debt charges
+[2472, 652] Net balance change
+[2833, 675] a
+[2081, 1123] $5,746.00
+[2208, 1169] $100.00
+[2334, 1201] $49.99
+[2461, 1102] -$5,596.01
+[2850, 1063] Progress
+==================================================
+FILE: scheduled.png
+==================================================
+[54, 107] 4:38
+[219, 172] Transactions
+[395, 206] History
+[648, 116] November 2026
+[395, 620] Upcoming
+[390, 1055] Scheduled
+[1509, 164] 22
+[1677, 166] 29
+[1342, 343] 16
+[1509, 341] 23
+[1673, 348] 30
+[1847, 356] Paid
+[1173, 519] 10
+[1509, 517] 24
+[1847, 530] Unpaid
+[1342, 696] 18
+[1509, 871] 26
+[1848, 750] Pending
+[1337, 1048] 20
+[1509, 1048] 27
+[1847, 991] Planned
+[1509, 1224] 28
+[2233, 1167] Show
+[2040, 116] Planned installments
+[2204, 322] Discover
+[2269, 322] Planned installments
+[2356, 175] Edit plan
+[2609, 578] Add Transaction
+[2849, 654] Transactions
+==================================================
+FILE: settings-dark.png
+==================================================
+[53, 107] 4:40
+[228, 571] Settings
+[516, 318] UdOnTkNowM3
+[589, 317] enidualceel@gmail.com
+[807, 114] PREFERENCES
+[927, 215] Theme
+[1123, 214] Accent color
+[1316, 215] Text size
+[1481, 217] Notifications
+[1562, 217] Payment & progress alerts
+[1693, 217] Payoff preferences
+[1773, 215] Strategy and extra payment
+[1918, 114] HOUSEHOLD
+[2038, 217] Members
+[2233, 216] Currency & timezone
+[2412, 114] DATA & SECURITY
+[2507, 216] Security
+[2586, 214] Account and sign-in
+[2718, 217] Backup & recovery
+[2798, 217] Export and review backups
+[2941, 114] HELP & INFORMATION
+[237, 1294] x
+[931, 1077] System
+[1123, 1104] Indigo
+[1318, 1119] 100%
+[2042, 1024] 1 member
+[2236, 1143] USD
+==================================================
+FILE: settings.png
+==================================================
+[54, 107] 4:40
+[228, 571] Settings
+[516, 318] UdOnTkNowM3
+[589, 317] enidualceel@gmail.com
+[807, 114] PREFERENCES
+[927, 215] Theme
+[1123, 214] Accent color
+[1316, 215] Text size
+[1481, 217] Notifications
+[1562, 217] Payment & progress alerts
+[1693, 217] Payoff preferences
+[1774, 216] Strategy and extra payment
+[1918, 114] HOUSEHOLD
+[2038, 217] Members
+[2234, 216] Currency & timezone
+[2412, 114] DATA & SECURITY
+[2507, 216] Security
+[2586, 215] Account and sign-in
+[2718, 217] Backup & recovery
+[2798, 217] Export and review backups
+[2941, 114] HELP & INFORMATION
+[237, 1294] x
+[931, 1077] System
+[1123, 1104] Indigo
+[1318, 1119] 100%
+[2042, 1024] 1 member
+[2236, 1143] USD
+==================================================
+FILE: strategy.png
+==================================================
+[54, 107] 4:38
+[221, 171] Accounts
+[396, 291] Accounts
+[618, 115] Debt strategy
+[620, 480] Mortgage strategy
+[824, 114] ESTIMATED PAYOFF
+[944, 114] Jan 2029
+[1122, 114] 26 months
+[1301, 56] Your method
+[1571, 102] Snowball
+[1647, 103] Smallest balance first
+[1912, 120] Extra monthly payment
+[392, 966] Strategy
+[1124, 1108] Avalanche
+[1486, 796] 000
+[1571, 786] Avalanche
+[1647, 789] Highest APR first
+[1909, 1225] O
+[2054, 116] Added to the required minimums for the active debt payoff plan.
+[2231, 187] 1450.00
+[2250, 1177] / month
+[2492, 671] Save
+[2609, 558] Add Debt Account
+[2850, 505] Accounts
+==================================================
+FILE: transaction-filters.png
+==================================================
+[54, 107] 4:45 IO
+[395, 61] Filters
+[563, 60] Period
+[697, 199] Current month
+[835, 91] O Previous month
+[989, 91] O All time
+[1171, 56] Account
+[1302, 197] All accounts
+[1441, 91] O Chase
+[1595, 91] O Discover
+[1776, 57] Transaction type
+[1908, 197] All types
+[2047, 91] O Payments
+[2201, 91] O Charges and fees
+[2355, 91] O Debit only
+[2957, 101] Apply
+[405, 1287] x
+[1287, 755] O Auto Loan
+[1441, 755] O Mortgage loan
+[1595, 755] O HOA
+[2957, 785] Cancel
+==================================================
+FILE: transactions.png
+==================================================
+[54, 107] 4:38
+[219, 172] Transactions
+[391, 205] History
+[645, 182] Payments
+[717, 118] $6,444.00
+[395, 620] Upcoming
+[394, 1055] Scheduled
+[648, 809] n Interest & fees
+[717, 800] $100.00
+[978, 124] Q Search payee or category
+[1189, 114] NOV 11
+[1326, 270] Payment to discover
+[1399, 269] Discover • payment
+[1453, 267] Applies to due cycle 2026-11-02
+[1655, 270] Payment to discover
+[1728, 269] Discover • payment
+[1924, 114] NOV 9
+[2093, 149] 000
+[2061, 270] Fee / Annual Fee
+[2134, 269] Discover • fee
+[2330, 270] Netflix
+[2406, 269] Discover • subscription
+[2460, 267] Applies to due cycle 2026-11-15
+[1190, 1127] Wednesday
+[1375, 1015] -$4,356.00 >
+[1676, 1061] -$890.00 >
+[1925, 1192] Monday
+[2082, 1082] +$50.00 >
+[2341, 1082] +$26.99 >
+[2436, 1158] Auto-Bill
+[2835, 310] a
+[2606, 485] + Add Transaction
+[2849, 654] Transactions
+==================================================
+FILE: upcoming.png
+==================================================
+[54, 107] 4:38
+[219, 172] Transactions
+[395, 206] History
+[631, 117] TO PAY
+[714, 121] $2,786.99
+[1014, 116] December 2026
+[391, 618] Upcoming
+[1308, 141] DEC
+[1714, 150] 2
+[1813, 141] DEC
+[2219, 151] 6
+[2318, 141] DEC
+[1224, 333] HOA
+[1319, 331] Checking
+[1447, 360] Unpaid
+[1728, 333] Discover minimum
+[1826, 332] Minimum payment
+[1952, 360] Unpaid
+[2237, 333] rent
+[2329, 331] Checking
+[2457, 360] Unpaid
+[2835, 310] a
+[394, 1055] Scheduled
+[677, 1143] 7 unpaid
+[766, 999] Current + next month
+[1024, 1183] 7 items
+[1218, 1162] $189.00
+[1445, 1197] Pay
+[1723, 1162] $400.00
+[1950, 1197] Pay
+[2228, 1120] $1 ,450.00
+[2455, 1197] Pay
+[2609, 578] Add Transaction
+[2849, 654] Transactions
+==================================================
+FILE: utilization.png
+==================================================
+[54, 107] 4:39
+[221, 175] Progress
+[381, 185] Overview
+[376, 619] Utilization
+[638, 119] USED CREDIT • 2 OF 2 CARDS
+[776, 117] Total limit
+[863, 118] $65,000.00
+[969, 119] Used credit
+[1056, 118] $39,131.99
+[1162, 117] Available credit
+[1249, 118] $25,868.01
+[1357, 117] Target utilization
+[1449, 118] 30%
+[1550, 117] To reach 30%
+[1635, 118] $19,631.99
+[1887, 109] Available credit
+[1962, 111] $25,868.01
+[2195, 114] Cards to review
+[2399, 335] Chase
+[2472, 335] Credit limit $20,000.00
+[2566, 175] $10,025.oo
+[2604, 645] used
+[380, 1052] Milestones
+[630, 1225] O
+[1149, 961] 60.2%
+[1244, 979] Utilization
+[1300, 1029] High
+[1889, 795] 30% of limits
+[1962, 796] $19,500.00
+[2707, 174] I imit kon nnn nn QQ nn
+[2429, 1099] High >
+[2431, 926] 50.1% •
+[2850, 1063] Progress

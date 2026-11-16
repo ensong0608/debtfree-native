@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>DebtFree Privacy Policy</title>
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+  <div class="draft">REVIEW DRAFT — owner and legal review required before publication</div>
+  <header class="header"><div class="wrap header-inner">
+    <a class="brand" href="../help/">Debt<span>Free</span></a>
+    <nav aria-label="Main navigation"><a href="../help/">Help</a><a href="../privacy/">Privacy</a><a href="../terms/">Terms</a><a href="../delete-account/">Delete account</a></nav>
+  </div></header>
+  <main class="wrap">
+    <section class="hero"><p class="eyebrow">Privacy</p><h1>Privacy Policy</h1><p>This draft describes the current DebtFree app behavior reviewed in the source code. It must be completed and checked against the release build and service settings before it is published.</p></section>
+    <p class="meta">Effective date: <span class="placeholder">[[EFFECTIVE_DATE]]</span> · App: DebtFree · Operator: <span class="placeholder">[[LEGAL_OPERATOR_NAME]]</span></p>
+
+    <h2>Information handled by DebtFree</h2>
+    <p>When you sign in, the app receives account information from Google or Apple, such as an account identifier, email address, and, when the provider supplies it, your name. The app uses Supabase Auth to create and maintain your sign-in.</p>
+    <p>You may enter household settings, currency, income and extra-payment preferences, debt-account names and terms, balances, recurring bills, transactions, and reconciliation information. These records are used to display your account, calculate estimates, and synchronize your app data.</p>
+    <p>The app also stores authentication/session material, user-scoped settings, and a per-user offline cache of financial records and pending changes on your device using the platform secure-storage API. The cache supports offline access and retrying changes that have not synchronized yet. Review the app's permissions and the final release package before publication to confirm this list is complete.</p>
+
+    <h2>How information is used</h2>
+    <ul>
+      <li>To authenticate you and keep your account available across sessions and devices.</li>
+      <li>To store, retrieve, and synchronize the household and financial information you enter.</li>
+      <li>To calculate payoff estimates and display budgets, schedules, transaction history, and progress summaries.</li>
+      <li>To respond to support and account-deletion requests.</li>
+      <li>To protect the service and investigate abuse, errors, or security incidents.</li>
+    </ul>
+
+    <h2>Service providers and sharing</h2>
+    <p>The app uses Supabase for authentication and cloud database services, and Google or Apple when you choose those providers to sign in. Their own services may process information under their terms and privacy policies. The current source review found no advertising or analytics SDK; this must be rechecked against the final dependency and SDK inventory.</p>
+    <p>DebtFree does not currently connect to financial institutions or retrieve account balances. The information in the app is entered by you. Before publication, the operator must confirm whether any information is shared with other parties for support, infrastructure, legal compliance, or security and describe those parties here: <span class="placeholder">[[CONFIRM_SHARING_PRACTICES]]</span>.</p>
+
+    <h2>Storage and security</h2>
+    <p>App records are synchronized to the configured Supabase project and associated with the signed-in account. The mobile backend currently selected by the owner is <span class="placeholder">debtfree-native-auth</span>. The app uses HTTPS for Supabase API calls and the operating system's secure-storage API for authentication material, preferences, financial cache entries, and pending changes stored on the device. No security measure can guarantee risk-free storage or transmission.</p>
+    <p>Cloud region, provider safeguards, administrative access, backups, and service logs must be verified against the active provider configuration and agreement before publication: <span class="placeholder">[[VERIFY_PROVIDER_SECURITY_AND_REGION]]</span>.</p>
+
+    <h2>Retention and deletion</h2>
+    <p>You can initiate account deletion from Settings when the account-deletion service is enabled, or use the <a href="../delete-account/">external deletion request page</a>. After a request is verified and completed, the operator intends to delete the account and its associated app records from active systems. The exact completion window and handling of service-provider backups, security logs, and legally retained information must be confirmed before publication.</p>
+    <p>Retention period and exceptions: <span class="placeholder">[[RETENTION_PERIOD]]</span> <span class="placeholder">[[RETENTION_EXCEPTIONS]]</span>.</p>
+
+    <h2>Children and age</h2>
+    <p>Age scope and handling of children's information: <span class="placeholder">[[AGE_POLICY]]</span>.</p>
+
+    <h2>Your choices and contact</h2>
+    <p>For privacy questions or data requests, contact <a href="mailto:[[PRIVACY_CONTACT_EMAIL]]"><span class="placeholder">[[PRIVACY_CONTACT_EMAIL]]</span></a>. The operator and any applicable privacy-rights process must be completed before this policy is used.</p>
+    <p>Operator: <span class="placeholder">[[LEGAL_OPERATOR_NAME]]</span><br>Privacy contact: <span class="placeholder">[[PRIVACY_CONTACT_EMAIL]]</span></p>
+  </main>
+  <footer class="footer"><div class="wrap footer-inner"><p>© <span class="placeholder">[[CURRENT_YEAR]]</span> <span class="placeholder">[[LEGAL_OPERATOR_NAME]]</span></p><p><a href="../terms/">Terms</a> · <a href="../delete-account/">Account deletion</a></p></div></footer>
+</body>
+</html>

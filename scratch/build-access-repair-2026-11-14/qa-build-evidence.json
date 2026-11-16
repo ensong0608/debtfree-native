@@ -1,0 +1,14 @@
+﻿{
+    "Build":  "SUCCESS",
+    "GradleTarget":  ":app:assembleDebug",
+    "ApplicationId":  "com.debtfree.nativetest.verification",
+    "SyntheticFixture":  true,
+    "DeliveryApk":  false,
+    "ApkPath":  "C:\\Users\\lawre\\OneDrive\\Desktop\\DF_App_Development\\debtfree-native\\android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+    "SHA256":  "32DD5A5ABAF91698F72A4CEBE75EB4E73A1D8033742A2EB2F0D6F6D6687792D1",
+    "Bytes":  73337402,
+    "Installed":  false,
+    "SourceRootAcl":  "O:S-1-5-21-3958219101-2169667292-1838105083-1001G:S-1-5-21-3958219101-2169667292-1838105083-1001D:AI(D;CIID;DT;;;WD)(A;OICIID;0x1200a9;;;S-1-5-21-3958219101-2169667292-1838105083-1002)(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;S-1-5-21-3958219101-2169667292-1838105083-1001)",
+    "RuntimeCheck":  "Stopped after Android fill verification failure and expired-ref retry",
+    "PermissionsBackupFolder":  "C:\\Users\\lawre\\OneDrive\\Desktop\\DF_App_Development\\debtfree-native\\scratch\\build-access-repair-2026-11-14"
+}

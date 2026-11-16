@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>
+body{margin:0;color:var(--foreground);font-family:var(--font-sans,system-ui)}
+.screens{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+figure{margin:0;min-width:0}figcaption{font-weight:650;margin:0 0 10px}
+img{display:block;width:100%;height:auto;border-radius:var(--radius,12px)}
+.controls{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+button{font:inherit;font-size:12px;border:1px solid var(--border);border-radius:var(--radius,8px);background:var(--secondary);color:var(--foreground);padding:8px 10px;cursor:pointer}
+button[aria-pressed=true]{outline:2px solid var(--primary);outline-offset:-2px}
+img[hidden]{display:none}p{color:var(--muted-foreground);font-size:12px;line-height:1.5}
+@media(max-width:480px){.screens{grid-template-columns:1fr}img{max-width:360px;margin:auto}}
+</style></head><body>
+<div class="screens">
+<figure><figcaption>Budget</figcaption><div class="controls"><button aria-pressed="true" onclick="selectShot(this,'budget')">Summary</button><button aria-pressed="false" onclick="selectShot(this,'income-sources')">Income sources</button></div><img id="budget" alt="Current Android Budget screen with Monthly Income, matching category colors, and collapsed Income sources" src="C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/docs/acceptance/2026-11-08/ui-simplicity/budget-income.png"><img hidden id="income-sources" alt="Expanded income sources in the same Budget summary card" src="C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/docs/acceptance/2026-11-08/ui-simplicity/income-sources.png"></figure>
+<figure><figcaption>Transactions → Upcoming</figcaption><div class="controls"><button aria-pressed="true" onclick="selectShot(this,'upcoming')">Due dates</button><button aria-pressed="false" onclick="selectShot(this,'payment-details')">Payment details</button></div><img id="upcoming" alt="Current Android Transactions Upcoming screen grouped by December 2026 and individual due dates" src="C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/docs/acceptance/2026-11-08/ui-simplicity/transactions-upcoming.png"><img hidden id="payment-details" alt="Payment detail sheet with matching and remaining amount" src="C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/docs/acceptance/2026-11-08/ui-simplicity/payment-details.png"></figure>
+</div>
+<p>Current Android captures, November 8. Full device viewports; longer lists scroll in the app. Viewing only—no income or payment records were changed.</p>
+<script>
+function selectShot(button,id){button.closest('figure').querySelectorAll('img').forEach(img=>img.hidden=img.id!==id);button.parentElement.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));}
+</script></body></html>

@@ -202,6 +202,14 @@ export function calculateTransactionBalanceDelta(tx: LedgerTransaction, debtCate
   return makeMoney(tx.amount.currency, -tx.amount.minorUnits);
 }
 
+/** Archive state is a durable server setting, written with the confirmed payoff mutation. */
+export function isPaidOffAccountArchived(
+  account: { id: string; category: string; balance: number },
+  archivedPaidOffDebtIds: readonly string[] = [],
+): boolean {
+  return account.balance === 0 && archivedPaidOffDebtIds.includes(account.id);
+}
+
 /** Apply a single transaction to an account's running balance. */
 export function applyTransactionToBalance(balance: Money, tx: LedgerTransaction, debtCategory?: string): Money {
   validateLedgerTransaction(tx);

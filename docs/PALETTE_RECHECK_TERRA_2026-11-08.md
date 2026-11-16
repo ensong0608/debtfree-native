@@ -1,0 +1,16 @@
+# T-104 focused design recheck — Terra High
+
+**Recommendation: Indigo / Porcelain, 8.1/10 for the static visual design.** Cobalt / Ice is 8.0/10. Both now cross the subjective visual threshold narrowly; neither score rates the app or constitutes owner approval. Indigo feels more distinctive and composed; Cobalt is clear and crisp but its blue remains close to Housing. The navigation underline and round category badges help separate brand from category meaning in both.
+
+| Lead palette | Hierarchy | Density | Color identity | Light / Dark legibility | Consistency | Premium feel | Overall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Indigo / Porcelain | 8.5 | 8 | 8.5 | 7.5 | 8 | 8 | 8.1 |
+| Cobalt / Ice | 8.5 | 8 | 7.5 | 8 | 8 | 8 | 8.0 |
+
+The flatter Debt groups improve rhythm and allow names and amounts to breathe; the larger supporting lines are more useful than before. Dark and light both retain hierarchy. Small navigation labels, calendar legends and muted captions still deserve real-size accessibility review; these ratings are not measured contrast certification. Budget's category rows and bar visually correspond, and the visible Debt payments label says card minimums plus extra while Auto appears under Transportation. The compact income sheet is a clear improvement over the previous oversized version: its fields remain substantial, labels are legible, and the monthly equivalent is contextual. The preview alone cannot establish actual touch sizes or behavior.
+
+Progress now identifies the $35,192.31 reference and current balance; the percentage is visibly a comparison, not a recorded achievement. The information control indicates supporting methodology, but its accessible interaction and actual calculation were not verified in this static render. Recorded activity is separately labeled. Budget values and the Progress figures are synthetic examples, not evidence of calculation correctness.
+
+Scheduled's November 13 empty selection supplies the missing date context; the pending example explicitly says pending confirmation and shows a pending notice. Upcoming empty offers a clear Scheduled action, while overdue is grouped by month and date. Two details need correction or clarification in the design: the overdue example's “Current + next month” summary includes the October overdue item, so the scope label is misleading; and the selected November 12 calendar marker appears as unpaid despite the row being pending, making the legend ambiguous. The pending notice begins below the fixed navigation in the initial viewport, so confirm that scrolling exposes its full instruction and that pending cannot be recorded twice. These are state-context issues to resolve before implementation, not reasons to claim native behavior.
+
+Reviewed actual HTML preview renders of Indigo and Cobalt Debt in both themes; Indigo income in both themes and previous/refined density; Budget, Progress Overview, Scheduled empty/pending and Upcoming empty/overdue in both themes. An initially incorrect density mode produced no phones and was corrected to the artifact's `density` mode. This is a static design review only: keyboard, scrolling, screen readers, dynamic type, touch targets, contrast measurements, validation, calculations and native runtime remain unverified. Owner approval is required before implementation.

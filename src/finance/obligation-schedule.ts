@@ -1,4 +1,4 @@
-﻿// Pure, JSON-safe monthly obligation schedules. Dates are household calendar dates.
+// Pure, JSON-safe monthly obligation schedules. Dates are household calendar dates.
 // @ts-ignore TS5097
 import { parseDateOnly, daysInMonth, getNextMonthString, type DateOnly } from './calendar.ts';
 // @ts-ignore TS5097

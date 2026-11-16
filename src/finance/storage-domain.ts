@@ -71,7 +71,7 @@ export function rebaseFinanceCacheRows<T extends { id: string }>(
 export type SupabaseTransactionRow = {
   id: string;
   user_id: string;
-  household_id?: string | null;
+  household_id: string | null;
   account_id: string | null;
   date: string;
   applies_to_date?: string | null;
@@ -97,7 +97,7 @@ export function matchesConfirmedTransactionRow(
   remote: SupabaseTransactionRow,
   pending: SupabaseTransactionRow,
 ): boolean {
-  const textFields = ['id', 'user_id', 'account_id', 'date', 'applies_to_date',
+  const textFields = ['id', 'user_id', 'household_id', 'account_id', 'date', 'applies_to_date',
     'category', 'payee', 'memo', 'source'] as const;
   if (textFields.some(field => (remote[field] ?? null) !== (pending[field] ?? null))) return false;
   if (remote.reconciled !== pending.reconciled) return false;
@@ -136,7 +136,7 @@ export function reconcilePendingTransactionRows(
 export type SupabaseRecurringBillRow = {
   id: string;
   user_id: string;
-  household_id?: string | null;
+  household_id: string | null;
   name: string;
   category: string;
   amount: string | number;
@@ -152,6 +152,7 @@ export type SupabaseRecurringBillRow = {
 export type SupabaseReconciliationAnchorRow = {
   id: string;
   user_id: string;
+  household_id: string | null;
   account_id: string;
   as_of_date: string;
   verified_balance: string | number;
@@ -373,6 +374,7 @@ export function decodeRecurringBillRow(
 export function encodeReconciliationAnchorRow(
   anchor: ReconciliationAnchor,
   userId: string,
+  householdId: string | null = null,
 ): SupabaseReconciliationAnchorRow {
   if (!userId || typeof userId !== 'string') throw new TypeError('userId is required');
   if (!anchor.id || typeof anchor.id !== 'string') throw new TypeError('anchor.id is required');
@@ -389,6 +391,7 @@ export function encodeReconciliationAnchorRow(
   return {
     id: anchor.id,
     user_id: userId,
+    household_id: householdId,
     account_id: anchor.accountId,
     as_of_date: anchor.asOfDate,
     verified_balance: formattedBalance,

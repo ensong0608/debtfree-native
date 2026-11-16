@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1680px;
+    height: 1060px;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 0%, #162244 0%, #090E1A 70%);
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #F3F6FC;
+    position: relative;
+  }
+  .topbar {
+    position: absolute; left: 36px; right: 36px; top: 22px; height: 64px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding-bottom: 14px;
+  }
+  .brand-row { display: flex; align-items: center; gap: 14px; }
+  .brand-pill {
+    background: linear-gradient(135deg, #0051FB, #27EEE9);
+    color: #070D5B; font-weight: 800; font-size: 13px; letter-spacing: 0.06em;
+    padding: 6px 12px; border-radius: 999px; text-transform: uppercase;
+  }
+  h1 { font-size: 25px; font-weight: 700; letter-spacing: -0.02em; color: #FFFFFF; }
+  .subtitle { font-size: 14px; color: #9FB0D1; margin-top: 2px; }
+  .legend { display: flex; gap: 16px; align-items: center; font-size: 13px; color: #C7D4EC; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .phone-frame {
+    position: absolute;
+    border-radius: 28px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.65), 0 0 0 2px rgba(255,255,255,0.14);
+    background: #000;
+  }
+  .phone-frame img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .phone-caption {
+    position: absolute;
+    font-size: 13px; font-weight: 600; color: #BFD0F0;
+    text-align: center;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px;
+    padding: 5px 14px;
+  }
+  .annot-box {
+    position: absolute;
+    border: 2.5px dashed;
+    border-radius: 10px;
+    z-index: 5;
+  }
+  .annot-num {
+    position: absolute;
+    top: -12px; left: -12px;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    color: #080C18;
+    font-weight: 800; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  svg.leaders {
+    position: absolute; left: 0; top: 0; width: 1680px; height: 1060px;
+    pointer-events: none; z-index: 6;
+  }
+  .callout-card {
+    position: absolute;
+    background: rgba(17, 25, 45, 0.94);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 13px 15px;
+    box-shadow: 0 14px 32px rgba(0,0,0,0.45);
+    z-index: 7;
+  }
+  .callout-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .pill {
+    font-size: 11px; font-weight: 800; color: #090D18;
+    padding: 3px 9px; border-radius: 999px; letter-spacing: 0.04em;
+  }
+  .screen-tag { font-size: 11px; color: #8CA0C6; font-weight: 600; }
+  .callout-title { font-size: 14.5px; font-weight: 700; color: #FFFFFF; margin-bottom: 4px; }
+  .callout-body { font-size: 12.8px; line-height: 1.42; color: #CFD9ED; }
+  .callout-meta { font-size: 11px; color: #7DA2E8; margin-top: 6px; font-weight: 600; }
+  .footer-bar {
+    position: absolute; left: 36px; right: 36px; bottom: 20px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 12px;
+    padding: 11px 18px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 13px; color: #B9C8E4;
+  }
+  .footer-bar strong { color: #27EEE9; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <div class="brand-row">
+        <span class="brand-pill">BitLess Visual Audit · 2026-11-13</span>
+        <h1>Transactions → Upcoming & Scheduled: Grammar Bug, Pills & Row Clip</h1>
+      </div>
+      <div class="subtitle">Upcoming shows "1 items" + 4 competing pill types, while Scheduled repeats "Planned installments" and clips the HOME row behind the CTA dock</div>
+    </div>
+    <div class="legend">
+      <span><i class="dot" style="background:#FF4D6A"></i>Major UX / Layout Issue</span>
+      <span><i class="dot" style="background:#FFB020"></i>Polish / Hierarchy / Brand Alignment</span>
+    </div>
+  </div>
+
+  <div class="phone-frame" style="left:452px;top:112px;width:368px;height:798px;">
+    <img src="file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/scratch/visual-audit-2026-11-13/light/17-transactions-upcoming.png" />
+  </div>
+  <div class="phone-caption" style="left:452px;top:922px;width:368px;">Transactions · light/17-transactions-upcoming.png</div>
+
+  <div class="phone-frame" style="left:860px;top:112px;width:368px;height:798px;">
+    <img src="file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/scratch/visual-audit-2026-11-13/light/18-transactions-scheduled.png" />
+  </div>
+  <div class="phone-caption" style="left:860px;top:922px;width:368px;">Scheduled · light/18-transactions-scheduled.png</div>
+
+  
+      <div class="annot-box" style="left:466.7px;top:361.0px;width:338.6px;height:38.3px;border-color:#FF4D6A;background:rgba(255, 77, 106, 0.14);">
+        <span class="annot-num" style="background:#FF4D6A;">1</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:466.7px;top:403.3px;width:338.6px;height:127.7px;border-color:#FFB020;background:rgba(255, 176, 32, 0.14);">
+        <span class="annot-num" style="background:#FFB020;">2</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:878.4px;top:558.9px;width:331.2px;height:183.5px;border-color:#FFB020;background:rgba(255, 176, 32, 0.14);">
+        <span class="annot-num" style="background:#FFB020;">3</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:878.4px;top:690.5px;width:331.2px;height:63.8px;border-color:#FF4D6A;background:rgba(255, 77, 106, 0.14);">
+        <span class="annot-num" style="background:#FF4D6A;">4</span>
+      </div>
+    
+  <svg class="leaders" viewBox="0 0 1680 1060">
+      <path d="M 466.7 380.1 C 442.1 380.1, 436.6 244.0, 412.0 244.0"
+            fill="none" stroke="#FF4D6A" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="466.7" cy="380.1" r="5" fill="#FF4D6A" />
+      <circle cx="412.0" cy="244.0" r="4.5" fill="#FF4D6A" />
+    
+
+      <path d="M 466.7 486.3 C 442.1 486.3, 436.6 524.0, 412.0 524.0"
+            fill="none" stroke="#FFB020" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="466.7" cy="486.3" r="5" fill="#FFB020" />
+      <circle cx="412.0" cy="524.0" r="4.5" fill="#FFB020" />
+    
+
+      <path d="M 1209.6 641.5 C 1235.9 641.5, 1241.7 274.0, 1268.0 274.0"
+            fill="none" stroke="#FFB020" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="1209.6" cy="641.5" r="5" fill="#FFB020" />
+      <circle cx="1268.0" cy="274.0" r="4.5" fill="#FFB020" />
+    
+
+      <path d="M 1209.6 722.5 C 1235.9 722.5, 1241.7 584.0, 1268.0 584.0"
+            fill="none" stroke="#FF4D6A" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="1209.6" cy="722.5" r="5" fill="#FF4D6A" />
+      <circle cx="1268.0" cy="584.0" r="4.5" fill="#FF4D6A" />
+    </svg>
+  
+      <div class="callout-card" style="left:36px;top:200px;width:376px;border-left:4px solid #FF4D6A;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FF4D6A;">1 · MAJOR</span>
+          <span class="screen-tag">Copy & Pluralization</span>
+        </div>
+        <div class="callout-title">Hey! Grammar bug: "1 items" pill</div>
+        <div class="callout-body">November 2026 displays "1 items" instead of "1 item". Also notice 4 competing pill styles on one screen ("9 unpaid", "1 items", "Unpaid", "Pay").</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:36px;top:480px;width:376px;border-left:4px solid #FFB020;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FFB020;">2 · POLISH</span>
+          <span class="screen-tag">Card Density · Upcoming</span>
+        </div>
+        <div class="callout-title">Hey! Too many pill badges per bill card</div>
+        <div class="callout-body">Every card repeats an amber "Unpaid" badge even inside an "Unpaid" section, creating visual noise. Keep status inline ("Minimum payment · Unpaid") beside one clean Pay CTA.</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:1268px;top:230px;width:376px;border-left:4px solid #FFB020;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FFB020;">3 · POLISH</span>
+          <span class="screen-tag">Scheduled Installments Copy</span>
+        </div>
+        <div class="callout-title">Hey! Cards repeat "Planned installments" 3 times</div>
+        <div class="callout-body">Right beneath the "Planned installments" heading, every collapsed card says "Planned installments" instead of showing count & total ("3 steps · $600/mo").</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:1268px;top:540px;width:376px;border-left:4px solid #FF4D6A;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FF4D6A;">4 · MAJOR</span>
+          <span class="screen-tag">Casing & Dock Clipping</span>
+        </div>
+        <div class="callout-title">Hey! "HOME" ALL-CAPS & row clipped by CTA dock</div>
+        <div class="callout-body">Inconsistent capitalization ("HOME" vs "Discover") and the "HOME" card is sliced right across its subtitle & "Show" toggle by the bottom Add Transaction dock.</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+  <div class="footer-bar">
+    <span><strong>Audit Condition:</strong> Pixel 1440×3120 · OS Font Scale 115% · Dynamic Type ON (ignore translucent Android DevTools gear)</span>
+    <span><strong>Takeaway:</strong> Fix "1 item" pluralization, replace repeated "Planned installments" card subtitles with bill details, and unify pill styles.</span>
+  </div>
+</body>
+</html>

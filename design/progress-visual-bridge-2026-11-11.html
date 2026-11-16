@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Progress visual bridge &middot; current and proposed</title>
+<style>
+:root { color-scheme: light dark; --font: var(--font-sans, Inter, system-ui, sans-serif); }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; font-family: var(--font); color: var(--foreground); background: transparent; }
+.board { width: 100%; margin: 0; padding: 0; }
+.note { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; margin: 2px 0 14px; }
+.theme-block { margin: 0 0 24px; }
+.theme-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; margin: 0 0 10px; }
+.theme-title::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.caption { color: var(--muted-foreground); font-size: 11px; font-weight: 700; letter-spacing: .06em; margin: 0 0 6px 2px; text-transform: uppercase; }
+.device { height: 760px; border-radius: 22px; overflow: hidden; border: 1px solid; display: flex; flex-direction: column; box-shadow: 0 12px 26px rgba(0,0,0,.12); font-variant-numeric: tabular-nums; }
+.current { --page:#F5F6F3; --surface:#FFFFFF; --surface2:#F7F8FA; --ink:#171A20; --muted:#68717D; --line:#E0E3E8; --accent:#287B79; --accentSoft:#EAF4F2; --positive:#0D7A68; --negative:#C94730; --violet:#7B63BA; --blue:#4279B7; --amber:#B37A16; }
+.proposed { --page:#F2F4F8; --surface:#FFFFFF; --surface2:#F5F7FC; --ink:#151A27; --muted:#667085; --line:#DFE3ED; --accent:#425FBA; --accentSoft:#EBEFFF; --positive:#137F6C; --negative:#C94730; --violet:#7B63BA; --blue:#4279B7; --amber:#B37A16; }
+.theme-block.dark .current { --page:#101311; --surface:#171D1A; --surface2:#1B221E; --ink:#F3F6F4; --muted:#A0ADA6; --line:#303B35; --accent:#79CBB6; --accentSoft:#1C302A; --positive:#83E0C1; --negative:#F18B78; --violet:#B6A3F0; --blue:#82B5F4; --amber:#F1C96E; }
+.theme-block.dark .proposed { --page:#101218; --surface:#191D29; --surface2:#202638; --ink:#F4F6FC; --muted:#A6AEC0; --line:#343B4F; --accent:#9DAFFF; --accentSoft:#262F50; --positive:#83E0C1; --negative:#F18B78; --violet:#B6A3F0; --blue:#82B5F4; --amber:#F1C96E; }
+.screen { min-height: 0; flex: 1; background: var(--page); color: var(--ink); display: flex; flex-direction: column; }
+.status { height: 20px; padding: 3px 11px 0; font-size: 8px; font-weight: 650; display:flex; justify-content:space-between; color:var(--muted); }
+.header { height: 39px; padding: 3px 11px; display:flex; align-items:center; justify-content:space-between; }
+.header strong { font-size: 18px; letter-spacing:-.035em; }
+.gear { width: 25px; height: 25px; display:grid; place-items:center; border:1px solid var(--line); border-radius:9px; color:var(--muted); font-size:14px; }
+.gear svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.segments { display:flex; margin: 0 9px 9px; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:3px; }
+.segments span { flex:1; text-align:center; padding:7px 1px; border-radius:8px; font-size:9px; font-weight:650; color:var(--muted); }
+.current .segments .sel { background:var(--accentSoft); color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+.proposed .segments { background:var(--surface2); }
+.proposed .segments .sel { background:var(--accent); color:#fff; box-shadow:0 2px 5px color-mix(in srgb, var(--accent) 28%, transparent); }
+.scope-head { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:8px; font-weight:700; margin:1px 1px 4px; }
+.scope-head span:last-child { color:var(--accent); }
+.scope-control { display:flex; gap:4px; border:1px solid var(--line); background:var(--surface); padding:3px; border-radius:10px; margin:0 0 8px; }
+.scope-option { flex:1; min-width:0; text-align:center; border:0; background:transparent; border-radius:7px; padding:5px 2px; color:var(--muted); font:inherit; cursor:pointer; }
+.scope-option b { display:block; font-size:8px; line-height:1.2; }
+.scope-option small { display:block; font-size:6px; margin-top:2px; line-height:1.1; white-space:nowrap; }
+.proposed .scope-option.selected { background:var(--accent); color:#fff; }
+.proposed .scope-option.selected small { color:rgba(255,255,255,.86); }
+.content { flex:1; min-height:0; overflow:hidden; padding: 0 10px 6px; }
+.eyebrow { color:var(--muted); font-size:8px; font-weight:750; letter-spacing:.07em; }
+.balance { border:1px solid var(--line); background:var(--surface); border-radius:13px; padding:10px 11px; margin: 1px 0 10px; }
+.balance-top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.amount { font-size:18px; font-weight:780; letter-spacing:-.045em; margin-top:5px; }
+.sub { color:var(--muted); font-size:8px; line-height:1.35; margin-top:2px; }
+.mini-ring { width:48px; height:48px; border-radius:50%; display:grid; place-items:center; flex:none; background:conic-gradient(var(--accent) 0 20%, var(--line) 20% 100%); position:relative; }
+.mini-ring::after { content:""; position:absolute; inset:5px; border-radius:50%; background:var(--surface); }
+.mini-ring span { position:relative; z-index:1; font-size:9px; font-weight:750; color:var(--accent); }
+.activity-head { display:flex; justify-content:space-between; align-items:center; margin: 8px 1px 6px; gap:5px; }
+.activity-head strong { font-size:12px; letter-spacing:-.02em; }
+.period { border:1px solid var(--line); color:var(--ink); background:var(--surface); border-radius:8px; padding:5px 7px; font-size:8px; white-space:nowrap; }
+.payment { padding: 5px 2px 7px; display:flex; justify-content:space-between; align-items:flex-end; gap:8px; }
+.payment-value { font-size:21px; font-weight:780; letter-spacing:-.045em; }
+.payment-meta { text-align:right; }
+.stat-card { border:1px solid var(--line); background:var(--surface); border-radius:11px; padding:1px 9px; }
+.stat { min-height:25px; display:flex; justify-content:space-between; align-items:center; gap:5px; border-bottom:1px solid var(--line); font-size:8px; }
+.stat:last-child { border-bottom:0; }
+.stat b { font-size:9px; white-space:nowrap; }
+.positive { color:var(--positive); } .negative { color:var(--negative); }
+.target-head { margin:11px 1px 5px; display:flex; align-items:center; justify-content:space-between; }
+.target-head strong,.account-title { font-size:11px; }
+.tag { color:var(--accent); background:var(--accentSoft); border-radius:6px; padding:3px 6px; font-size:7px; font-weight:750; }
+.target-card { display:flex; align-items:center; justify-content:space-between; gap:6px; border:1px solid var(--line); background:var(--surface); border-radius:10px; padding:8px; }
+.target-name { display:flex; align-items:center; gap:7px; min-width:0; }
+.bubble { width:24px; height:24px; border-radius:50%; background:var(--accentSoft); color:var(--accent); display:grid; place-items:center; font-size:10px; flex:none; }
+.target-name b { display:block; font-size:9px; }
+.target-name small { display:block; color:var(--muted); font-size:7px; margin-top:2px; }
+.target-money { text-align:right; font-size:9px; font-weight:730; white-space:nowrap; }
+.account-title { display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); padding:9px 1px 5px; margin-top:3px; }
+.account-row { display:grid; grid-template-columns:22px minmax(0,1fr) auto; align-items:center; gap:6px; min-height:35px; border-bottom:1px solid var(--line); }
+.account-icon { width:20px; height:20px; border-radius:50%; display:grid; place-items:center; background:var(--accentSoft); color:var(--accent); font-size:8px; font-weight:750; }
+.account-row:nth-child(odd) .account-icon { background:color-mix(in srgb, var(--blue) 15%, var(--surface)); color:var(--blue); }
+.account-row:nth-child(even) .account-icon { background:color-mix(in srgb, var(--violet) 14%, var(--surface)); color:var(--violet); }
+.account-name { font-size:8px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.account-meta { color:var(--muted); font-size:7px; margin-top:1px; }
+.account-net { font-size:8px; font-weight:700; white-space:nowrap; }
+.bottom { height:50px; background:var(--surface); border-top:1px solid var(--line); display:flex; justify-content:space-around; align-items:center; flex:none; }
+.nav-item { text-align:center; color:var(--muted); font-size:7px; font-weight:650; line-height:1.35; min-width:35px; }
+.nav-symbol { display:block; height:17px; }
+.nav-symbol svg { width:16px; height:16px; display:block; margin:0 auto 1px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+.period { display:flex; align-items:center; gap:5px; }
+.nav-item.active { color:var(--accent); }
+.nav-item.active .nav-symbol { font-size:15px; }
+.proposed .balance { position:relative; overflow:hidden; padding:11px; background:linear-gradient(135deg, var(--surface) 0%, var(--accentSoft) 100%); border-color:color-mix(in srgb, var(--accent) 24%, var(--line)); }
+.proposed .balance::after { content:""; position:absolute; right:-27px; top:-44px; width:104px; height:104px; border:1px solid color-mix(in srgb, var(--accent) 12%, transparent); border-radius:50%; box-shadow:0 0 0 12px color-mix(in srgb, var(--accent) 3%, transparent), 0 0 0 25px color-mix(in srgb, var(--accent) 2%, transparent); pointer-events:none; }
+.proposed .balance-top { position:relative; z-index:1; }
+.progress-readout { display:flex; align-items:baseline; gap:5px; margin-top:3px; }
+.progress-readout b { color:var(--accent); font-size:25px; line-height:1; letter-spacing:-.06em; }
+.progress-readout span { color:var(--ink); font-size:8px; font-weight:650; line-height:1.2; white-space:nowrap; }
+.proposed .mini-ring { width:72px; height:72px; background:conic-gradient(var(--accent) 0 80%, color-mix(in srgb, var(--accent) 16%, var(--surface)) 80% 100%); }
+.proposed .mini-ring::after { inset:6px; }
+.proposed .mini-ring span { font-size:12px; text-align:center; line-height:1; }
+.proposed .mini-ring span small { display:block; font-size:6px; line-height:1.1; margin-top:3px; color:var(--muted); font-weight:650; }
+.proposed .balance-copy { max-width:calc(100% - 81px); }
+.proposed .balance-copy .sub { font-size:8px; margin-top:4px; }
+.proposed .activity-head { margin-top:8px; }
+.proposed .payment { background:var(--surface); border:1px solid var(--line); border-radius:10px 10px 0 0; padding:7px 9px 5px; }
+.proposed .payment-value { color:var(--accent); }
+.proposed .stat-card { border-radius:0 0 10px 10px; border-top:0; }
+.proposed .target-card { border-left:3px solid var(--accent); }
+.proposed .account-title { margin-top:5px; }
+.footnote { color:var(--muted-foreground); font-size:10px; line-height:1.4; margin:10px 1px 0; }
+@media (max-width: 520px) {
+ .pair { grid-template-columns: 1fr; }
+ .device { height: 760px; }
+}
+</style>
+</head>
+<body>
+<main class="board">
+  <p class="note">Static design study &middot; Sample figures only. The scope control changes the balance snapshot; selected-period ledger activity and account rows remain household-wide.</p>
+  <section class="theme-block light">
+    <h2 class="theme-title">Light appearance</h2>
+    <div class="pair">
+      <div><p class="caption">Current native layout</p>
+        <div class="device current"><div class="screen">
+          <div class="status"><span>9:41</span><span>&#9679; &#9698; &#9646;</span></div>
+          <header class="header"><strong>Progress</strong><span class="gear" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4m0-13.4-1.4 1.4M6.7 17.3l-1.4 1.4"/></svg></span></header>
+          <div class="segments"><span class="sel">Overview</span><span>Utilization</span><span>Milestones</span></div>
+          <div class="content">
+            <div class="balance"><div class="balance-top"><div><div class="eyebrow">BALANCE COMPARISON</div><div class="amount">$80,414.00</div><div class="sub">Current balance</div><div class="sub">Adjusted reference $100,520.00</div></div><div class="mini-ring"><span>20%<br>below ref.</span></div></div></div>
+            <div class="activity-head"><strong>Recorded activity</strong><span class="period"><span>Current month</span><span aria-hidden="true">&#9662;</span></span></div>
+            <div class="payment"><div><div class="eyebrow">PAYMENTS</div><div class="payment-value">$1,840.00</div></div><div class="payment-meta"><div class="sub">7 confirmed entries</div></div></div>
+            <div class="stat-card"><div class="stat"><span>Balance reduction</span><b class="positive">$1,290.00</b></div><div class="stat"><span>Interest &amp; fees</span><b>$145.00</b></div><div class="stat"><span>Other debt charges</span><b>$405.00</b></div><div class="stat"><span>Net balance change</span><b class="positive">&minus;$740.00</b></div></div>
+            <div class="target-head"><strong>Next payoff target</strong><span class="tag">Snowball</span></div>
+            <div class="target-card"><div class="target-name"><span class="bubble">#1</span><span><b>Northstar Card</b><small>22.9% APR</small></span></div><span class="target-money">$3,240.00</span></div>
+            <div class="account-title"><b>Activity by account</b><span class="sub">4 accounts</span></div>
+            <div class="account-row"><span class="account-icon">CC</span><span><div class="account-name">Northstar Card</div><div class="account-meta">4 entries</div></span><b class="account-net positive">&minus;$860.00</b></div>
+            <div class="account-row"><span class="account-icon">AU</span><span><div class="account-name">Auto loan</div><div class="account-meta">1 entry</div></span><b class="account-net">$0.00</b></div>
+            <div class="account-row"><span class="account-icon">HM</span><span><div class="account-name">Home loan</div><div class="account-meta">0 entries</div></span><b class="account-net">$0.00</b></div>
+            <div class="account-row"><span class="account-icon">MT</span><span><div class="account-name">Metro Card</div><div class="account-meta">2 entries</div></span><b class="account-net negative">+$120.00</b></div>
+          </div>
+          <nav class="bottom"><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M3.5 10.5 12 3l8.5 7.5v9h-6v-6h-5v6h-6z"/></svg></span>Home</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18m-13 4h4"/></svg></span>Debt</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M4 8h15l-3-3m4 11H5l3 3"/></svg></span>Transactions</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="18" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>Budget</div><div class="nav-item active"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M4 20v-5h4v5m2 0V9h4v11m2 0V4h4v16"/></svg></span>Progress</div></nav>
+        </div></div>
+      </div>
+      <div><p class="caption">Proposed visual blend</p>
+        <div class="device proposed"><div class="screen">
+          <div class="status"><span>9:41</span><span>&#9679; &#9698; &#9646;</span></div>
+          <header class="header"><strong>Progress</strong><span class="gear" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4m0-13.4-1.4 1.4M6.7 17.3l-1.4 1.4"/></svg></span></header>
+          <div class="segments"><span class="sel">Overview</span><span>Utilization</span><span>Milestones</span></div>
+          <div class="content">
+            <div class="scope-head"><span>Balance calculation scope</span><span>Default</span></div>
+            <div class="scope-control" role="tablist" aria-label="Balance calculation scope"><button type="button" class="scope-option selected" role="tab" aria-selected="true" data-current="$80,414" data-reference="$100,520" data-reduction="20" data-share="80"><b>Cards &amp; Loans</b><small>Credit cards + personal loans</small></button><button type="button" class="scope-option" role="tab" aria-selected="false" data-current="$410,000" data-reference="$470,000" data-reduction="13" data-share="87"><b>Home &amp; Auto</b><small>Mortgage + auto loans</small></button></div>
+            <div class="balance"><div class="balance-top"><div class="balance-copy"><div class="eyebrow">BALANCE SNAPSHOT</div><div class="progress-readout"><b>20%</b><span>lower than adjusted reference</span></div><div class="sub"><span class="balanceCurrent">Current $80,414</span> &middot; <span class="balanceReference">adjusted reference $100,520</span></div></div><div class="mini-ring"><span><i class="balanceShare">80%</i><small>current / ref.</small></span></div></div></div>
+            <div class="activity-head"><strong>Recorded activity</strong><span class="period"><span>Current month</span><span aria-hidden="true">&#9662;</span></span></div>
+            <div class="payment"><div><div class="eyebrow">PAYMENTS RECORDED</div><div class="payment-value">$1,840.00</div></div><div class="payment-meta"><div class="sub">7 confirmed entries</div></div></div>
+            <div class="stat-card"><div class="stat"><span>Balance reduction</span><b class="positive">$1,290.00</b></div><div class="stat"><span>Interest &amp; fees</span><b>$145.00</b></div><div class="stat"><span>Other debt charges</span><b>$405.00</b></div><div class="stat"><span>Net balance change</span><b class="positive">&minus;$740.00</b></div></div>
+            <div class="target-head"><strong>Next payoff target</strong><span class="tag">Snowball</span></div>
+            <div class="target-card"><div class="target-name"><span class="bubble">#1</span><span><b>Northstar Card</b><small>22.9% APR</small></span></div><span class="target-money">$3,240.00</span></div>
+            <div class="account-title"><b>Activity by account</b><span class="sub">4 accounts</span></div>
+            <div class="account-row"><span class="account-icon">CC</span><span><div class="account-name">Northstar Card</div><div class="account-meta">4 entries</div></span><b class="account-net positive">&minus;$860.00</b></div>
+            <div class="account-row"><span class="account-icon">AU</span><span><div class="account-name">Auto loan</div><div class="account-meta">1 entry</div></span><b class="account-net">$0.00</b></div>
+            <div class="account-row"><span class="account-icon">HM</span><span><div class="account-name">Home loan</div><div class="account-meta">0 entries</div></span><b class="account-net">$0.00</b></div>
+            <div class="account-row"><span class="account-icon">MT</span><span><div class="account-name">Metro Card</div><div class="account-meta">2 entries</div></span><b class="account-net negative">+$120.00</b></div>
+          </div>
+          <nav class="bottom"><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M3.5 10.5 12 3l8.5 7.5v9h-6v-6h-5v6h-6z"/></svg></span>Home</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18m-13 4h4"/></svg></span>Debt</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M4 8h15l-3-3m4 11H5l3 3"/></svg></span>Transactions</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="18" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>Budget</div><div class="nav-item active"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M4 20v-5h4v5m2 0V9h4v11m2 0V4h4v16"/></svg></span>Progress</div></nav>
+        </div></div>
+      </div>
+    </div>
+  </section>
+  <section class="theme-block dark">
+    <h2 class="theme-title">Dark appearance</h2>
+    <div class="pair">
+      <div><p class="caption">Current native layout</p>
+        <div class="device current"><div class="screen">
+          <div class="status"><span>9:41</span><span>&#9679; &#9698; &#9646;</span></div>
+          <header class="header"><strong>Progress</strong><span class="gear" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4m0-13.4-1.4 1.4M6.7 17.3l-1.4 1.4"/></svg></span></header>
+          <div class="segments"><span class="sel">Overview</span><span>Utilization</span><span>Milestones</span></div>
+          <div class="content">
+            <div class="balance"><div class="balance-top"><div><div class="eyebrow">BALANCE COMPARISON</div><div class="amount">$80,414.00</div><div class="sub">Current balance</div><div class="sub">Adjusted reference $100,520.00</div></div><div class="mini-ring"><span>20%<br>below ref.</span></div></div></div>
+            <div class="activity-head"><strong>Recorded activity</strong><span class="period"><span>Current month</span><span aria-hidden="true">&#9662;</span></span></div>
+            <div class="payment"><div><div class="eyebrow">PAYMENTS</div><div class="payment-value">$1,840.00</div></div><div class="payment-meta"><div class="sub">7 confirmed entries</div></div></div>
+            <div class="stat-card"><div class="stat"><span>Balance reduction</span><b class="positive">$1,290.00</b></div><div class="stat"><span>Interest &amp; fees</span><b>$145.00</b></div><div class="stat"><span>Other debt charges</span><b>$405.00</b></div><div class="stat"><span>Net balance change</span><b class="positive">&minus;$740.00</b></div></div>
+            <div class="target-head"><strong>Next payoff target</strong><span class="tag">Snowball</span></div>
+            <div class="target-card"><div class="target-name"><span class="bubble">#1</span><span><b>Northstar Card</b><small>22.9% APR</small></span></div><span class="target-money">$3,240.00</span></div>
+            <div class="account-title"><b>Activity by account</b><span class="sub">4 accounts</span></div>
+            <div class="account-row"><span class="account-icon">CC</span><span><div class="account-name">Northstar Card</div><div class="account-meta">4 entries</div></span><b class="account-net positive">&minus;$860.00</b></div>
+            <div class="account-row"><span class="account-icon">AU</span><span><div class="account-name">Auto loan</div><div class="account-meta">1 entry</div></span><b class="account-net">$0.00</b></div>
+            <div class="account-row"><span class="account-icon">HM</span><span><div class="account-name">Home loan</div><div class="account-meta">0 entries</div></span><b class="account-net">$0.00</b></div>
+            <div class="account-row"><span class="account-icon">MT</span><span><div class="account-name">Metro Card</div><div class="account-meta">2 entries</div></span><b class="account-net negative">+$120.00</b></div>
+          </div>
+          <nav class="bottom"><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M3.5 10.5 12 3l8.5 7.5v9h-6v-6h-5v6h-6z"/></svg></span>Home</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18m-13 4h4"/></svg></span>Debt</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M4 8h15l-3-3m4 11H5l3 3"/></svg></span>Transactions</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="18" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>Budget</div><div class="nav-item active"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M4 20v-5h4v5m2 0V9h4v11m2 0V4h4v16"/></svg></span>Progress</div></nav>
+        </div></div>
+      </div>
+      <div><p class="caption">Proposed visual blend</p>
+        <div class="device proposed"><div class="screen">
+          <div class="status"><span>9:41</span><span>&#9679; &#9698; &#9646;</span></div>
+          <header class="header"><strong>Progress</strong><span class="gear" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4m0-13.4-1.4 1.4M6.7 17.3l-1.4 1.4"/></svg></span></header>
+          <div class="segments"><span class="sel">Overview</span><span>Utilization</span><span>Milestones</span></div>
+          <div class="content">
+            <div class="scope-head"><span>Balance calculation scope</span><span>Default</span></div>
+            <div class="scope-control" role="tablist" aria-label="Balance calculation scope"><button type="button" class="scope-option selected" role="tab" aria-selected="true" data-current="$80,414" data-reference="$100,520" data-reduction="20" data-share="80"><b>Cards &amp; Loans</b><small>Credit cards + personal loans</small></button><button type="button" class="scope-option" role="tab" aria-selected="false" data-current="$410,000" data-reference="$470,000" data-reduction="13" data-share="87"><b>Home &amp; Auto</b><small>Mortgage + auto loans</small></button></div>
+            <div class="balance"><div class="balance-top"><div class="balance-copy"><div class="eyebrow">BALANCE SNAPSHOT</div><div class="progress-readout"><b>20%</b><span>lower than adjusted reference</span></div><div class="sub"><span class="balanceCurrent">Current $80,414</span> &middot; <span class="balanceReference">adjusted reference $100,520</span></div></div><div class="mini-ring"><span><i class="balanceShare">80%</i><small>current / ref.</small></span></div></div></div>
+            <div class="activity-head"><strong>Recorded activity</strong><span class="period"><span>Current month</span><span aria-hidden="true">&#9662;</span></span></div>
+            <div class="payment"><div><div class="eyebrow">PAYMENTS RECORDED</div><div class="payment-value">$1,840.00</div></div><div class="payment-meta"><div class="sub">7 confirmed entries</div></div></div>
+            <div class="stat-card"><div class="stat"><span>Balance reduction</span><b class="positive">$1,290.00</b></div><div class="stat"><span>Interest &amp; fees</span><b>$145.00</b></div><div class="stat"><span>Other debt charges</span><b>$405.00</b></div><div class="stat"><span>Net balance change</span><b class="positive">&minus;$740.00</b></div></div>
+            <div class="target-head"><strong>Next payoff target</strong><span class="tag">Snowball</span></div>
+            <div class="target-card"><div class="target-name"><span class="bubble">#1</span><span><b>Northstar Card</b><small>22.9% APR</small></span></div><span class="target-money">$3,240.00</span></div>
+            <div class="account-title"><b>Activity by account</b><span class="sub">4 accounts</span></div>
+            <div class="account-row"><span class="account-icon">CC</span><span><div class="account-name">Northstar Card</div><div class="account-meta">4 entries</div></span><b class="account-net positive">&minus;$860.00</b></div>
+            <div class="account-row"><span class="account-icon">AU</span><span><div class="account-name">Auto loan</div><div class="account-meta">1 entry</div></span><b class="account-net">$0.00</b></div>
+            <div class="account-row"><span class="account-icon">HM</span><span><div class="account-name">Home loan</div><div class="account-meta">0 entries</div></span><b class="account-net">$0.00</b></div>
+            <div class="account-row"><span class="account-icon">MT</span><span><div class="account-name">Metro Card</div><div class="account-meta">2 entries</div></span><b class="account-net negative">+$120.00</b></div>
+          </div>
+          <nav class="bottom"><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M3.5 10.5 12 3l8.5 7.5v9h-6v-6h-5v6h-6z"/></svg></span>Home</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18m-13 4h4"/></svg></span>Debt</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M4 8h15l-3-3m4 11H5l3 3"/></svg></span>Transactions</div><div class="nav-item"><span class="nav-symbol"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="18" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>Budget</div><div class="nav-item active"><span class="nav-symbol"><svg viewBox="0 0 24 24"><path d="M4 20v-5h4v5m2 0V9h4v11m2 0V4h4v16"/></svg></span>Progress</div></nav>
+        </div></div>
+      </div>
+    </div>
+  </section>
+  <p class="footnote">Proposed treatment: make the adjusted-reference comparison the visual anchor, then keep recorded totals, net account changes, and the payoff target as compact distinct sections. Sample values and account labels above are illustrative only.</p>
+</main>
+<script>
+document.querySelectorAll('.scope-control').forEach(control => {
+  control.querySelectorAll('.scope-option').forEach(option => option.addEventListener('click', () => {
+    control.querySelectorAll('.scope-option').forEach(item => {
+      item.classList.toggle('selected', item === option);
+      item.setAttribute('aria-selected', item === option ? 'true' : 'false');
+    });
+    const device = control.closest('.device');
+    const balance = device.querySelector('.balance');
+    const share = Number(option.dataset.share);
+    balance.querySelector('.progress-readout b').textContent = option.dataset.reduction + '%';
+    balance.querySelector('.balanceCurrent').textContent = 'Current ' + option.dataset.current;
+    balance.querySelector('.balanceReference').textContent = 'adjusted reference ' + option.dataset.reference;
+    balance.querySelector('.balanceShare').textContent = share + '%';
+    balance.querySelector('.mini-ring').style.background = 'conic-gradient(var(--accent) 0 ' + share + '%, color-mix(in srgb, var(--accent) 16%, var(--surface)) ' + share + '% 100%)';
+  }));
+});
+</script>
+</body>
+</html>

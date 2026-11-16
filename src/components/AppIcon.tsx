@@ -16,6 +16,7 @@ export type AppIconName =
   | 'snowball'
   | 'avalanche'
   | 'check'
+  | 'close'
   | 'back'
   | 'chevronDown'
   | 'chevronRight'
@@ -29,14 +30,24 @@ export type AppIconName =
   | 'filter'
   | 'reset'
   | 'brandRise'
-  | 'trendDown';
+  | 'trendDown'
+  | 'bolt'
+  | 'shield'
+  | 'grid'
+  | 'theme'
+  | 'palette'
+  | 'textSize'
+  | 'users'
+  | 'globe'
+  | 'warning'
+  | 'edit';
 
 export const NAVIGATION_TAB_ICONS: readonly {
   name: NavigationTabIconName;
   label: string;
 }[] = [
   { name: 'home', label: 'Home' },
-  { name: 'debt', label: 'Debt' },
+  { name: 'debt', label: 'Accounts' },
   { name: 'transactions', label: 'Transactions' },
   { name: 'budget', label: 'Budget' },
   { name: 'progress', label: 'Progress' },
@@ -47,6 +58,7 @@ export type AppIconProps = {
   size?: number;
   color?: string;
   selected?: boolean;
+  strokeWidth?: number;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -55,9 +67,10 @@ export function AppIcon({
   size = 24,
   color = '#F9F9F6',
   selected = false,
+  strokeWidth,
   style,
 }: AppIconProps) {
-  const { isLight } = useNativeAppearance();
+  const { isLight, isInspire, accentColor } = useNativeAppearance();
   return (
     <View
       style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, style]}
@@ -67,13 +80,13 @@ export function AppIcon({
       pointerEvents="none"
     >
       <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" accessible={false}>
-        {renderIconContent(name, appearanceColor(color, isLight), selected)}
+        {renderIconContent(name, appearanceColor(color, isLight, accentColor, isInspire), selected, strokeWidth)}
       </Svg>
     </View>
   );
 }
 
-function renderIconContent(name: AppIconName, color: string, selected: boolean) {
+function renderIconContent(name: AppIconName, color: string, selected: boolean, strokeWidth?: number) {
   switch (name) {
     // =========================================================================
     // FIVE-TAB NAVIGATION FAMILY (Option B: Confident Solid / Sculpted Silhouette)
@@ -290,11 +303,13 @@ function renderIconContent(name: AppIconName, color: string, selected: boolean) 
         <Path
           d="M12 5.5v13M5.5 12h13"
           stroke={color}
-          strokeWidth={2.4}
+          strokeWidth={strokeWidth ?? 2.4}
           strokeLinecap="round"
         />
       );
 
+    case 'close':
+      return <Path d="m6 6 12 12M6 18 18 6" stroke={color} strokeWidth={1.8} strokeLinecap="round" />;
     case 'check':
       return (
         <Path
@@ -468,6 +483,163 @@ function renderIconContent(name: AppIconName, color: string, selected: boolean) 
           strokeLinecap="round"
           strokeLinejoin="round"
         />
+      );
+
+    case 'bolt':
+      return (
+        <Path
+          d="m13 2-8 12h6l-1 8 9-13h-7Z"
+          stroke={color}
+          strokeWidth={1.8}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      );
+
+    case 'shield':
+      return (
+        <Path
+          d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"
+          stroke={color}
+          strokeWidth={1.8}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      );
+
+    case 'grid':
+      return (
+        <Path
+          d="M3 3h7v18H3ZM14 3h7v7h-7ZM14 14h7v7h-7Z"
+          stroke={color}
+          strokeWidth={1.8}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      );
+
+    case 'theme':
+      return (
+        <>
+          <Circle cx={12} cy={12} r={4.5} stroke={color} strokeWidth={1.8} />
+          <Path
+            d="M12 2v2.5M12 19.5v2.5M2 12h2.5M19.5 12h2.5M4.93 4.93l1.77 1.77M17.3 17.3l1.77 1.77M4.93 19.07l1.77-1.77M17.3 6.7l1.77-1.77"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+          />
+        </>
+      );
+
+    case 'palette':
+      return (
+        <>
+          <Path
+            d="M12 2.5C6.75 2.5 2.5 6.75 2.5 12c0 5.25 4.14 9.5 9.5 9.5 1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.21-.64-1.67-.42-.45-.66-1.04-.66-1.63 0-1.38 1.12-2.5 2.5-2.5H17c2.76 0 5-2.24 5-5 0-4.28-4.48-7.7-10-7.7Z"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Circle cx={7.5} cy={10.5} r={1.2} fill={color} />
+          <Circle cx={10.5} cy={7} r={1.2} fill={color} />
+          <Circle cx={14.5} cy={7.5} r={1.2} fill={color} />
+          <Circle cx={17.5} cy={11} r={1.2} fill={color} />
+        </>
+      );
+
+    case 'textSize':
+      return (
+        <>
+          <Path
+            d="M3.5 19 8.5 5.5l5 13.5M5.2 14.5h6.6"
+            stroke={color}
+            strokeWidth={1.9}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Path
+            d="M15 19l3.5-9 3.5 9M16.3 15.5h4.4"
+            stroke={color}
+            strokeWidth={1.9}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </>
+      );
+
+    case 'users':
+      return (
+        <>
+          <Circle cx={9} cy={7.5} r={3.5} stroke={color} strokeWidth={1.8} />
+          <Path
+            d="M2.5 20v-1.8a4 4 0 0 1 4-4h5a4 4 0 0 1 4 4V20"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Path
+            d="M16 3.8a3.5 3.5 0 0 1 0 6.6"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+          />
+          <Path
+            d="M18.5 14.5a4 4 0 0 1 3 3.7V20"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </>
+      );
+
+    case 'globe':
+      return (
+        <>
+          <Circle cx={12} cy={12} r={9} stroke={color} strokeWidth={1.8} />
+          <Path d="M3 12h18" stroke={color} strokeWidth={1.8} strokeLinecap="round" />
+          <Path
+            d="M12 3c-3.8 0-6 4-6 9s2.2 9 6 9 6-4 6-9-2.2-9-6-9Z"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinejoin="round"
+          />
+        </>
+      );
+
+    case 'warning':
+      return (
+        <>
+          <Path
+            d="M10.4 4.3a1.85 1.85 0 0 1 3.2 0l7.15 12.4A1.85 1.85 0 0 1 19.15 19.5H4.85a1.85 1.85 0 0 1-1.6-2.8l7.15-12.4Z"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinejoin="round"
+          />
+          <Path d="M12 9.2v4.3" stroke={color} strokeWidth={1.9} strokeLinecap="round" />
+          <Circle cx={12} cy={16.2} r={1} fill={color} />
+        </>
+      );
+
+    case 'edit':
+      return (
+        <>
+          <Path
+            d="M15.8 4.4a2.12 2.12 0 0 1 3 3L8.2 18l-4.2 1.2L5.2 15 15.8 4.4Z"
+            stroke={color}
+            strokeWidth={strokeWidth ?? 1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Path
+            d="M13.6 6.6l3.8 3.8"
+            stroke={color}
+            strokeWidth={strokeWidth ?? 1.8}
+            strokeLinecap="round"
+          />
+        </>
       );
   }
 }

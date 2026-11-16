@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initializeObligationSchedule as init, updateObligationSchedule as update, getObligationCycle as cycle, validateObligationSchedule, obligationScheduleKey } from '../src/finance/obligation-schedule.ts';
 import { calculateOverdueObligations, getScheduledObligationRows } from '../src/finance/payment-matching.ts';

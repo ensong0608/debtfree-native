@@ -1,3 +1,5 @@
+import { SessionVerification } from './identity-verification';
+import { createBoundedFetch } from './network-timeout';
 import 'react-native-url-polyfill/auto';
 import { AppState, Platform } from 'react-native';
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
@@ -5,7 +7,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Crypto from 'expo-crypto';
-import { CALLBACK, classifyAuthError, parseCallback, sandboxConfigProblem } from './auth-guards';
+import { CALLBACK, classifyAuthError, parseCallback, productionConfigProblem, sandboxConfigProblem } from './auth-guards';
 import { createChunkedStorage, type KeyValueStore } from './secure-chunks';
 
 // React Native's Hermes runtime does not provide WebCrypto's subtle.digest by default; without it,
@@ -34,21 +36,30 @@ globalThis.crypto = runtimeCrypto;
 
 WebBrowser.maybeCompleteAuthSession();
 const callback = CALLBACK;
-const projectUrl = process.env.EXPO_PUBLIC_SANDBOX_SUPABASE_URL ?? '';
-const publicKey = process.env.EXPO_PUBLIC_SANDBOX_SUPABASE_PUBLISHABLE_KEY ?? '';
-const allowedRef = process.env.EXPO_PUBLIC_SANDBOX_PROJECT_REF ?? '';
-const configProblem = sandboxConfigProblem(projectUrl, allowedRef, publicKey);
+const productionBuild = process.env.EXPO_PUBLIC_APP_ENV === 'production';
+const projectUrl = productionBuild
+  ? process.env.EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_URL ?? ''
+  : process.env.EXPO_PUBLIC_SANDBOX_SUPABASE_URL ?? '';
+const publicKey = productionBuild
+  ? process.env.EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_PUBLISHABLE_KEY ?? ''
+  : process.env.EXPO_PUBLIC_SANDBOX_SUPABASE_PUBLISHABLE_KEY ?? '';
+const allowedRef = productionBuild
+  ? process.env.EXPO_PUBLIC_MOBILE_PRODUCTION_PROJECT_REF ?? ''
+  : process.env.EXPO_PUBLIC_SANDBOX_PROJECT_REF ?? '';
+const configProblem = productionBuild
+  ? productionConfigProblem(projectUrl, allowedRef, publicKey)
+  : sandboxConfigProblem(projectUrl, allowedRef, publicKey);
 const localAcceptanceRequested = __DEV__ && process.env.EXPO_PUBLIC_ENABLE_LOCAL_ACCEPTANCE === 'true';
 const configured = configProblem === null && !localAcceptanceRequested;
 const signedOutKey = 'debtfree-signed-out';
 const secureOptions = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
 
 export const MESSAGES = {
-  notConfigured: 'A separate test sign-in service has not been configured yet.',
+  notConfigured: 'The sign-in service has not been configured yet.',
   offline: 'DebtFree could not reach the sign-in service. Check your connection and try again.',
   storage: "This device's secure storage is unavailable, so DebtFree cannot keep you signed in. Restart the app and try again.",
   unverified: 'The sign-in response could not be verified. Please try again.',
-  denied: 'Google sign-in was cancelled or this Google account is not authorized for the DebtFree test app.',
+  denied: 'Google sign-in was cancelled or this account is not authorized for DebtFree.',
   providerFailed: 'Google could not complete sign-in. Please try again.',
   exchangeFailed: 'Sign-in could not be completed. Please try again.',
   startFailed: 'Unable to start Google sign-in. Please try again.',
@@ -71,6 +82,7 @@ const secureStore: KeyValueStore = {
 const storage = createChunkedStorage(secureStore, () => Crypto.randomUUID());
 
 const client: SupabaseClient | null = configured ? createClient(projectUrl, publicKey, {
+  global: { fetch: createBoundedFetch(globalThis.fetch.bind(globalThis)) },
   auth: { storage, autoRefreshToken: true, persistSession: true, detectSessionInUrl: false, flowType: 'pkce' },
 }) : null;
 export function isConfigured() { return configured; }
@@ -87,6 +99,20 @@ function failure(error: unknown, fallback: string): Error {
   if (storageFailed) return new Error(MESSAGES.storage);
   return new Error(classifyAuthError(error) === 'network' ? MESSAGES.offline : fallback);
 }
+const verifiedIdentities = new WeakMap<Session, { user: Session['user']; verifiedAt: number }>();
+
+/** Consume a fresh server verification only within the next load operation. */
+export function createSessionVerification(session: Session): SessionVerification {
+  const evidence = verifiedIdentities.get(session);
+  verifiedIdentities.delete(session);
+  return new SessionVerification(session, async () => {
+    if (evidence && Date.now() - evidence.verifiedAt < 5000) return evidence.user;
+    const { data, error } = await getSupabaseClient().auth.getUser();
+    if (error || !data.user) throw new AuthUnavailableError(MESSAGES.offline);
+    return data.user;
+  });
+}
+
 async function clearLocalSession() {
   try { await client?.auth.signOut({ scope: 'local' }); } catch { /* the sign-out lock or next check still protects the UI */ }
 }
@@ -126,7 +152,9 @@ export async function verifiedSession(): Promise<Session | null> {
     await clearLocalSession();
     return null;
   }
-  return { ...data.session, user: identity.user };
+  const confirmed = { ...data.session, user: identity.user };
+  verifiedIdentities.set(confirmed, { user: identity.user, verifiedAt: Date.now() });
+  return confirmed;
 }
 
 // Authorization codes already submitted in this process; a replayed callback is rejected before reaching the server.

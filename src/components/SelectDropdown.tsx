@@ -1,13 +1,16 @@
 import { useState } from 'react';
 import {
-  Modal,
+  Keyboard,
   StyleSheet,
   TouchableWithoutFeedback,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
-import { Pressable, ScrollView, Text, View } from './NativeAppearance';
+import { Pressable, ScrollView, Text, View, useNativeAppearance } from './NativeAppearance';
 import { AppIcon, type AppIconName } from './AppIcon';
+import Svg, { Path } from 'react-native-svg';
+import { AdaptiveModal } from './ModalOverlay';
+import { useBottomInset, bottomInsetPadding } from './bottom-inset';
 
 export type DropdownOption<T extends string | number> = {
   value: T;
@@ -24,6 +27,11 @@ export type SelectDropdownProps<T extends string | number> = {
   placeholder?: string;
   style?: StyleProp<ViewStyle>;
   sheetTitle?: string;
+  compact?: boolean;
+  embedded?: boolean;
+  triggerLabel?: string;
+  accessibilityLabel?: string;
+  disabled?: boolean;
 };
 
 export function SelectDropdown<T extends string | number>({
@@ -34,7 +42,14 @@ export function SelectDropdown<T extends string | number>({
   placeholder = 'Select an option',
   style,
   sheetTitle,
+  compact = false,
+  embedded = false,
+  triggerLabel,
+  accessibilityLabel,
+  disabled = false,
 }: SelectDropdownProps<T>) {
+  const { palette } = useNativeAppearance();
+  const bottomInset = useBottomInset();
   const [modalVisible, setModalVisible] = useState(false);
 
   const selectedOption = options.find(opt => opt.value === value);
@@ -42,36 +57,50 @@ export function SelectDropdown<T extends string | number>({
 
   return (
     <View style={[styles.container, style]}>
-      {label ? <Text style={styles.label}>{label}</Text> : null}
+      {label ? <Text style={[styles.label, { color: palette.muted }]}>{label}</Text> : null}
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${label ?? 'Selection'}: ${displayLabel}`}
-        onPress={() => setModalVisible(true)}
+        accessibilityLabel={`${accessibilityLabel ?? label ?? 'Selection'}: ${displayLabel}`}
+        accessibilityState={{ disabled }}
+        disabled={disabled}
+        hitSlop={compact ? { top: 4, bottom: 4 } : undefined}
+        onPress={() => {
+          if (disabled) return;
+          Keyboard.dismiss();
+          setModalVisible(true);
+        }}
         style={({ pressed }) => [
           styles.trigger,
-          modalVisible && styles.triggerActive,
-          pressed && styles.triggerPressed,
+          { backgroundColor: palette.raised, borderColor: palette.inputBorder },
+          compact && styles.compactTrigger,
+          compact && { borderColor: palette.border, backgroundColor: palette.surface },
+          embedded && { borderWidth: 0, borderRadius: 0, backgroundColor: 'transparent' },
+          modalVisible && { borderColor: palette.brand, backgroundColor: palette.tint },
+          pressed && !disabled && { backgroundColor: palette.tint },
+          disabled && { opacity: 0.6 },
         ]}
       >
         <View style={styles.triggerContent}>
-          {selectedOption?.icon && (
-            <AppIcon name={selectedOption.icon} size={18} color="#81DFD2" style={styles.leadingIcon} />
+          {!compact && selectedOption?.icon && (
+            <AppIcon name={selectedOption.icon} size={18} color={palette.brand} style={styles.leadingIcon} />
           )}
           <Text
             numberOfLines={1}
-            style={[styles.triggerText, !selectedOption && styles.placeholderText]}
+            style={[styles.triggerText, { color: selectedOption ? palette.text : palette.muted }, compact && styles.compactText]}
           >
-            {displayLabel}
+            {triggerLabel ?? displayLabel}
           </Text>
         </View>
-        <AppIcon
-          name="chevronDown"
-          size={18}
-          color="#81DFD2"
-        />
+        {!disabled ? (
+          <AppIcon
+            name="chevronDown"
+            size={compact ? 14 : 18}
+            color={palette.brand}
+          />
+        ) : null}
       </Pressable>
 
-      <Modal
+      <AdaptiveModal
         visible={modalVisible}
         transparent
         animationType="fade"
@@ -80,18 +109,18 @@ export function SelectDropdown<T extends string | number>({
         <TouchableWithoutFeedback onPress={() => setModalVisible(false)}>
           <View style={styles.backdrop}>
             <TouchableWithoutFeedback>
-              <View style={styles.sheet}>
-                <View style={styles.sheetHeader}>
-                  <Text style={styles.sheetTitle}>
+              <View style={[styles.sheet, { backgroundColor: palette.surface, borderColor: palette.border, paddingBottom: bottomInsetPadding(bottomInset, 16) }]}>
+                <View style={[styles.sheetHeader, { borderBottomColor: palette.border }]}>
+                  <Text style={[styles.sheetTitle, { color: palette.text }]}>
                     {sheetTitle ?? label ?? 'Select an Option'}
                   </Text>
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Close picker"
                     onPress={() => setModalVisible(false)}
-                    style={styles.closeButton}
+                    style={[styles.closeButton, { backgroundColor: 'transparent' }]}
                   >
-                    <Text style={styles.closeButtonText}>X</Text>
+                    <Svg width={20} height={20} viewBox="0 0 24 24" accessible={false}><Path d="m6 6 12 12M6 18 18 6" stroke={palette.muted} strokeWidth={1.8} strokeLinecap="round" /></Svg>
                   </Pressable>
                 </View>
 
@@ -113,8 +142,8 @@ export function SelectDropdown<T extends string | number>({
                         }}
                         style={({ pressed }) => [
                           styles.optionItem,
-                          isSelected && styles.optionItemSelected,
-                          pressed && styles.optionItemPressed,
+                          isSelected && { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border },
+                          pressed && { backgroundColor: palette.tint },
                         ]}
                       >
                         <View style={styles.optionLeft}>
@@ -122,7 +151,7 @@ export function SelectDropdown<T extends string | number>({
                             <AppIcon
                               name={option.icon}
                               size={20}
-                              color={isSelected ? '#81DFD2' : '#8A9690'}
+                              color={isSelected ? palette.brand : palette.muted}
                               style={styles.optionIcon}
                             />
                           )}
@@ -130,18 +159,18 @@ export function SelectDropdown<T extends string | number>({
                             <Text
                               style={[
                                 styles.optionLabel,
-                                isSelected && styles.optionLabelSelected,
+                                { color: isSelected ? palette.brand : palette.text },
                               ]}
                             >
                               {option.label}
                             </Text>
                             {option.subtitle ? (
-                              <Text style={styles.optionSubtitle}>{option.subtitle}</Text>
+                              <Text style={[styles.optionSubtitle, { color: palette.muted }]}>{option.subtitle}</Text>
                             ) : null}
                           </View>
                         </View>
                         {isSelected ? (
-                          <AppIcon name="check" size={20} color="#81DFD2" />
+                          <AppIcon name="check" size={20} color={palette.brand} />
                         ) : null}
                       </Pressable>
                     );
@@ -151,7 +180,7 @@ export function SelectDropdown<T extends string | number>({
             </TouchableWithoutFeedback>
           </View>
         </TouchableWithoutFeedback>
-      </Modal>
+      </AdaptiveModal>
     </View>
   );
 }
@@ -165,25 +194,34 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#D8DFDA',
     marginBottom: 6,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    textTransform: 'none',
+    letterSpacing: 0,
   },
   trigger: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#1E2522',
+    backgroundColor: '#191E1B',
     borderWidth: 1,
-    borderColor: '#34403A',
+    borderColor: '#222A25',
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     minHeight: 48,
   },
   triggerActive: {
-    borderColor: '#81DFD2',
-    backgroundColor: '#232C28',
+    borderColor: '#76DCB9',
+    backgroundColor: '#1C2721',
   },
+  compactTrigger: {
+    backgroundColor: 'transparent',
+    borderColor: '#353D38',
+    borderRadius: 9,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  compactText: { fontSize: 13, fontWeight: '600' },
   triggerPressed: {
     backgroundColor: '#26302B',
   },
@@ -211,13 +249,13 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   sheet: {
-    backgroundColor: '#191F1C',
+    backgroundColor: '#141816',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     borderWidth: 1,
-    borderColor: '#313C36',
+    borderColor: '#222A25',
     maxHeight: '75%',
-    paddingBottom: 28,
+    paddingBottom: 0,
   },
   sheetHeader: {
     flexDirection: 'row',
@@ -227,7 +265,7 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#27312C',
+    borderBottomColor: '#222A25',
   },
   sheetTitle: {
     fontSize: 17,
@@ -235,8 +273,8 @@ const styles = StyleSheet.create({
     color: '#F9F9F6',
   },
   closeButton: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
     borderRadius: 16,
     backgroundColor: '#28332E',
     alignItems: 'center',
@@ -289,7 +327,7 @@ const styles = StyleSheet.create({
     color: '#D8DFDA',
   },
   optionLabelSelected: {
-    color: '#81DFD2',
+    color: '#76DCB9',
     fontWeight: '700',
   },
   optionSubtitle: {

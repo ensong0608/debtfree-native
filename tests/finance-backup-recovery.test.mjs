@@ -64,11 +64,17 @@ test('requires an explicit per-conflict choice before checkpointing or RPC', asy
   const accepted = await h.service.restore(fixture(), { operationId: 'op-accepted', mode: 'merge', acceptedConflictIds: ['transactions:tx'] });
   assert.equal(accepted.status, 'confirmed');
   assert.equal(h.state.rpcCalls[0].snapshot.transactions[0].payee, 'Card');
+  assert.deepEqual(h.state.rpcCalls[0].acceptedConflictIds, ['transactions:tx']);
+  assert.deepEqual(h.state.rpcCalls[0].keptCurrentConflictIds, []);
+  assert.equal(h.state.rpcCalls[0].confirmFullReplacement, false);
 
   const keepCurrent = harness({ current, rpc: successfulReceipt });
   const kept = await keepCurrent.service.restore(fixture(), { operationId: 'op-kept', mode: 'merge', keptCurrentConflictIds: ['transactions:tx'] });
   assert.equal(kept.status, 'confirmed');
-  assert.equal(keepCurrent.state.rpcCalls[0].snapshot.transactions[0].payee, 'Updated locally');
+  assert.equal(keepCurrent.state.rpcCalls[0].snapshot.transactions[0].payee, 'Card');
+  assert.deepEqual(keepCurrent.state.rpcCalls[0].acceptedConflictIds, []);
+  assert.deepEqual(keepCurrent.state.rpcCalls[0].keptCurrentConflictIds, ['transactions:tx']);
+  assert.equal(keepCurrent.state.rpcCalls[0].confirmFullReplacement, false);
 });
 
 test('checkpoints before RPC and reports an absent RPC as unavailable', async () => {
@@ -127,3 +133,162 @@ test('returns the server authoritative snapshot on confirmed restore', async () 
   assert.deepEqual(result.snapshot, authoritative);
   assert.equal((await h.repo.load(owner)).status, 'completed');
 });
+
+test('recovers and upgrades legacy checkpoints even when settingsRevision differs', async () => {
+  const legacyFingerprint = 'a'.repeat(64);
+  const incoming = fixture();
+  incoming.onboardingData.settingsRevision = 2;
+  const before = fixture();
+  before.onboardingData.settingsRevision = 9;
+  const acceptedKeys = [`onboardingData:${owner.userId}`];
+
+  // Case 1: late receipt arrives under the legacy fingerprint
+  const lateRecovery = harness({
+    current: before,
+    receipt: async (operationId) => operationId === 'op-legacy-late'
+      ? { operationId, payloadFingerprint: legacyFingerprint, restoredSnapshot: clone(incoming) }
+      : null,
+  });
+  await lateRecovery.repo.begin(owner, before, incoming, {
+    operationId: 'op-legacy-late',
+    baselineToken: 'baseline-legacy',
+    payloadFingerprint: legacyFingerprint,
+    resolutionMode: 'merge',
+    acceptedConflictIds: acceptedKeys,
+    keptCurrentConflictIds: [],
+  });
+  await lateRecovery.repo.update(owner, { status: 'failed', cursor: 0, error: 'network lost' });
+
+  const recovered = await lateRecovery.service.restore(incoming, {
+    operationId: 'op-legacy-late',
+    mode: 'merge',
+    acceptedConflictIds: acceptedKeys,
+  });
+  assert.equal(recovered.status, 'confirmed');
+  assert.equal(recovered.recoveredAfterLostResponse, true);
+  assert.equal(lateRecovery.state.rpcCalls.length, 0);
+
+  // Case 2: no legacy receipt yet -> upgrades checkpoint to v2 and keeps legacyPayloadFingerprint
+  const upgrade = harness({
+    current: before,
+    receipt: async () => null,
+    rpc: successfulReceipt,
+  });
+  await upgrade.repo.begin(owner, before, incoming, {
+    operationId: 'op-legacy-upgrade',
+    baselineToken: 'baseline-legacy',
+    payloadFingerprint: legacyFingerprint,
+    resolutionMode: 'merge',
+    acceptedConflictIds: acceptedKeys,
+    keptCurrentConflictIds: [],
+  });
+  await upgrade.repo.update(owner, { status: 'failed', cursor: 0, error: 'network lost' });
+
+  const upgraded = await upgrade.service.restore(incoming, {
+    operationId: 'op-legacy-upgrade',
+    mode: 'merge',
+    acceptedConflictIds: acceptedKeys,
+  });
+  assert.equal(upgraded.status, 'confirmed');
+  assert.equal(upgraded.recoveredAfterLostResponse, false);
+  assert.equal(upgrade.state.rpcCalls.length, 1);
+  assert.notEqual(upgrade.state.rpcCalls[0].payloadFingerprint, legacyFingerprint);
+  assert.deepEqual(upgrade.state.rpcCalls[0].acceptedConflictIds, acceptedKeys);
+  const savedCheckpoint = await upgrade.repo.load(owner);
+  assert.equal(savedCheckpoint.requestVersion, 2);
+  assert.equal(savedCheckpoint.legacyPayloadFingerprint, legacyFingerprint);
+  assert.equal(savedCheckpoint.status, 'completed');
+});
+
+test('prunes archivedPaidOffDebtIds on merge when onboardingData and debts conflict on zero balance', async () => {
+  const incoming = fixture();
+  incoming.onboardingData.debts[0].balance = 0;
+  incoming.onboardingData.archivedPaidOffDebtIds = ['debt'];
+  const current = fixture();
+  current.onboardingData.debts[0].balance = 100;
+  const h = harness({ current, rpc: successfulReceipt });
+
+  const result = await h.service.restore(incoming, {
+    operationId: 'op-merge-archive-prune',
+    mode: 'merge',
+    acceptedConflictIds: [`onboardingData:${owner.userId}`],
+    keptCurrentConflictIds: ['debts:debt'],
+  });
+  assert.equal(result.status, 'confirmed');
+  assert.equal(h.state.rpcCalls.length, 1);
+  assert.deepEqual(h.state.rpcCalls[0].acceptedConflictIds, [`onboardingData:${owner.userId}`]);
+  assert.deepEqual(h.state.rpcCalls[0].keptCurrentConflictIds, ['debts:debt']);
+});
+
+test('recovers legacy v1 checkpoint without resolutionMode or sorted conflict IDs', async () => {
+  const legacyFingerprint = 'b'.repeat(64);
+  const incoming = fixture();
+  incoming.transactions[0].payee = 'Backup Payee';
+  incoming.onboardingData.extraMonthlyPayment = 25;
+  const before = fixture();
+  const keysInOrder = [`onboardingData:${owner.userId}`, 'transactions:tx'];
+  const unsortedKeys = ['transactions:tx', `onboardingData:${owner.userId}`];
+
+  const h = harness({
+    current: before,
+    receipt: async (operationId) => operationId === 'op-legacy-no-mode'
+      ? { operationId, payloadFingerprint: legacyFingerprint, restoredSnapshot: clone(incoming) }
+      : null,
+  });
+  await h.repo.begin(owner, before, incoming, {
+    operationId: 'op-legacy-no-mode',
+    baselineToken: 'baseline-legacy-2',
+    payloadFingerprint: legacyFingerprint,
+    acceptedConflictIds: unsortedKeys,
+    keptCurrentConflictIds: [],
+  });
+  await h.repo.update(owner, { status: 'failed', cursor: 0, error: 'lost response' });
+
+  const recovered = await h.service.restore(incoming, {
+    operationId: 'op-legacy-no-mode',
+    mode: 'merge',
+    acceptedConflictIds: keysInOrder,
+  });
+  assert.equal(recovered.status, 'confirmed');
+  assert.equal(recovered.recoveredAfterLostResponse, true);
+  assert.equal(h.state.rpcCalls.length, 0);
+});
+
+test('binds v2 restore requests to householdId and membershipVersion and blocks non-owners', async () => {
+  const memberHarness = harness({ authOwner: { ...owner, membershipVersion: '3', role: 'member' }, rpc: successfulReceipt });
+  const denied = await memberHarness.service.restore(fixture(), { operationId: 'op-member', mode: 'merge' });
+  assert.equal(denied.status, 'rejected');
+  assert.match(denied.message, /owner/);
+  assert.equal(memberHarness.state.reads, 0);
+  assert.equal(memberHarness.state.rpcCalls.length, 0);
+
+  const ownerHarness = harness({ authOwner: { ...owner, membershipVersion: '3', role: 'owner' }, rpc: successfulReceipt });
+  const confirmed = await ownerHarness.service.restore(fixture(), { operationId: 'op-owner-v2', mode: 'merge' });
+  assert.equal(confirmed.status, 'confirmed');
+  assert.equal(ownerHarness.state.rpcCalls[0].householdId, owner.householdId);
+  assert.equal(ownerHarness.state.rpcCalls[0].expectedMembershipVersion, '3');
+});
+
+test('rejects silent replay across changed membershipVersion unless prior server receipt is proven', async () => {
+  const staleHarness = harness({
+    authOwner: { ...owner, membershipVersion: '1', role: 'owner' },
+    rpc: async () => { throw new Error('network lost'); },
+    receipt: async () => null,
+  });
+  const first = await staleHarness.service.restore(fixture(), { operationId: 'op-mv-change', mode: 'merge' });
+  assert.equal(first.status, 'uncertain');
+
+  let membershipTwoAuthOwner = { ...owner, membershipVersion: '2', role: 'owner' };
+  const sameRepoAdapter = {
+    getAuthenticatedOwner: async () => membershipTwoAuthOwner,
+    readCurrentSnapshot: async () => ({ snapshot: fixture(), token: 'baseline-2' }),
+    restoreSnapshot: async () => { throw new Error('must not replay on changed membershipVersion'); },
+    findRestoreReceipt: async () => null,
+    checkpoints: staleHarness.repo,
+  };
+  const serviceV2 = createNativeBackupRecovery(sameRepoAdapter);
+  const blocked = await serviceV2.restore(fixture(), { operationId: 'op-mv-change', mode: 'merge' });
+  assert.equal(blocked.status, 'rejected');
+  assert.match(blocked.message, /membership changed/i);
+});
+
