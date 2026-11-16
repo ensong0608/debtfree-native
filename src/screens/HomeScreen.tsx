@@ -1846,7 +1846,12 @@ export function HomeScreen({
               </View>
             ) : null}
             {incompleteLoanSchedules.length > 0 ? <Card><Text style={ui.heading}>Loan due dates needed</Text><Text style={ui.small}>These accounts are included in Budget but cannot appear in payment reminders until a due day is set.</Text>{incompleteLoanSchedules.map(debt => <Pressable key={debt.id} accessibilityRole="button" disabled={!canEdit} onPress={() => openEditDebtEditor(debt)} style={ui.button}><Text style={ui.buttonText}>{debt.name} - Set due day</Text></Pressable>)}</Card> : null}
-            <SnapshotCard debts={onboardingData.debts.filter(item => !isPaidOffAccountArchived(item, onboardingData.archivedPaidOffDebtIds))} currencySymbol={currencySymbol} onInformationVisibilityChange={setHomeInformationOpen} />
+            <SnapshotCard
+              debts={onboardingData.debts.filter(item => !isPaidOffAccountArchived(item, onboardingData.archivedPaidOffDebtIds))}
+              referenceDebts={onboardingData.debts}
+              currencySymbol={currencySymbol}
+              onInformationVisibilityChange={setHomeInformationOpen}
+            />
             <Card style={{ padding: 16, gap: isInspire ? 6 : 2 }}>
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }]}>
                 <View style={{ flex: 1, minWidth: 0, gap: 2 }}>

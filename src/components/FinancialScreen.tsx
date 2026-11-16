@@ -341,10 +341,12 @@ export function snapshot(debts: DebtItem[]) {
 
 export function SnapshotCard({
   debts,
+  referenceDebts = debts,
   currencySymbol,
   onInformationVisibilityChange,
 }: {
   debts: DebtItem[];
+  referenceDebts?: DebtItem[];
   currencySymbol: string;
   onInformationVisibilityChange?: (visible: boolean) => void;
 }) {
@@ -370,12 +372,12 @@ export function SnapshotCard({
             {`\u00b7 ${activeCategory} (${activeDebts.length})`}
           </Text>
         </View>
-        <InformationButton onVisibilityChange={onInformationVisibilityChange} label="Balance change information" detail={"Current account balances are compared with the entered original balances for this category. Paid shows how much has been reduced from original balances; Balance shows what remains.\n\nA comparison is unavailable if any account is missing an entered reference. This is a balance snapshot, not recorded payments or lifetime performance."} />
+        <InformationButton onVisibilityChange={onInformationVisibilityChange} label="Balance change information" detail={"The Paid comparison includes original balances for active and previously paid-off household accounts. Balance shows current active debt only.\n\nA comparison is unavailable if any included account is missing an entered reference. This is a balance snapshot, not recorded payments or lifetime payment performance."} />
       </View>
       <View onLayout={event => { const next = event.nativeEvent.layout.width; if (next !== width) setWidth(next); }}>
         <ScrollView ref={scrollRef} horizontal pagingEnabled directionalLockEnabled showsHorizontalScrollIndicator={false} onContentSizeChange={() => { if (width) scrollRef.current?.scrollTo({ x: index * width, animated: false }); }} onMomentumScrollEnd={event => { if (width) setIndex(Math.max(0, Math.min(categories.length - 1, Math.round(event.nativeEvent.contentOffset.x / width)))); }}>
           {categories.map(category => {
-            const selectedDebts = categoryDebts(debts, category);
+            const selectedDebts = categoryDebts(referenceDebts, category);
             const stats = snapshot(selectedDebts);
             const hasReference = selectedDebts.length > 0 && selectedDebts.every(debt => debt.originalBalance != null);
             const paidRatio = hasReference ? Math.max(0, Math.min(100, stats.percent)) : 0;

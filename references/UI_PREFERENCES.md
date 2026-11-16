@@ -60,6 +60,8 @@
 
 # Current UI decisions
 
+> **Owner correction - 2026-11-16 historical progress references:** Include previously paid-off household accounts and their entered original balances in the Home balance snapshot's Paid/reference comparison so users can see progress across the household's history. Keep their zero balances out of current active debt, utilization, payoff, budget, and scheduled-obligation calculations. Home's current Balance remains active debt only. This supersedes archived-account exclusion only for the historical comparison reference; it does not add archived debt back into active balances or change ledger/payment calculations.
+
 Updated 2026-11-08 from the owner's explicit corrections. This is the current decision ledger, not a list of redesign ideas. Read it before changing any screen. It supersedes conflicting historical screenshots, audit mockups, tracker entries and prototype navigation descriptions. Preserve existing working-tree changes.
 
 ## Style and wording
