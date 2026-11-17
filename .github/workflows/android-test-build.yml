@@ -1,8 +1,15 @@
-name: Android private test build
+name: Android private APK build
 on:
-  push:
-    branches: [codex/dfn-002-native-auth]
-    paths: ['.github/workflows/android-test-build.yml', 'app.json']
+  workflow_dispatch:
+    inputs:
+      build_variant:
+        description: Preview is the standalone installable APK; choose debug only for a Metro development client
+        required: true
+        type: choice
+        default: preview
+        options:
+          - preview
+          - debug
 permissions:
   contents: read
 jobs:
@@ -10,9 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      EXPO_PUBLIC_SANDBOX_SUPABASE_URL: https://bitepxsdujceoszbldhd.supabase.co
-      EXPO_PUBLIC_SANDBOX_PROJECT_REF: bitepxsdujceoszbldhd
-      EXPO_PUBLIC_SANDBOX_SUPABASE_PUBLISHABLE_KEY: sb_publishable_iMQloEyhziuIM1mn_O1xwQ_YDWHhZKY
+      EXPO_PUBLIC_APP_ENV: sandbox
+      DFN_ANDROID_PACKAGE: com.debtfree.nativetest
+      EXPO_PUBLIC_APP_SCHEME: com.debtfree.native.test
+      EXPO_PUBLIC_SANDBOX_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SANDBOX_SUPABASE_URL }}
+      EXPO_PUBLIC_SANDBOX_PROJECT_REF: ${{ vars.EXPO_PUBLIC_SANDBOX_PROJECT_REF }}
+      EXPO_PUBLIC_SANDBOX_SUPABASE_PUBLISHABLE_KEY: ${{ vars.EXPO_PUBLIC_SANDBOX_SUPABASE_PUBLISHABLE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,13 +35,37 @@ jobs:
           java-version: '17'
       - run: npm ci
       - run: npx expo prebuild --platform android --no-install
-      - name: Build private test APK
+      - name: Build standalone sandbox preview APK
+        if: inputs.build_variant == 'preview'
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew assemblePreview --no-daemon
+      - name: Validate preview APK and write provenance
+        if: inputs.build_variant == 'preview'
+        run: >-
+          python3 scripts/android_apk_delivery.py
+          --apk android/app/build/outputs/apk/preview/app-preview.apk
+          --variant preview
+          --environment sandbox
+          --source-commit "$GITHUB_SHA"
+          --metadata android/app/build/outputs/apk/preview/apk-delivery-metadata.json
+      - name: Build development APK for Metro
+        if: inputs.build_variant == 'debug'
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
+        if: inputs.build_variant == 'preview'
         with:
-          name: DebtFree-Native-Android-Test-APK
-          path: android/app/build/outputs/apk/release/*.apk
+          name: DebtFree-Native-Android-Standalone-Preview-APK
+          path: |
+            android/app/build/outputs/apk/preview/app-preview.apk
+            android/app/build/outputs/apk/preview/apk-delivery-metadata.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: inputs.build_variant == 'debug'
+        with:
+          name: DebtFree-Native-Android-Development-APK
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
 

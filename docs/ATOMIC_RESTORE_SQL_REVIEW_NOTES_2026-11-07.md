@@ -3,13 +3,13 @@
 **Status:** Implementation Complete for Review (Forward-only migration authored; UNAPPLIED).  
 **Task:** T-058-SQL  
 **Author:** Worker Gemini 3.8 Flash High  
-**Migration File:** [`supabase/migrations/20261107231432_atomic_native_restore.sql`](file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/supabase/migrations/20261107231432_atomic_native_restore.sql)  
+**Migration File:** [`supabase/migrations/20261108173032_atomic_native_restore_test_20261108.sql`](file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/supabase/migrations/20261108173032_atomic_native_restore_test_20261108.sql)
 
 ---
 
 ## 1. Prerequisites and Schema Dependencies
 
-The migration [`20261107231432_atomic_native_restore.sql`](file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/supabase/migrations/20261107231432_atomic_native_restore.sql) depends upon the following migration chain (in order):
+The migration [`20261108173032_atomic_native_restore_test_20261108.sql`](file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/supabase/migrations/20261108173032_atomic_native_restore_test_20261108.sql) depends upon the following migration chain (in order):
 
 1. `20261105065959_debt_currency_precision.sql`: `numeric(18, 4)` precision on `balance`, `minimum_payment`, `original_balance`, and `credit_limit`.
 2. `20261106054618_onboarding_and_households.sql`: `households`, `household_members`, and initial `debts` table with RLS.

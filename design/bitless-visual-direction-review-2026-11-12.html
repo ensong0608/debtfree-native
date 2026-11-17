@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BitLess visual direction review</title>
+  <style>
+    :root {
+      --brand-blue: #0051FB;
+      --brand-sky: #ABDFFD;
+      --brand-aqua: #27EEE9;
+      --brand-mint: #98EDC1;
+      --brand-navy: #070D5B;
+      --white: #FFFFFF;
+      --background: #FFFFFF;
+      --foreground: #070D5B;
+      --muted: #596887;
+      --card: #FFFFFF;
+      --border: #DDE5F0;
+      --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: transparent; color: var(--foreground); font-family: var(--font-sans); }
+    main { width: 100%; max-width: 1280px; margin: 0 auto; display: grid; gap: 12px; }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 2px; color: var(--muted); font-size: 12px; }
+    .topline strong { color: var(--brand-navy); letter-spacing: -.02em; font-size: 14px; }
+    nav { display: flex; gap: 7px; flex-wrap: wrap; }
+    nav a { color: var(--muted); text-decoration: none; border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; font-size: 11px; }
+    .slide { position: relative; background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: 20px; padding: 18px; overflow: hidden; }
+    .slide-index { color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin: 9px 0 6px; color: var(--brand-navy); font-size: clamp(30px, 4vw, 46px); letter-spacing: -.055em; line-height: 1; }
+    h2 { margin: 7px 0 4px; color: var(--brand-navy); font-size: clamp(22px, 2.7vw, 31px); line-height: 1.06; letter-spacing: -.04em; }
+    h3 { margin: 0 0 8px; font-size: 14px; line-height: 1.2; }
+    p { color: var(--muted); line-height: 1.45; }
+    .lede { max-width: 540px; margin-bottom: 0; font-size: 14px; }
+    .brand-grid { display: grid; grid-template-columns: minmax(0, 1.13fr) minmax(350px, .87fr); gap: 20px; align-items: stretch; margin-top: 18px; }
+    .logo-frame { min-height: 210px; display: grid; place-items: center; padding: 18px; background: #fff; border: 1px solid #dfe7f1; border-radius: 17px; }
+    .logo-frame img { display: block; width: min(100%, 660px); max-height: 160px; object-fit: contain; }
+    .logo-caption { margin: 10px 2px 0; font-size: 11px; }
+    .palette-box { padding: 17px; border: 1px solid var(--border); border-radius: 17px; background: color-mix(in srgb, var(--card) 88%, var(--brand-sky)); }
+    .palette-box > p { margin: 0 0 13px; font-size: 12px; }
+    .swatches { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .swatch { min-height: 66px; display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; padding: 9px 10px; border-radius: 11px; color: var(--brand-navy); font-size: 10px; font-weight: 700; }
+    .swatch.dark { color: #fff; }
+    .swatch code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 9px; opacity: .9; }
+    .brand-foot { display: flex; align-items: center; gap: 9px; margin-top: 12px; font-size: 11px; color: var(--muted); }
+    .brand-foot .dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--brand-blue); }
+    .icons-intro { margin: 7px 0 15px; font-size: 12px; }
+    .icon-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+    .icon-card { min-height: 108px; display: grid; align-content: center; justify-items: center; gap: 11px; padding: 12px 7px; border-radius: 15px; background: #F3F7FF; color: var(--brand-navy); }
+    .icon-card svg { width: 42px; height: 42px; display: block; }
+    .icon-card span { font-size: 12px; font-weight: 650; text-align: center; }
+    .icon-card.selected { color: var(--brand-blue); box-shadow: inset 0 0 0 1px #0051FB; }
+    .icon-card.selected span { color: var(--brand-blue); }
+    .dark-strip { margin-top: 10px; padding: 11px 13px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-radius: 14px; color: #fff; background: var(--brand-navy); }
+    .dark-strip .dark-note { max-width: 270px; color: var(--brand-sky); font-size: 11px; line-height: 1.4; }
+    .dark-icons { display: flex; align-items: center; gap: clamp(12px, 3vw, 34px); }
+    .dark-icons span { display: grid; justify-items: center; gap: 3px; color: var(--brand-sky); font-size: 9px; }
+    .dark-icons svg { width: 25px; height: 25px; }
+    .dark-icons .active { color: var(--brand-aqua); }
+    .lower-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+    .note-card { padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; }
+    .note-card h3 { margin-bottom: 5px; }
+    .note-card p { margin: 0; font-size: 11px; }
+    .status { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #c8d9ee; border-radius: 999px; padding: 5px 9px; color: var(--brand-navy); font-size: 10px; font-weight: 700; white-space: nowrap; }
+    .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--brand-mint); }
+    .progress-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 13px; }
+    .progress-heading p { margin: 0; font-size: 12px; }
+    .progress-image { display: block; width: 100%; height: auto; max-height: 740px; object-fit: contain; background: #fff; border: 1px solid #e0e5ee; border-radius: 14px; }
+    .image-note { display: grid; grid-template-columns: 1fr 1.3fr; gap: 10px; margin-top: 11px; }
+    .image-note > div { padding: 11px 13px; border-radius: 13px; background: #F3F7FF; color: var(--brand-navy); font-size: 11px; line-height: 1.4; }
+    .image-note b { color: var(--brand-blue); }
+    .footer-line { display: flex; justify-content: space-between; gap: 12px; padding: 2px 2px 6px; color: var(--muted); font-size: 10px; }
+    @media (max-width: 760px) {
+      .slide { padding: 16px; border-radius: 17px; }
+      .brand-grid { grid-template-columns: 1fr; gap: 12px; }
+      .logo-frame { min-height: 170px; }
+      .logo-frame img { max-height: 140px; }
+      .swatches { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .swatch { min-height: 58px; display: grid; align-content: end; gap: 3px; }
+      .icon-row { gap: 5px; }
+      .icon-card { min-height: 95px; gap: 7px; padding: 8px 3px; }
+      .icon-card svg { width: 34px; height: 34px; }
+      .icon-card span { font-size: 10px; }
+      .dark-strip { align-items: flex-start; flex-direction: column; }
+      .dark-strip .dark-note { max-width: none; }
+      .dark-icons { width: 100%; justify-content: space-between; }
+      .lower-grid, .image-note { grid-template-columns: 1fr; }
+      .progress-heading { align-items: flex-start; flex-direction: column; }
+      .topline { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute;overflow:hidden">
+    <symbol id="icon-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2.8 11.1 12 3.4l9.2 7.7" /><path d="M4.8 9.5V20h14.4V9.5" /><path d="M12 11.3v6.2" /><path d="M14.2 12.4c-.35-.7-1.1-1.05-2.1-1.05-1.15 0-1.9.55-1.9 1.35 0 1.8 4 1 4 3.1 0 .8-.78 1.4-2.05 1.4-1.02 0-1.82-.4-2.2-1.15" />
+    </symbol>
+    <symbol id="icon-debt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="2.2" /><path d="M4 9.8h16" /><path d="M7 14.2h4" />
+    </symbol>
+    <symbol id="icon-transactions" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="5.5" width="16" height="14.5" rx="1.8" /><path d="M8 3.5v4M16 3.5v4M4 9.5h16" /><circle cx="8" cy="13" r=".55" fill="currentColor" stroke="none" /><circle cx="12" cy="13" r=".55" fill="currentColor" stroke="none" /><circle cx="16" cy="13" r=".55" fill="currentColor" stroke="none" /><circle cx="8" cy="16.5" r=".55" fill="currentColor" stroke="none" /><circle cx="12" cy="16.5" r=".55" fill="currentColor" stroke="none" /><circle cx="16" cy="16.5" r=".55" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="icon-budget" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5.4 5h12.2a2 2 0 0 1 2 2v1.3" /><path d="M5.5 5a2.5 2.5 0 0 0 0 5h14.8v9.2H5.5A2.5 2.5 0 0 1 3 16.7V7.5A2.5 2.5 0 0 1 5.5 5Z" /><path d="M17.3 12.5h4v4h-4a2 2 0 0 1 0-4Z" /><circle cx="17.7" cy="14.5" r=".45" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="icon-progress" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="3.8" width="17" height="11.5" rx="1.5" /><path d="m7.5 11.2 3.1-3.1 2.2 1.9 3.8-4.1M14.2 5.9h2.5v2.5" /><path d="m8 15.3 4 5.2 4-5.2M12 20.5h-4M12 20.5h4" />
+    </symbol>
+  </svg>
+  <main>
+    <div class="topline">
+      <div><strong>BitLess</strong> &nbsp; Visual direction review &nbsp;·&nbsp; 12 Nov 2026</div>
+      <nav aria-label="Presentation sections"><a href="#brand">Brand</a><a href="#navigation">Navigation</a><a href="#progress">Progress</a></nav>
+    </div>
+
+    <section id="brand" class="slide">
+      <div class="slide-index">01 / Brand identity</div>
+      <h1>BitLess visual direction</h1>
+      <p class="lede">Your preferred descending-bar logo, the actual blue-and-mint palette, a uniform five-icon family, and the Light/Dark Progress concept in one view.</p>
+      <div class="brand-grid">
+        <div>
+          <div class="logo-frame"><img src="assets/bitless-logo-reference-20261112.png" alt="BitLess logo reference: descending bars, white leaves, and navy wordmark" /></div>
+          <p class="logo-caption">Preferred mark: bars step down from tall to short; the symbol suggests debt going down.</p>
+        </div>
+        <div class="palette-box">
+          <h3>Logo palette</h3>
+          <p>These exact values are approved for design studies. Pink is excluded from BitLess brand surfaces.</p>
+          <div class="swatches">
+            <div class="swatch dark" style="background:#0051FB"><span>Blue</span><code>#0051FB</code></div>
+            <div class="swatch" style="background:#ABDFFD"><span>Pale sky blue</span><code>#ABDFFD</code></div>
+            <div class="swatch" style="background:#27EEE9"><span>Turquoise</span><code>#27EEE9</code></div>
+            <div class="swatch" style="background:#98EDC1"><span>Mint</span><code>#98EDC1</code></div>
+            <div class="swatch dark" style="background:#070D5B"><span>Navy</span><code>#070D5B</code></div>
+            <div class="swatch" style="background:#FFFFFF;border:1px solid #dfe7f1"><span>White</span><code>#FFFFFF</code></div>
+          </div>
+          <div class="brand-foot"><span class="dot"></span><span>Financial category and risk colors stay separate and keep their current meaning.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="navigation" class="slide">
+      <div class="slide-index">02 / Navigation and type</div>
+      <h2>Five symbols, one outline family</h2>
+      <p class="icons-intro">Selected motifs redrawn on a shared 24-unit grid with 1.8px rounded outlines.</p>
+      <div class="icon-row" aria-label="BitLess navigation icon family">
+        <div class="icon-card"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-home" /></svg><span>Home<br />Dollar-house</span></div>
+        <div class="icon-card"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-debt" /></svg><span>Debt<br />Card</span></div>
+        <div class="icon-card"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-transactions" /></svg><span>Transactions<br />Calendar</span></div>
+        <div class="icon-card"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-budget" /></svg><span>Budget<br />Wallet</span></div>
+        <div class="icon-card selected"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#icon-progress" /></svg><span>Progress<br />Presentation chart</span></div>
+      </div>
+      <div class="dark-strip">
+        <div class="dark-note"><b>Same drawings in dark mode.</b><br />Use the brand accent to mark the selected tab; keep the idle symbols consistent.</div>
+        <div class="dark-icons" aria-label="Dark appearance icon example">
+          <span><svg viewBox="0 0 24 24"><use href="#icon-home" /></svg>Home</span>
+          <span><svg viewBox="0 0 24 24"><use href="#icon-debt" /></svg>Debt</span>
+          <span><svg viewBox="0 0 24 24"><use href="#icon-transactions" /></svg>Transactions</span>
+          <span><svg viewBox="0 0 24 24"><use href="#icon-budget" /></svg>Budget</span>
+          <span class="active"><svg viewBox="0 0 24 24"><use href="#icon-progress" /></svg>Progress</span>
+        </div>
+      </div>
+      <div class="lower-grid">
+        <div class="note-card">
+          <h3>Typography and export status</h3>
+          <p>The app uses the platform system sans; no custom font is bundled. Nunito is a candidate only, pending a font and licensing check. The logo reference is a PNG; vector and app-icon exports are still to produce.</p>
+        </div>
+        <div class="note-card">
+          <h3>Navigation labels</h3>
+          <p>Show “BitLess” on Home only. Other tabs use their page title, such as “Progress.” These icon drawings still need approval for native implementation.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="progress" class="slide">
+      <div class="progress-heading">
+        <div>
+          <div class="slide-index">03 / Progress screen</div>
+          <h2>Light and dark overview</h2>
+          <p>Supplied concept image · example amounts and account names</p>
+        </div>
+        <span class="status">Visual reference</span>
+      </div>
+      <img class="progress-image" src="assets/bitless-progress-overview-example-20261112.png" alt="Side-by-side Light Mode and Dark Mode Progress overview mockups" />
+      <div class="image-note">
+        <div><b>Concept content:</b> balance snapshot, reduction cue, payment total, recorded metrics, payoff target, and account activity.</div>
+        <div><b>Apply the latest direction:</b> use “Progress” as this tab’s title, the selected icon family above, and keep “BitLess” on Home only. Figures in the image are illustrative, not household data.</div>
+      </div>
+    </section>
+
+    <div class="footer-line"><span>Visual review artifact · no native theme or icon code changed</span><span>Brand palette approved for design studies · font and native icon adoption remain open</span></div>
+  </main>
+</body>
+</html>

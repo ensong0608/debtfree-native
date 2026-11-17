@@ -10,11 +10,15 @@ export type RestoreReceipt = {
 };
 export type RestoreRpcRequest = {
   operationId: string;
+  householdId: string;
+  expectedMembershipVersion?: string;
   expectedBaselineToken: string;
   payloadFingerprint: string;
   mode: RestoreMode;
+  confirmFullReplacement: boolean;
   acceptedConflictIds: string[];
   keptCurrentConflictIds: string[];
+  /** Original, validated backup. The server derives the merged snapshot from this and the choices. */
   snapshot: NativeBackup;
 };
 
@@ -24,8 +28,8 @@ export type RestoreAdapter = {
   readCurrentSnapshot: (owner: BackupOwner) => Promise<SnapshotBaseline>;
   /** Omit until the matching authenticated, atomic server RPC is available. */
   restoreSnapshot?: (request: RestoreRpcRequest) => Promise<RestoreReceipt>;
-  /** Read-only receipt lookup, scoped by the adapter to the authenticated owner. */
-  findRestoreReceipt?: (operationId: string) => Promise<RestoreReceipt | null>;
+  /** Read-only receipt lookup, scoped by the adapter to the authenticated owner and household. */
+  findRestoreReceipt?: (operationId: string, owner?: BackupOwner) => Promise<RestoreReceipt | null>;
   checkpoints: {
     load: (owner: BackupOwner) => Promise<RestoreCheckpoint | null>;
     begin: (owner: BackupOwner, before: NativeBackup, incoming: NativeBackup, options?: {
@@ -33,11 +37,12 @@ export type RestoreAdapter = {
       operationId?: string;
       baselineToken?: string;
       payloadFingerprint?: string;
+      requestVersion?: 2;
       resolutionMode?: RestoreMode;
       acceptedConflictIds?: string[];
       keptCurrentConflictIds?: string[];
     }) => Promise<RestoreCheckpoint>;
-    update: (owner: BackupOwner, progress: { status: RestoreCheckpoint['status']; cursor: number; error?: string }) => Promise<RestoreCheckpoint>;
+    update: (owner: BackupOwner, progress: { status: RestoreCheckpoint['status']; cursor: number; error?: string; payloadFingerprint?: string; legacyPayloadFingerprint?: string; requestVersion?: 2 }) => Promise<RestoreCheckpoint>;
   };
 };
 
@@ -78,6 +83,10 @@ function isReceipt(value: unknown, operationId: string, fingerprint: string): va
   const receipt = value as RestoreReceipt;
   return receipt.operationId === operationId && receipt.payloadFingerprint === fingerprint && !!receipt.restoredSnapshot;
 }
+function isCheckpointReceipt(value: unknown, operationId: string, checkpoint: RestoreCheckpoint): value is RestoreReceipt {
+  return isReceipt(value, operationId, checkpoint.payloadFingerprint ?? '')
+    || (!!checkpoint.legacyPayloadFingerprint && isReceipt(value, operationId, checkpoint.legacyPayloadFingerprint));
+}
 
 async function fingerprint(value: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(canonical(value));
@@ -92,7 +101,7 @@ function resolvedSnapshot(incoming: NativeBackup, current: NativeBackup, mode: R
   if (accepted.has(onboardingKey)) {
     next.onboardingData = { ...clone(incoming.onboardingData), debts: clone(current.onboardingData.debts) };
   }
-  const domains: Array<[RestoreDomain, keyof NativeBackup, keyof NativeBackup]> = [
+  const domains: [RestoreDomain, keyof NativeBackup, keyof NativeBackup][] = [
     ['debts', 'onboardingData', 'onboardingData'],
     ['recurringBills', 'recurringBills', 'recurringBills'],
     ['transactions', 'transactions', 'transactions'],
@@ -113,6 +122,10 @@ function resolvedSnapshot(incoming: NativeBackup, current: NativeBackup, mode: R
     if (domain === 'debts') next.onboardingData.debts = Array.from(byId.values()) as any;
     else (next as any)[currentKey] = Array.from(byId.values());
   }
+  if (Array.isArray(next.onboardingData.archivedPaidOffDebtIds)) {
+    const zeroDebtIds = new Set(next.onboardingData.debts.filter((debt) => debt.balance === 0).map((debt) => debt.id));
+    next.onboardingData.archivedPaidOffDebtIds = next.onboardingData.archivedPaidOffDebtIds.filter((id) => zeroDebtIds.has(id));
+  }
   return next;
 }
 
@@ -129,6 +142,9 @@ export function createNativeBackupRecovery(adapter: RestoreAdapter) {
       const sessionOwner = await adapter.getAuthenticatedOwner();
       if (!sessionOwner) return { status: 'rejected', operationId: options.operationId, message: 'Sign in before restoring a backup.', checkpoint: null };
       validateNativeBackup(incoming, sessionOwner);
+      if (sessionOwner.role !== undefined && sessionOwner.role !== 'owner') {
+        return { status: 'rejected', operationId: options.operationId, message: 'Only the household owner can restore a backup.', checkpoint: null };
+      }
       const accepted = new Set(options.acceptedConflictIds ?? []);
       const kept = new Set(options.keptCurrentConflictIds ?? []);
       for (const key of accepted) requireId(key, 'accepted conflict ID');
@@ -138,12 +154,58 @@ export function createNativeBackupRecovery(adapter: RestoreAdapter) {
       }
       const existing = await adapter.checkpoints.load(sessionOwner);
       const sortedAccepted = [...accepted].sort();
-      const retry = !!existing && existing.status !== 'completed' && existing.operationId === options.operationId
+      const sortedKept = [...kept].sort();
+      const existingModeMatches = (existing?.resolutionMode ?? 'merge') === options.mode;
+      const existingRequestMatches = !!existing && existing.operationId === options.operationId
         && canonical(existing.incoming) === canonical(incoming)
-        && existing.resolutionMode === options.mode
-        && canonical(existing.acceptedConflictIds ?? []) === canonical(sortedAccepted)
-        && canonical(existing.keptCurrentConflictIds ?? []) === canonical([ ...kept ].sort())
+        && existingModeMatches
+        && canonical([...(existing.acceptedConflictIds ?? [])].sort()) === canonical(sortedAccepted)
+        && canonical([...(existing.keptCurrentConflictIds ?? [])].sort()) === canonical(sortedKept);
+      const membershipVersionChanged = !!existing?.owner.membershipVersion
+        && !!sessionOwner.membershipVersion
+        && existing.owner.membershipVersion !== sessionOwner.membershipVersion;
+      if (existingRequestMatches && existing!.status === 'completed') {
+        if (!adapter.findRestoreReceipt) {
+          return { status: 'uncertain', operationId: options.operationId, message: 'The completed restore receipt cannot be verified. Keep this checkpoint and contact support before retrying.', checkpoint: existing };
+        }
+        try {
+          const receipt = await adapter.findRestoreReceipt(options.operationId, sessionOwner);
+          if (receipt && isCheckpointReceipt(receipt, options.operationId, existing!)) {
+            validateNativeBackup(receipt.restoredSnapshot, sessionOwner);
+            return { status: 'confirmed', operationId: options.operationId, snapshot: clone(receipt.restoredSnapshot), recoveredAfterLostResponse: true };
+          }
+          if (receipt) {
+            return { status: 'rejected', operationId: options.operationId, message: 'Restore operation ID is already bound to different data.', checkpoint: existing };
+          }
+          return { status: 'uncertain', operationId: options.operationId, message: 'The completed restore has no server receipt. Keep this checkpoint and contact support before retrying.', checkpoint: existing };
+        } catch {
+          return { status: 'uncertain', operationId: options.operationId, message: 'The completed restore receipt could not be checked. Keep this checkpoint and retry after receipt lookup is available.', checkpoint: existing };
+        }
+      }
+      if (existingRequestMatches && membershipVersionChanged) {
+        if (adapter.findRestoreReceipt) {
+          try {
+            const receipt = await adapter.findRestoreReceipt(options.operationId, sessionOwner);
+            if (receipt && isCheckpointReceipt(receipt, options.operationId, existing!)) {
+              validateNativeBackup(receipt.restoredSnapshot, sessionOwner);
+              return { status: 'confirmed', operationId: options.operationId, snapshot: clone(receipt.restoredSnapshot), recoveredAfterLostResponse: true };
+            }
+            if (receipt) {
+              return { status: 'rejected', operationId: options.operationId, message: 'Restore operation ID is already bound to different data.', checkpoint: existing };
+            }
+          } catch {
+            return { status: 'uncertain', operationId: options.operationId, message: 'Household membership changed and the previous restore receipt could not be checked. Keep this checkpoint before retrying.', checkpoint: existing };
+          }
+        }
+        return { status: 'rejected', operationId: options.operationId, message: 'Household membership changed since this restore checkpoint was created. Acknowledge replacement and refresh before retrying.', checkpoint: existing };
+      }
+      const retry = !!existing && existing.status !== 'completed' && !membershipVersionChanged && existing.operationId === options.operationId
+        && canonical(existing.incoming) === canonical(incoming)
+        && existingModeMatches
+        && canonical([...(existing.acceptedConflictIds ?? [])].sort()) === canonical(sortedAccepted)
+        && canonical([...(existing.keptCurrentConflictIds ?? [])].sort()) === canonical(sortedKept)
         && !!existing.baselineToken && !!existing.payloadFingerprint;
+      const legacyRetry = retry && existing!.requestVersion !== 2;
       let baseline: SnapshotBaseline;
       if (retry) baseline = { snapshot: existing!.before, token: existing!.baselineToken! };
       else {
@@ -161,8 +223,14 @@ export function createNativeBackupRecovery(adapter: RestoreAdapter) {
       if (options.mode === 'replace' && (accepted.size || kept.size)) throw new TypeError('Replacement uses the explicit full-replacement confirmation, not per-conflict selections');
       const desired = resolvedSnapshot(incoming, baseline.snapshot, options.mode, accepted);
       validateNativeBackup(desired, sessionOwner);
-      const sortedKept = [...kept].sort();
-      const payloadFingerprint = retry ? existing!.payloadFingerprint! : await fingerprint({ owner: sessionOwner, expectedBaselineToken: baseline.token, mode: options.mode, acceptedConflictIds: sortedAccepted, keptCurrentConflictIds: sortedKept, snapshot: desired });
+      const fingerprintOwner = {
+        userId: sessionOwner.userId,
+        householdId: sessionOwner.householdId,
+        ...(sessionOwner.membershipVersion !== undefined ? { membershipVersion: sessionOwner.membershipVersion } : {}),
+      };
+      const payloadFingerprint = retry && !legacyRetry
+        ? existing!.payloadFingerprint!
+        : await fingerprint({ owner: fingerprintOwner, expectedBaselineToken: baseline.token, mode: options.mode, confirmFullReplacement: options.confirmFullReplacement === true, acceptedConflictIds: sortedAccepted, keptCurrentConflictIds: sortedKept, snapshot: incoming });
       const isRetry = retry;
       let checkpoint: RestoreCheckpoint;
       if (isRetry) checkpoint = existing!;
@@ -172,6 +240,7 @@ export function createNativeBackupRecovery(adapter: RestoreAdapter) {
             operationId: options.operationId,
             baselineToken: baseline.token,
             payloadFingerprint,
+            requestVersion: 2,
             resolutionMode: options.mode,
             acceptedConflictIds: sortedAccepted,
             keptCurrentConflictIds: sortedKept,
@@ -183,15 +252,44 @@ export function createNativeBackupRecovery(adapter: RestoreAdapter) {
         }
       }
 
-      if (retry && adapter.findRestoreReceipt) {
+      let legacyReceiptChecked = false;
+      if (legacyRetry) {
+        if (!adapter.findRestoreReceipt) {
+          return { status: 'uncertain', operationId: options.operationId, message: 'This restore checkpoint uses the previous request format. A receipt lookup is required before it can be retried safely.', checkpoint };
+        }
         try {
-          const receipt = await adapter.findRestoreReceipt(options.operationId);
-          if (isReceipt(receipt, options.operationId, payloadFingerprint)) {
+          const receipt = await adapter.findRestoreReceipt(options.operationId, sessionOwner);
+          legacyReceiptChecked = true;
+          if (receipt && isReceipt(receipt, options.operationId, existing!.payloadFingerprint!)) {
             validateNativeBackup(receipt.restoredSnapshot, sessionOwner);
             await adapter.checkpoints.update(sessionOwner, { status: 'completed', cursor: checkpoint.plan.operations.length });
             return { status: 'confirmed', operationId: options.operationId, snapshot: clone(receipt.restoredSnapshot), recoveredAfterLostResponse: true };
           }
-          if (receipt && !isReceipt(receipt, options.operationId, payloadFingerprint)) {
+          if (receipt) {
+            const saved = await adapter.checkpoints.update(sessionOwner, { status: 'failed', cursor: checkpoint.cursor, error: 'Operation ID is already bound to a different payload.' });
+            return { status: 'rejected', operationId: options.operationId, message: 'Restore operation ID is already bound to different data.', checkpoint: saved };
+          }
+          checkpoint = await adapter.checkpoints.update(sessionOwner, {
+            status: checkpoint.status,
+            cursor: checkpoint.cursor,
+            payloadFingerprint,
+            legacyPayloadFingerprint: existing!.payloadFingerprint!,
+            requestVersion: 2,
+          });
+        } catch {
+          return { status: 'uncertain', operationId: options.operationId, message: 'The previous-format restore receipt could not be checked. Keep this checkpoint and retry after receipt lookup is available.', checkpoint };
+        }
+      }
+
+      if (retry && !legacyReceiptChecked && adapter.findRestoreReceipt) {
+        try {
+          const receipt = await adapter.findRestoreReceipt(options.operationId, sessionOwner);
+          if (isCheckpointReceipt(receipt, options.operationId, checkpoint)) {
+            validateNativeBackup(receipt.restoredSnapshot, sessionOwner);
+            await adapter.checkpoints.update(sessionOwner, { status: 'completed', cursor: checkpoint.plan.operations.length });
+            return { status: 'confirmed', operationId: options.operationId, snapshot: clone(receipt.restoredSnapshot), recoveredAfterLostResponse: true };
+          }
+          if (receipt && !isCheckpointReceipt(receipt, options.operationId, checkpoint)) {
             const saved = await adapter.checkpoints.update(sessionOwner, { status: 'failed', cursor: checkpoint.cursor, error: 'Operation ID is already bound to a different payload.' });
             return { status: 'rejected', operationId: options.operationId, message: 'Restore operation ID is already bound to different data.', checkpoint: saved };
           }
@@ -207,35 +305,54 @@ export function createNativeBackupRecovery(adapter: RestoreAdapter) {
 
       const request: RestoreRpcRequest = {
         operationId: options.operationId,
+        householdId: sessionOwner.householdId,
+        ...(sessionOwner.membershipVersion !== undefined ? { expectedMembershipVersion: sessionOwner.membershipVersion } : {}),
         expectedBaselineToken: baseline.token,
         payloadFingerprint,
         mode: options.mode,
+        confirmFullReplacement: options.confirmFullReplacement === true,
         acceptedConflictIds: [...accepted].sort(),
         keptCurrentConflictIds: [...kept].sort(),
-        snapshot: desired,
+        snapshot: clone(incoming),
       };
       try {
         const receipt = await adapter.restoreSnapshot(request);
         if (!isReceipt(receipt, options.operationId, payloadFingerprint)) throw new Error('Restore RPC returned an invalid operation receipt.');
         validateNativeBackup(receipt.restoredSnapshot, sessionOwner);
-        const saved = await adapter.checkpoints.update(sessionOwner, { status: 'completed', cursor: checkpoint.plan.operations.length });
+        await adapter.checkpoints.update(sessionOwner, { status: 'completed', cursor: checkpoint.plan.operations.length });
         return { status: 'confirmed', operationId: options.operationId, snapshot: clone(receipt.restoredSnapshot), recoveredAfterLostResponse: false };
       } catch (rpcError) {
         const rpcMessage = rpcError instanceof Error ? rpcError.message : 'Restore request failed.';
         if (rpcError instanceof RestoreRejectedError) {
+          if (adapter.findRestoreReceipt) {
+            try {
+              const receipt = await adapter.findRestoreReceipt(options.operationId, sessionOwner);
+              if (isCheckpointReceipt(receipt, options.operationId, checkpoint)) {
+                validateNativeBackup(receipt.restoredSnapshot, sessionOwner);
+                await adapter.checkpoints.update(sessionOwner, { status: 'completed', cursor: checkpoint.plan.operations.length });
+                return { status: 'confirmed', operationId: options.operationId, snapshot: clone(receipt.restoredSnapshot), recoveredAfterLostResponse: true };
+              }
+              if (receipt) {
+                const saved = await adapter.checkpoints.update(sessionOwner, { status: 'failed', cursor: checkpoint.cursor, error: 'Operation ID is already bound to a different payload.' });
+                return { status: 'rejected', operationId: options.operationId, message: 'Restore operation ID is already bound to different data.', checkpoint: saved };
+              }
+            } catch {
+              return { status: 'uncertain', operationId: options.operationId, message: 'The restore was rejected, but its receipt could not be checked. Keep this checkpoint and retry after receipt lookup is available.', checkpoint };
+            }
+          }
           const saved = await adapter.checkpoints.update(sessionOwner, { status: 'failed', cursor: checkpoint.cursor, error: rpcMessage });
           return { status: 'rejected', operationId: options.operationId, message: rpcMessage, checkpoint: saved };
         }
         // A thrown request may have committed before its response was lost. A receipt lookup is read-only.
         if (adapter.findRestoreReceipt) {
           try {
-            const receipt = await adapter.findRestoreReceipt(options.operationId);
-            if (isReceipt(receipt, options.operationId, payloadFingerprint)) {
+            const receipt = await adapter.findRestoreReceipt(options.operationId, sessionOwner);
+            if (isCheckpointReceipt(receipt, options.operationId, checkpoint)) {
               validateNativeBackup(receipt.restoredSnapshot, sessionOwner);
               await adapter.checkpoints.update(sessionOwner, { status: 'completed', cursor: checkpoint.plan.operations.length });
               return { status: 'confirmed', operationId: options.operationId, snapshot: clone(receipt.restoredSnapshot), recoveredAfterLostResponse: true };
             }
-            if (receipt && !isReceipt(receipt, options.operationId, payloadFingerprint)) {
+            if (receipt && !isCheckpointReceipt(receipt, options.operationId, checkpoint)) {
               const saved = await adapter.checkpoints.update(sessionOwner, { status: 'failed', cursor: checkpoint.cursor, error: 'Operation ID is already bound to a different payload.' });
               return { status: 'rejected', operationId: options.operationId, message: 'Restore operation ID is already bound to different data.', checkpoint: saved };
             }

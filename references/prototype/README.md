@@ -1,5 +1,7 @@
 # Prototype screenshot reference
 
+> **Current owner decisions (2026-11-08):** Read [UI_PREFERENCES.md](../UI_PREFERENCES.md). These captures are historical interaction references. Preserve the current native palette; Monthly Income uses matching category colors and an expandable Income sources section. Upcoming now lives only in Transactions, grouped by month and date. Scheduled lives only in Transactions; Strategy lives only in Debt. Historical Budget subtabs below are not current navigation requirements.
+
 Captured locally on **2026-11-04** from the existing signed-in **Brave** session at https://debtfree-dashboard.ensong0608.workers.dev/.
 
 These 16 screenshots preserve the prototype's screen structure and visible content for future agents. They are original JPEG window captures, **503 x 906 pixels**, including the browser chrome and fixed bottom navigation. They show individual viewport positions, not full-page exports. The filenames group images in bottom-tab order. [Capture manifest](./2026-11-04/manifest.json) records each image's description and dimensions.

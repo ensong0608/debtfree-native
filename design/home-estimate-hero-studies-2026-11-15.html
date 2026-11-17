@@ -1,0 +1,80 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><style>
+#hero-studies{font-family:Arial,sans-serif;color:var(--foreground);}
+#hero-studies .study-controls{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:16px}
+#hero-studies .study-controls button{font:500 13px Arial;padding:11px 14px;border-radius:20px;border:1px solid var(--border);background:var(--card);color:var(--foreground);cursor:pointer}
+#hero-studies .study-controls button[aria-pressed=true]{background:#0051FB;color:white;border-color:#0051FB}
+#hero-studies .stage{max-width:430px;margin:auto;position:relative;container-type:inline-size;border-radius:16px;overflow:hidden;box-shadow:0 10px 32px #070d5b18}
+#hero-studies .source{display:block;width:100%;height:auto}
+#hero-studies .hero{box-sizing:border-box;position:absolute;left:3.87%;top:15.2%;width:92.26%;height:30.4%;border-radius:4.6cqw;padding:4.5cqw;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;isolation:isolate;font-family:Arial,sans-serif}
+#hero-studies .topline{display:flex;justify-content:space-between;align-items:center;gap:8px}
+#hero-studies .title{font-size:5.05cqw;font-weight:700;letter-spacing:-.13cqw;white-space:nowrap}
+#hero-studies .info{font-size:3.1cqw;opacity:.7;margin-left:1cqw}
+#hero-studies .badge{font-size:2.9cqw;font-weight:600;letter-spacing:.1cqw;border-radius:20px;padding:1.5cqw 2.4cqw;white-space:nowrap}
+#hero-studies .scope{font-size:3.55cqw;margin-top:2.9cqw}
+#hero-studies .date-row{display:flex;align-items:center;justify-content:space-between;gap:2cqw;margin:1.8cqw 0 0}
+#hero-studies .date{font-size:8.4cqw;letter-spacing:-.38cqw;font-weight:750;white-space:nowrap}
+#hero-studies .countdown{padding-left:4.3cqw;min-width:17.5cqw;border-left:1px solid #ffffff40}
+#hero-studies .count{font-size:7.5cqw;line-height:1.05;font-weight:700;letter-spacing:-.2cqw}
+#hero-studies .unit{font-size:3.2cqw;line-height:1.38;font-weight:500;letter-spacing:.1cqw;margin-top:1cqw}
+#hero-studies .segments{display:flex;gap:1.4cqw;height:2.4cqw}
+#hero-studies .segments span{flex:1;background:var(--track);border-radius:20px;overflow:hidden}
+#hero-studies .segments span:nth-child(-n+2){background:var(--fill)}
+#hero-studies .segments span:nth-child(3){background:linear-gradient(90deg,var(--fill) 22%,var(--track) 22%)}
+#hero-studies .footer{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:3.45cqw;white-space:nowrap}
+#hero-studies .strategy{font-weight:700}
+#hero-studies .decoration{position:absolute;z-index:-1;pointer-events:none}
+#hero-studies .blue{background:linear-gradient(125deg,#070D5B 0%,#0739BF 55%,#0051FB 100%);color:#fff;border:1px solid #0051FB;box-shadow:0 8px 18px #0051fb28;--fill:#27EEE9;--track:#ffffff35}
+#hero-studies .blue .scope,.blue .footer{color:#d8eaff}
+#hero-studies .blue .badge{background:#ffffff20;color:#fff;border:1px solid #ffffff40}
+#hero-studies .blue .strategy{color:#98EDC1}
+#hero-studies .blue .decoration{width:58cqw;height:58cqw;right:-20cqw;top:-29cqw;border-radius:50%;border:7cqw solid #abdffd12}
+#hero-studies .sky{background:linear-gradient(122deg,#effaff 0%,#d8efff 58%,#ABDFFD 100%);color:#070D5B;border:1px solid #91cce9;box-shadow:0 7px 18px #0051fb10;--fill:#0051FB;--track:#070d5b17}
+#hero-studies .sky .scope,.sky .footer{color:#38516d}
+#hero-studies .sky .badge{background:#ffffffb0;color:#244f91;border:1px solid #fff}
+#hero-studies .sky .countdown{border-color:#070d5b26}
+#hero-studies .sky .strategy{color:#0051FB}
+#hero-studies .sky .decoration{width:63cqw;height:42cqw;right:-17cqw;bottom:-24cqw;border-radius:50%;background:#98edc175;filter:blur(14px)}
+#hero-studies .white{background:#fff;color:#23232b;border:1px solid #cbd8fa;border-top:1.3cqw solid #0051FB;box-shadow:0 7px 22px #0051fb12;padding-top:3.3cqw;--fill:#0051FB;--track:#dce4ef}
+#hero-studies .white .scope,.white .footer{color:#656573}
+#hero-studies .white .badge{background:#eef4ff;color:#0051FB;border:1px solid #dbe6ff}
+#hero-studies .white .date{color:#070D5B}
+#hero-studies .white .countdown{border:0;background:#eef5ff;border-radius:3.2cqw;padding:2cqw 2.5cqw;min-width:16cqw;box-sizing:border-box}
+#hero-studies .white .count{color:#0051FB;font-size:7cqw}
+#hero-studies .white .unit{font-size:2.9cqw;color:#3d5278}
+#hero-studies .white .strategy{color:#0051FB}
+#hero-studies .white .decoration{display:none}
+#hero-studies .sheen{position:absolute;inset:-80% -70%;z-index:2;pointer-events:none;opacity:0;background:linear-gradient(110deg,transparent 40%,#ffffff24 49%,transparent 58%);transform:translateX(-60%)}
+#hero-studies .playing .sheen{animation:hero-sweep 1600ms ease-in-out 1}
+#hero-studies .playing.sky .decoration{animation:sky-drift 2200ms ease-out 1}
+#hero-studies .playing.white{animation:white-lift 900ms ease-out 1}
+#hero-studies .playing.sky .sheen,#hero-studies .playing.white .sheen{animation:none}
+@keyframes hero-sweep{15%{opacity:1}85%{opacity:1}100%{opacity:0;transform:translateX(60%)}}
+@keyframes sky-drift{0%{transform:translate(-10cqw,4cqw)}100%{transform:translate(0,0)}}
+@keyframes white-lift{0%{transform:translateY(5px);box-shadow:0 2px 4px #0051fb08}100%{transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){#hero-studies .playing,#hero-studies .playing *{animation:none!important}}
+#hero-studies .motion-row{display:flex;align-items:center;justify-content:center;gap:12px;margin:14px 0 4px}
+#hero-studies .motion-row button{background:var(--card);color:var(--foreground);border:1px solid var(--border);padding:10px 15px;border-radius:20px;font:500 13px Arial;cursor:pointer}
+#hero-studies .motion-label{font:12px Arial;color:var(--muted-foreground)}
+</style>
+<div id="hero-studies">
+ <div class="study-controls" role="group" aria-label="Home hero design">
+  <button aria-pressed="true" data-style="blue">Signature Blue</button>
+  <button aria-pressed="false" data-style="sky">Sky Glow</button>
+  <button aria-pressed="false" data-style="white">Quiet Spotlight</button>
+ </div>
+ <div class="stage" aria-label="Home screen concept with redesigned estimate card">
+  <img class="source" src="C:/Users/lawre/.t3/userdata/attachments/049903aa-e87d-460e-a2e3-8b0a9877939a-19190827-3ad9-4ac7-a424-fc65df4425a3.jpg" alt="Existing BitLess Home screen supplied by the owner. Surrounding layout remains unchanged.">
+  <section class="hero blue" aria-label="Debt-free estimate visual study">
+   <div class="decoration" aria-hidden="true"></div><div class="sheen" aria-hidden="true"></div>
+   <div><div class="topline"><div class="title">Debt-Free Date <span class="info">ⓘ</span></div><span class="badge">ESTIMATE</span></div><div class="scope">Cards / Loans &amp; Auto</div></div>
+   <div class="date-row"><div class="date">DEC 2027</div><div class="countdown"><div class="count">13</div><div class="unit">MONTHS<br>TO GO</div></div></div>
+   <div class="segments" aria-label="Existing seven-segment progress indicator, illustrative values from supplied screenshot"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+   <div class="footer"><span>Keep building your freedom.</span><span class="strategy">Snowball ›</span></div>
+  </section>
+ </div>
+ <div class="motion-row"><button id="hero-replay">Replay subtle motion</button><span class="motion-label" aria-live="polite">One soft light sweep</span></div>
+</div>
+<script>
+(()=>{const root=document.getElementById('hero-studies');const hero=root.querySelector('.hero');const label=root.querySelector('.motion-label');const descriptions={blue:'One soft light sweep',sky:'A slow drift of ambient color',white:'A gentle lift into place'};root.querySelectorAll('[data-style]').forEach(button=>button.addEventListener('click',()=>{root.querySelectorAll('[data-style]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));hero.className='hero '+button.dataset.style;label.textContent=descriptions[button.dataset.style]}));root.querySelector('#hero-replay').addEventListener('click',()=>{hero.classList.remove('playing');void hero.offsetWidth;hero.classList.add('playing')});})();
+</script>
+</body></html>

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1680px;
+    height: 1060px;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 0%, #162244 0%, #090E1A 70%);
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #F3F6FC;
+    position: relative;
+  }
+  .topbar {
+    position: absolute; left: 36px; right: 36px; top: 22px; height: 64px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding-bottom: 14px;
+  }
+  .brand-row { display: flex; align-items: center; gap: 14px; }
+  .brand-pill {
+    background: linear-gradient(135deg, #0051FB, #27EEE9);
+    color: #070D5B; font-weight: 800; font-size: 13px; letter-spacing: 0.06em;
+    padding: 6px 12px; border-radius: 999px; text-transform: uppercase;
+  }
+  h1 { font-size: 25px; font-weight: 700; letter-spacing: -0.02em; color: #FFFFFF; }
+  .subtitle { font-size: 14px; color: #9FB0D1; margin-top: 2px; }
+  .legend { display: flex; gap: 16px; align-items: center; font-size: 13px; color: #C7D4EC; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .phone-frame {
+    position: absolute;
+    border-radius: 28px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.65), 0 0 0 2px rgba(255,255,255,0.14);
+    background: #000;
+  }
+  .phone-frame img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .phone-caption {
+    position: absolute;
+    font-size: 13px; font-weight: 600; color: #BFD0F0;
+    text-align: center;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px;
+    padding: 5px 14px;
+  }
+  .annot-box {
+    position: absolute;
+    border: 2.5px dashed;
+    border-radius: 10px;
+    z-index: 5;
+  }
+  .annot-num {
+    position: absolute;
+    top: -12px; left: -12px;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    color: #080C18;
+    font-weight: 800; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  svg.leaders {
+    position: absolute; left: 0; top: 0; width: 1680px; height: 1060px;
+    pointer-events: none; z-index: 6;
+  }
+  .callout-card {
+    position: absolute;
+    background: rgba(17, 25, 45, 0.94);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 13px 15px;
+    box-shadow: 0 14px 32px rgba(0,0,0,0.45);
+    z-index: 7;
+  }
+  .callout-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .pill {
+    font-size: 11px; font-weight: 800; color: #090D18;
+    padding: 3px 9px; border-radius: 999px; letter-spacing: 0.04em;
+  }
+  .screen-tag { font-size: 11px; color: #8CA0C6; font-weight: 600; }
+  .callout-title { font-size: 14.5px; font-weight: 700; color: #FFFFFF; margin-bottom: 4px; }
+  .callout-body { font-size: 12.8px; line-height: 1.42; color: #CFD9ED; }
+  .callout-meta { font-size: 11px; color: #7DA2E8; margin-top: 6px; font-weight: 600; }
+  .footer-bar {
+    position: absolute; left: 36px; right: 36px; bottom: 20px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 12px;
+    padding: 11px 18px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 13px; color: #B9C8E4;
+  }
+  .footer-bar strong { color: #27EEE9; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <div class="brand-row">
+        <span class="brand-pill">BitLess Visual Audit · 2026-11-13</span>
+        <h1>Progress → Overview: Above-the-Fold Clipping & Label Wrapping</h1>
+      </div>
+      <div class="subtitle">Side-by-side Light & Dark capture showing how 115% scale + tall hero cards push Recorded Activity behind the floating dock</div>
+    </div>
+    <div class="legend">
+      <span><i class="dot" style="background:#FF4D6A"></i>Major UX / Layout Issue</span>
+      <span><i class="dot" style="background:#FFB020"></i>Polish / Hierarchy / Brand Alignment</span>
+    </div>
+  </div>
+
+  <div class="phone-frame" style="left:452px;top:112px;width:368px;height:798px;">
+    <img src="file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/scratch/visual-audit-2026-11-13/light/24-progress-overview.png" />
+  </div>
+  <div class="phone-caption" style="left:452px;top:922px;width:368px;">Light Mode · light/24-progress-overview.png</div>
+
+  <div class="phone-frame" style="left:860px;top:112px;width:368px;height:798px;">
+    <img src="file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/debtfree-native/scratch/visual-audit-2026-11-13/dark/24-progress-overview.png" />
+  </div>
+  <div class="phone-caption" style="left:860px;top:922px;width:368px;">Dark Mode · dark/24-progress-overview.png</div>
+
+  
+      <div class="annot-box" style="left:463.0px;top:247.7px;width:345.9px;height:95.8px;border-color:#FFB020;background:rgba(255, 176, 32, 0.14);">
+        <span class="annot-num" style="background:#FFB020;">1</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:463.0px;top:355.4px;width:345.9px;height:211.5px;border-color:#FF4D6A;background:rgba(255, 77, 106, 0.14);">
+        <span class="annot-num" style="background:#FF4D6A;">2</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:466.7px;top:630.7px;width:139.8px;height:155.6px;border-color:#FF4D6A;background:rgba(255, 77, 106, 0.14);">
+        <span class="annot-num" style="background:#FF4D6A;">3</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:871.0px;top:355.4px;width:345.9px;height:211.5px;border-color:#FFB020;background:rgba(255, 176, 32, 0.14);">
+        <span class="annot-num" style="background:#FFB020;">4</span>
+      </div>
+    
+
+      <div class="annot-box" style="left:1014.6px;top:630.7px;width:198.7px;height:159.6px;border-color:#FF4D6A;background:rgba(255, 77, 106, 0.14);">
+        <span class="annot-num" style="background:#FF4D6A;">5</span>
+      </div>
+    
+  <svg class="leaders" viewBox="0 0 1680 1060">
+      <path d="M 463.0 295.5 C 440.1 295.5, 435.0 174.0, 412.0 174.0"
+            fill="none" stroke="#FFB020" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="463.0" cy="295.5" r="5" fill="#FFB020" />
+      <circle cx="412.0" cy="174.0" r="4.5" fill="#FFB020" />
+    
+
+      <path d="M 463.0 461.1 C 440.1 461.1, 435.0 409.0, 412.0 409.0"
+            fill="none" stroke="#FF4D6A" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="463.0" cy="461.1" r="5" fill="#FF4D6A" />
+      <circle cx="412.0" cy="409.0" r="4.5" fill="#FF4D6A" />
+    
+
+      <path d="M 466.7 731.8 C 442.1 731.8, 436.6 679.0, 412.0 679.0"
+            fill="none" stroke="#FF4D6A" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="466.7" cy="731.8" r="5" fill="#FF4D6A" />
+      <circle cx="412.0" cy="679.0" r="4.5" fill="#FF4D6A" />
+    
+
+      <path d="M 1217.0 461.1 C 1239.9 461.1, 1245.0 264.0, 1268.0 264.0"
+            fill="none" stroke="#FFB020" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="1217.0" cy="461.1" r="5" fill="#FFB020" />
+      <circle cx="1268.0" cy="264.0" r="4.5" fill="#FFB020" />
+    
+
+      <path d="M 1213.3 755.2 C 1237.9 755.2, 1243.4 619.0, 1268.0 619.0"
+            fill="none" stroke="#FF4D6A" stroke-width="2.5" stroke-dasharray="6 4" opacity="0.92" />
+      <circle cx="1213.3" cy="755.2" r="5" fill="#FF4D6A" />
+      <circle cx="1268.0" cy="619.0" r="4.5" fill="#FF4D6A" />
+    </svg>
+  
+      <div class="callout-card" style="left:36px;top:130px;width:376px;border-left:4px solid #FFB020;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FFB020;">1 · POLISH</span>
+          <span class="screen-tag">Scope Selector · Both Themes</span>
+        </div>
+        <div class="callout-title">Hey! This scope control is chunky & redundant</div>
+        <div class="callout-body">Tall 2-line segmented box + uppercase "BALANCE SCOPE" header repeats "Cards & Loans" directly above "BALANCE SNAPSHOT · Cards & Loans". Trim height to a slim 1-line pill.</div>
+        <div class="callout-meta">Source: Luna High · Manager</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:36px;top:365px;width:376px;border-left:4px solid #FF4D6A;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FF4D6A;">2 · MAJOR</span>
+          <span class="screen-tag">Balance Snapshot Hero</span>
+        </div>
+        <div class="callout-title">Hey! Hero eats 27% height & breaks brand palette</div>
+        <div class="callout-body">Excess top/bottom padding pushes Recorded Activity into the dock, while the Indigo/purple arc and active pill mismatch the #0051FB cobalt BitLess icon.</div>
+        <div class="callout-meta">Source: Luna High · Manager</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:36px;top:635px;width:376px;border-left:4px solid #FF4D6A;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FF4D6A;">3 · MAJOR</span>
+          <span class="screen-tag">Payments Recorded Column</span>
+        </div>
+        <div class="callout-title">Hey! Narrow left pane wraps into 3 awkward lines</div>
+        <div class="callout-body">"12 confirmed entries" breaks across 3 lines inside the purple column at 115% scale. Flatten to a single summary header bar above clean 1-line metric rows.</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:1268px;top:220px;width:376px;border-left:4px solid #FFB020;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FFB020;">4 · POLISH</span>
+          <span class="screen-tag">Dark Snapshot Contrast</span>
+        </div>
+        <div class="callout-title">Hey! Dark purple wash flattens surface hierarchy</div>
+        <div class="callout-body">Using tinted #221D41 cards on #121215 dark mode feels slightly muddy vs crisp BitLess Cobalt (#0051FB) / Turquoise (#27EEE9) accents on slate surfaces.</div>
+        <div class="callout-meta">Source: Manager Audit</div>
+      </div>
+    
+
+      <div class="callout-card" style="left:1268px;top:575px;width:376px;border-left:4px solid #FF4D6A;">
+        <div class="callout-head">
+          <span class="pill" style="background:#FF4D6A;">5 · MAJOR</span>
+          <span class="screen-tag">Bottom Dock Clipping · Both Themes</span>
+        </div>
+        <div class="callout-title">Hey! "Net balance change" is sliced by the dock!</div>
+        <div class="callout-body">"Balance reduction" & "Net balance change" wrap to 2 lines, and "change" is literally cut in half behind the floating dock before any scroll in Light & Dark.</div>
+        <div class="callout-meta">Source: Luna High · Manager</div>
+      </div>
+    
+
+  <div class="footer-bar">
+    <span><strong>Audit Condition:</strong> Pixel 1440×3120 · OS Font Scale 115% · Dynamic Type ON (ignore translucent Android DevTools gear)</span>
+    <span><strong>Takeaway:</strong> Compress Balance Scope + Snapshot ring card by ~110dp so all 4 Activity rows clear the dock unclipped.</span>
+  </div>
+</body>
+</html>

@@ -198,3 +198,64 @@ test('manual accept archives the command as resolved without fabricating success
   assert.equal((await journal.list('user-a')).length, 1);
 });
 
+
+test('v2 binds commands and storage to exact household membership and isolates concurrent writes', async () => {
+  const { createPendingJournalV2, pendingJournalV2Key } = require('../src/finance/pending-journal.ts');
+  const store = memoryStore();
+  const context = { userId: 'user-a', householdId: 'house-a', role: 'owner', membershipVersion: '1' };
+  const journal = createPendingJournalV2(store, context);
+  const bound = id => command(id, { householdId: 'house-a', membershipVersion: '1' });
+  await Promise.all([journal.save(bound('a')), createPendingJournalV2(store, context).save(bound('b'))]);
+  assert.equal((await journal.list()).length, 2);
+  await assert.rejects(journal.save(command('foreign', { householdId: 'house-b', membershipVersion: '1' })), /household/);
+  await assert.rejects(journal.save(command('stale', { householdId: 'house-a', membershipVersion: '2' })), /version/);
+  await assert.rejects(journal.save(command('user', { userId: 'user-b', householdId: 'house-a', membershipVersion: '1' })), /userId/);
+  await assert.rejects(journal.update('a', { householdId: 'house-b' }), /context/);
+  assert.throws(() => createPendingJournalV2(store, { ...context, membershipVersion: '01' }), /version/);
+  const keys = [context, { ...context, userId: 'other' }, { ...context, householdId: 'other' }, { ...context, membershipVersion: '2' }].map(pendingJournalV2Key);
+  assert.equal(new Set(keys).size, 4);
+  assert.equal((await createPendingJournalV2(store, { ...context, membershipVersion: '2' }).list()).length, 0);
+  const envelope = JSON.parse(store.values.get(keys[0]));
+  envelope.membershipVersion = '2';
+  store.values.set(keys[0], JSON.stringify(envelope));
+  await assert.rejects(journal.list(), /mismatch/);
+});
+
+test('legacy preflight retains bytes and reports outstanding evidence without assigning a household', async () => {
+  const { preflightLegacyPendingJournal } = require('../src/finance/pending-journal.ts');
+  const store = memoryStore();
+  const journal = createPendingJournal(store);
+  await journal.save(command('pending', { dispatchState: 'dispatched' }));
+  await journal.save(command('uncertain', { dispatchState: 'uncertain' }));
+  await journal.save(command('rejected'));
+  await journal.markRejected('user-a', 'rejected', 'no');
+  const before = new Map(store.values);
+  const result = await preflightLegacyPendingJournal(store, 'user-a');
+  assert.deepEqual([result.unresolved, result.rejected, result.dispatched, result.uncertain], [3, 1, 1, 1]);
+  assert.equal(result.commands.length, 3);
+  assert.deepEqual(store.values, before);
+  assert.ok(result.commands.every(item => !('householdId' in item)));
+});
+
+test('household preflight discovers stale membership-version commands before switching context', async () => {
+  const { createPendingJournalV2, preflightHouseholdPendingJournalsV2 } = require('../src/finance/pending-journal.ts');
+  const store = memoryStore();
+  const v1 = { userId: 'user-a', householdId: 'house-a', role: 'owner', membershipVersion: '1' };
+  const v1Journal = createPendingJournalV2(store, v1);
+  await v1Journal.save(command('old-version', { householdId: 'house-a', membershipVersion: '1', dispatchState: 'uncertain' }));
+  const before = new Map(store.values);
+  const preflight = await preflightHouseholdPendingJournalsV2(store, 'user-a', 'house-a', '2');
+  assert.deepEqual(preflight.membershipVersions, ['1']);
+  assert.deepEqual(preflight.staleVersions, ['1']);
+  assert.equal(preflight.unresolved, 1);
+  assert.equal(preflight.uncertain, 1);
+  assert.equal(preflight.commands[0].membershipVersion, '1');
+  assert.deepEqual(store.values, before);
+
+  const v2Journal = createPendingJournalV2(store, { ...v1, membershipVersion: '2' });
+  await v2Journal.save(command('new-version', { householdId: 'house-a', membershipVersion: '2' }));
+  const after = await preflightHouseholdPendingJournalsV2(store, 'user-a', 'house-a', '2');
+  assert.deepEqual(after.membershipVersions, ['1', '2']);
+  assert.equal(after.commands.length, 2);
+  assert.equal(after.unresolved, 2);
+});

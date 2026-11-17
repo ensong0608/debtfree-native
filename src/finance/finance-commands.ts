@@ -27,6 +27,7 @@ import { makeMoney, moneyFromMajor, moneyToMajor, addMoney, type Money } from '.
 import { currentHouseholdDate, type DateOnly } from './calendar';
 import { formatCurrency, type DebtItem, type UserOnboardingData } from '../onboarding-domain';
 import { cacheConfirmedDebts } from '../onboarding-storage';
+import type { HouseholdContext } from '../household-context';
 
 export type TransactionCommandResult = {
   transactions: LedgerTransaction[];
@@ -34,6 +35,30 @@ export type TransactionCommandResult = {
   syncResult: FinanceMutationResult<LedgerTransaction>;
   outcome: 'confirmed' | 'pending' | 'rejected';
 };
+
+function updatePaidOffArchiveState(params: {
+  data: UserOnboardingData;
+  debtId: string;
+  previousBalance: number;
+  nextBalance: number;
+  confirmedPaymentReachedZero?: boolean;
+  confirmedMutation?: boolean;
+}): UserOnboardingData {
+  const archived = new Set(params.data.archivedPaidOffDebtIds ?? []);
+  if (params.nextBalance > 0) archived.delete(params.debtId);
+  else if (params.nextBalance === 0 && params.previousBalance > 0 && params.confirmedPaymentReachedZero) archived.add(params.debtId);
+  const archivedPaidOffDebtIds = [...archived];
+  const previous = params.data.archivedPaidOffDebtIds ?? [];
+  const changed = previous.length !== archivedPaidOffDebtIds.length || previous.some(id => !archived.has(id));
+  if (!changed) return params.data;
+  return {
+    ...params.data,
+    archivedPaidOffDebtIds,
+    ...(params.confirmedMutation ? {
+      settingsRevision: (params.data.settingsRevision ?? 0) + 1,
+    } : {}),
+  };
+}
 
 export async function executeAddTransaction(params: {
   session: Session | null;
@@ -51,6 +76,7 @@ export async function executeAddTransaction(params: {
   const syncResult = await persistTransaction({
     session,
     userId: onboardingData.userId,
+    householdContext: onboardingData.householdContext,
     transaction,
     allTransactions: nextTransactions,
     expectedVersion: targetDebt?.serverVersion,
@@ -90,6 +116,18 @@ export async function executeAddTransaction(params: {
           }
         : debt),
     };
+    const updatedDebt = updatedData.debts.find(debt => debt.id === targetDebt.id)!;
+    if (syncResult.syncStatus === 'synced') {
+      updatedData = updatePaidOffArchiveState({
+        data: updatedData,
+        debtId: targetDebt.id,
+        previousBalance: targetDebt.balance,
+        nextBalance: updatedDebt.balance,
+        confirmedPaymentReachedZero: transaction.deletedAt === null && transaction.category === 'payment' &&
+          calculateTransactionBalanceDelta(transaction, targetDebt.category).minorUnits < 0,
+        confirmedMutation: true,
+      });
+    }
   }
 
   return {
@@ -154,7 +192,7 @@ export async function executeReconcileDebt(params: {
 
     const payee = reason === 'interest_adjustment'
       ? 'Interest reconciliation adjustment'
-      : (isPositive ? 'Statement balance reconciliation' : 'Reconciliation credit adjustment');
+      : (isPositive ? 'Statement balance reconciliation' : 'Balance Adjustment');
 
     const memo = `Reconciled from ${formatCurrency(moneyToMajor(oldMoney), currencySymbol)} to ${formatCurrency(verifiedMajor, currencySymbol)} (${reason.replace('_', ' ')})`;
     adjId = Crypto.randomUUID();
@@ -192,6 +230,7 @@ export async function executeReconcileDebt(params: {
   const reconcileRes = await reconcileDebtAtomic({
     session,
     userId: onboardingData.userId,
+    householdContext: onboardingData.householdContext,
     accountId: item.id,
     verifiedBalance: verifiedMajor,
     asOfDate: todayDate,
@@ -221,17 +260,26 @@ export async function executeReconcileDebt(params: {
     ...onboardingData,
     debts: updatedDebts,
   };
+  const archiveAdjustedData = reconcileRes.syncStatus === 'synced'
+    ? updatePaidOffArchiveState({
+        data: updatedData,
+        debtId: item.id,
+        previousBalance: item.balance,
+        nextBalance: finalBalance,
+        confirmedMutation: true,
+      })
+    : updatedData;
 
   // Reconciliation RPC already updated this debt atomically. Never issue a second
   // client debt update: it would increment the version again and risk stale writes.
   if (reconcileRes.outcome === 'confirmed') {
-    await cacheConfirmedDebts(updatedData);
+    await cacheConfirmedDebts(archiveAdjustedData);
   }
 
   return {
     transactions: adjTx ? [{ ...adjTx, isPending: reconcileRes.outcome !== 'confirmed' }, ...currentTransactions] : currentTransactions,
     reconciliationAnchors: nextAnchors,
-    updatedOnboardingData: updatedData,
+    updatedOnboardingData: archiveAdjustedData,
     outcome: reconcileRes.outcome,
     syncStatus: reconcileRes.syncStatus,
   };
@@ -268,28 +316,30 @@ export async function executeRecordBillPayment(params: {
 export async function executeAddRecurringBill(params: {
   session: Session | null;
   userId: string;
+  householdContext?: HouseholdContext;
   bill: RecurringBill;
   currentBills: RecurringBill[];
 }): Promise<{ bills: RecurringBill[]; syncResult: FinanceMutationResult<RecurringBill> }> {
-  const { session, userId, bill, currentBills } = params;
+  const { session, userId, householdContext, bill, currentBills } = params;
   return executeRecurringBillSave({ session, userId, bill, currentBills,
     storage: {
-      persist: args => persistRecurringBill({ session: args.session as Session | null, userId: args.userId, bill: args.bill, currentBills: args.currentBills }),
-      remove: args => deleteRecurringBill({ session: args.session as Session | null, userId: args.userId, billId: args.billId, currentBills: args.currentBills }),
+      persist: args => persistRecurringBill({ session: args.session as Session | null, userId: args.userId, householdContext, bill: args.bill, currentBills: args.currentBills }),
+      remove: args => deleteRecurringBill({ session: args.session as Session | null, userId: args.userId, householdContext, billId: args.billId, currentBills: args.currentBills }),
     } }) as Promise<{ bills: RecurringBill[]; syncResult: FinanceMutationResult<RecurringBill> }>;
 }
 
 export async function executeDeleteRecurringBill(params: {
   session: Session | null;
   userId: string;
+  householdContext?: HouseholdContext;
   billId: string;
   currentBills: RecurringBill[];
 }): Promise<{ bills: RecurringBill[]; syncResult: FinanceMutationResult<string> }> {
-  const { session, userId, billId, currentBills } = params;
+  const { session, userId, householdContext, billId, currentBills } = params;
   return executeRecurringBillRemoval({ session, userId, billId, currentBills,
     storage: {
-      persist: args => persistRecurringBill({ session: args.session as Session | null, userId: args.userId, bill: args.bill, currentBills: args.currentBills }),
-      remove: args => deleteRecurringBill({ session: args.session as Session | null, userId: args.userId, billId: args.billId, currentBills: args.currentBills }),
+      persist: args => persistRecurringBill({ session: args.session as Session | null, userId: args.userId, householdContext, bill: args.bill, currentBills: args.currentBills }),
+      remove: args => deleteRecurringBill({ session: args.session as Session | null, userId: args.userId, householdContext, billId: args.billId, currentBills: args.currentBills }),
     } }) as Promise<{ bills: RecurringBill[]; syncResult: FinanceMutationResult<string> }>;
 }
 
@@ -309,6 +359,7 @@ export async function executeUpdateTransaction(params: {
   const syncResult = await updateTransaction({
     session,
     userId: onboardingData.userId,
+    householdContext: onboardingData.householdContext,
     transaction,
     allTransactions: currentTransactions.map(t => t.id === transaction.id ? transaction : t),
     expectedVersion: newDebt?.serverVersion,
@@ -393,10 +444,31 @@ export async function executeUpdateTransaction(params: {
     ...onboardingData,
     debts: updatedDebts,
   };
+  let archiveAdjustedData = updatedData;
+  if (syncResult.syncStatus === 'synced') {
+    for (const debt of updatedDebts) {
+      if (debt.balance > 0 && (archiveAdjustedData.archivedPaidOffDebtIds ?? []).includes(debt.id)) {
+        archiveAdjustedData = updatePaidOffArchiveState({ data: archiveAdjustedData, debtId: debt.id, previousBalance: debt.balance, nextBalance: debt.balance, confirmedMutation: true });
+      }
+    }
+    if (transaction.accountId && transaction.deletedAt === null && transaction.category === 'payment' && newDebt) {
+      const updatedDebt = updatedDebts.find(debt => debt.id === newDebt.id);
+      if (updatedDebt) {
+        archiveAdjustedData = updatePaidOffArchiveState({
+          data: archiveAdjustedData,
+          debtId: newDebt.id,
+          previousBalance: newDebt.balance,
+          nextBalance: updatedDebt.balance,
+          confirmedPaymentReachedZero: calculateTransactionBalanceDelta(transaction, newDebt.category).minorUnits < 0,
+          confirmedMutation: true,
+        });
+      }
+    }
+  }
 
   return {
     transactions: nextTransactions,
-    updatedOnboardingData: updatedData,
+    updatedOnboardingData: archiveAdjustedData,
     syncResult: {
       ...syncResult,
       data: updatedTx,
@@ -422,6 +494,7 @@ export async function executeDeleteTransaction(params: {
   const syncResult = await deleteTransaction({
     session,
     userId: onboardingData.userId,
+    householdContext: onboardingData.householdContext,
     transactionId,
     allTransactions: currentTransactions.map(t => t.id === transactionId ? { ...t, deletedAt: new Date().toISOString() } : t),
     expectedVersion: targetDebt?.serverVersion,
@@ -462,10 +535,15 @@ export async function executeDeleteTransaction(params: {
     ...onboardingData,
     debts: updatedDebts,
   };
+  const archiveAdjustedData = syncResult.syncStatus === 'synced'
+      ? updatedDebts.reduce((data, debt) => debt.balance > 0 && (data.archivedPaidOffDebtIds ?? []).includes(debt.id)
+      ? updatePaidOffArchiveState({ data, debtId: debt.id, previousBalance: debt.balance, nextBalance: debt.balance, confirmedMutation: true })
+      : data, updatedData)
+    : updatedData;
 
   return {
     transactions: nextTransactions,
-    updatedOnboardingData: updatedData,
+    updatedOnboardingData: archiveAdjustedData,
     syncResult: {
       data: softDeletedTx,
       syncStatus: syncResult.syncStatus,

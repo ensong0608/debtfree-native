@@ -1,0 +1,12 @@
+// Local QA only: enable the existing synthetic fixture in an isolated app ID.
+gradle.projectsEvaluated {
+    def qaApp = gradle.rootProject.findProject(':app')
+    if (System.getenv('DFN_ANDROID_PACKAGE') != 'com.debtfree.nativetest.verification') {
+        throw new GradleException('Synthetic QA requires its separate verification application ID.')
+    }
+    if (qaApp != null) {
+        qaApp.tasks.matching { it.name == 'createBundleDebugJsAndAssets' }.configureEach {
+            devEnabled.set(true)
+        }
+    }
+}

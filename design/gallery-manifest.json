@@ -1,0 +1,166 @@
+{
+  "collections": [
+    {
+      "title": "Latest Uphold color consistency",
+      "file": "signature-uphold-consistent-2026-11-16.html",
+      "variants": {
+        "Fresh Light": "signature",
+        "Ink & Lime": "ledger",
+        "After Dark": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": true,
+      "note": "Uphold green (#49CC68 light / #84FB7F dark) marks debt reductions and selected controls; red marks increases. Balances and ordinary labels stay neutral. Currency uses a smaller, spaced dollar symbol. Montserrat is retained as the preview font; Proxima Nova is unavailable locally. Original blue + and BitLess logo remain."
+    },
+    {
+      "title": "Uphold-inspired palette previous iteration",
+      "file": "signature-uphold-inspired-2026-11-15.html",
+      "variants": {
+        "Fresh Light": "signature",
+        "Ink & Lime": "ledger",
+        "After Dark": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": false,
+      "note": "Uphold official core colors #49CC68 / #84FB7F / #090D14 / white / black, with derived neutral surfaces. Proxima Nova is unavailable locally; Montserrat is the preview stand-in. BitLess identity, Signature composition and original blue + preserved. Brand reference: https://uphold.design/."
+    },
+    {
+      "title": "soft green / rounded fonts",
+      "file": "signature-rounded-fonts-2026-11-15.html",
+      "variants": {
+        "Nunito": "signature",
+        "Quicksand": "ledger",
+        "Rubik": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": false,
+      "note": "Visible swatch #416D55 is the darkest brand fill. Smaller bold headings and three rounded font alternatives. Shared Signature layout and Contour artwork keep typography comparable; Home composition and original blue + preserved."
+    },
+    {
+      "title": "Signature green / Ubuntu",
+      "file": "signature-green-ubuntu-2026-11-15.html",
+      "variants": {
+        "Contour": "signature",
+        "Facet": "ledger",
+        "Silk": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": false,
+      "note": "Owner-supplied green palette and Ubuntu. Home composition is shared; Accounts and Strategy have distinct background art and equal summary heights. Header separators removed. Original blue + retained."
+    },
+    {
+      "title": "Three-page review - Signature / Horizon / Precision",
+      "file": "bitless-three-page-design-system-2026-11-15.html",
+      "variants": {
+        "Signature": "signature",
+        "Horizon": "ledger",
+        "Precision": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "note": "Home leads with an expressive hero; Accounts and Strategy have matched compact summaries.",
+      "latest": false
+    },
+    {
+      "title": "Accounts & Strategy · first review",
+      "file": "accounts-strategy-three-directions-2026-11-15.html",
+      "variants": {
+        "Signature Refined": "signature",
+        "Editorial Ledger": "ledger",
+        "Focus Studio": "studio"
+      },
+      "pages": [
+        "Accounts",
+        "Strategy"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-section",
+      "note": "Earlier six-screen exploration, retained for comparison."
+    },
+    {
+      "title": "Home · financial colors · Argon",
+      "file": "home-financial-color-argon-2026-11-15.html",
+      "variants": {
+        "Sovereign Mint": "mint",
+        "Alchemist’s Ledger": "alchemy",
+        "Zero-Gravity Ascent": "ascent"
+      },
+      "pages": [
+        "Home"
+      ],
+      "selector": "data-concept",
+      "note": "Argon interpretation. Original exploratory wording and financial labels are retained; these are not implementation specifications."
+    },
+    {
+      "title": "Home · financial colors",
+      "file": "home-financial-color-studies-2026-11-15.html",
+      "variants": {
+        "Evergreen": "evergreen",
+        "Golden Hour": "gold",
+        "Deep Current": "current"
+      },
+      "pages": [
+        "Home"
+      ],
+      "selector": "data-concept",
+      "note": "Three complete Home compositions exploring financial color associations."
+    },
+    {
+      "title": "Home · blue hero · second round",
+      "file": "home-blue-hero-round-two-2026-11-15.html",
+      "variants": {
+        "Signature Plus": "blue",
+        "Blue Horizon": "horizon",
+        "Blue Halo": "halo"
+      },
+      "pages": [
+        "Home"
+      ],
+      "selector": "data-style",
+      "note": "Refinement, full Home rework and metallic depth."
+    },
+    {
+      "title": "Home · original hero studies",
+      "file": "home-estimate-hero-studies-2026-11-15.html",
+      "variants": {
+        "Signature Blue": "blue",
+        "Sky Glow": "sky",
+        "Quiet Spotlight": "white"
+      },
+      "pages": [
+        "Home"
+      ],
+      "selector": "data-style",
+      "note": "Initial three studies. Signature Blue was the owner's preferred direction in this round."
+    }
+  ]
+}

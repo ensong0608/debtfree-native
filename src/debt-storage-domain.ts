@@ -2,8 +2,12 @@
 import { getCurrency } from './finance/currencies.ts';
 // @ts-ignore TS5097: Node tests import TypeScript directly.
 import { parseMoney } from './finance/money.ts';
+// @ts-ignore TS5097
+import { parseDateOnly } from './finance/calendar.ts';
 // @ts-ignore TS5097: Node tests import TypeScript directly.
 import { ACTIVE_DEBT_CATEGORIES, resolveCurrencyOption, type DebtCategory, type UserOnboardingData } from './onboarding-domain.ts';
+// @ts-ignore TS5097
+import { validateDebtPaymentSplitPlans, validateBillPaymentSplitPlans } from './finance/debt-payment-split.ts';
 
 /** Validate a database decimal without rounding; PostgreSQL may pad insignificant zeros. */
 export function canonicalDebtAmount(value: number | string, currency: string, signed = false): string {
@@ -27,15 +31,35 @@ export function canonicalOptionalDebtAmount(value: number | string | null | unde
   return value == null ? null : canonicalDebtAmount(value, currency);
 }
 export function validateStoredAmounts(data: UserOnboardingData): void {
+  if (data.householdName !== undefined && (typeof data.householdName !== 'string' || !data.householdName.trim() || data.householdName !== data.householdName.trim() || data.householdName.length > 120)) throw new TypeError('Invalid household name');
   const currency = resolveCurrencyOption(data).code;
   canonicalDebtAmount(data.primaryIncomeAmount, currency);
+  if (data.primaryGrossIncomeAmount != null) canonicalDebtAmount(data.primaryGrossIncomeAmount, currency);
   canonicalDebtAmount(data.extraMonthlyPayment, currency);
-  for (const income of data.additionalIncomes ?? []) canonicalDebtAmount(income.amount, currency);
+  for (const income of data.additionalIncomes ?? []) {
+    canonicalDebtAmount(income.amount, currency);
+    if (income.grossAmount != null) canonicalDebtAmount(income.grossAmount, currency);
+  }
   for (const debt of data.debts ?? []) {
     canonicalDebtAmount(debt.balance, currency, true);
     canonicalDebtAmount(debt.minimumPayment, currency);
     canonicalOptionalDebtAmount(debt.originalBalance, currency);
     canonicalOptionalDebtAmount(debt.creditLimit, currency);
+    canonicalOptionalDebtAmount(debt.annualFeeAmount, currency);
+    if ((debt.annualFeeAmount == null) !== (debt.annualFeeNextDueDate == null)) throw new TypeError('Annual fee amount and renewal date must be set together');
+    if (debt.annualFeeAmount != null && (debt.category !== 'Credit card' || debt.annualFeeAmount <= 0)) throw new TypeError('Annual fee must be positive and attached to a credit card');
+    if (debt.annualFeeNextDueDate != null) parseDateOnly(debt.annualFeeNextDueDate);
+  }
+  if (data.archivedPaidOffDebtIds !== undefined) {
+    if (!Array.isArray(data.archivedPaidOffDebtIds) || data.archivedPaidOffDebtIds.length > 5000) throw new TypeError('Invalid archived debt IDs');
+    const debtById = new Map((data.debts ?? []).map(debt => [debt.id, debt]));
+    const seen = new Set<string>();
+    for (const debtId of data.archivedPaidOffDebtIds) {
+      if (typeof debtId !== 'string' || !debtId.trim() || seen.has(debtId)) throw new TypeError('Invalid archived debt ID');
+      const debt = debtById.get(debtId);
+      if (!debt || debt.balance !== 0) throw new TypeError('Archived debt must be a stored zero-balance account');
+      seen.add(debtId);
+    }
   }
   for (const escrow of Object.values(data.mortgageEscrowByDebtId ?? {})) canonicalDebtAmount(escrow, currency);
   for (const extra of Object.values(data.mortgageExtraPaymentByDebtId ?? {})) canonicalDebtAmount(extra, currency);
@@ -44,6 +68,8 @@ export function validateStoredAmounts(data: UserOnboardingData): void {
       throw new TypeError('Invalid recurring bill custom category label');
     }
   }
+  if (data.debtPaymentSplitPlansByDebtId !== undefined) validateDebtPaymentSplitPlans(data.debtPaymentSplitPlansByDebtId);
+  if (data.billPaymentSplitPlansByBillId !== undefined) validateBillPaymentSplitPlans(data.billPaymentSplitPlansByBillId);
 }
 export type MonetaryRecordsContext = {
   transactions: readonly { readonly id: string }[];

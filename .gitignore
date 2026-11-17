@@ -52,3 +52,4 @@ references/prototype-repo/
 *.p8
 *.p12
 *.mobileprovision
+/scratch/*-preview-output-*/

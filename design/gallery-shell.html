@@ -1,0 +1,64 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BitLess Design Library</title>
+<style>
+:root{--gallery-ink:#142242;--gallery-muted:#66758c;--gallery-blue:#0051fb;--gallery-line:#e0e7f1;--background:#fff;--foreground:#17233b;--card:#fff;--border:#dde5f0;--muted-foreground:#66758c;font-family:Arial,sans-serif}
+html,body{margin:0;background:transparent}*{box-sizing:border-box}
+#design-library{color:var(--gallery-ink);font:14px/1.5 Arial,sans-serif}
+#design-library button,#design-library input,#design-library select{font:inherit}
+#design-library .library-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin:0 0 22px}
+#design-library .eyebrow{font-size:11px;letter-spacing:2px;color:var(--gallery-blue);font-weight:700;margin-bottom:5px}
+#design-library h1{font-size:28px;line-height:1.15;letter-spacing:-1px;margin:0;font-weight:600}
+#design-library .subtitle{margin:9px 0 0;color:var(--gallery-muted);font-size:13px;max-width:500px}
+#design-library .counter{color:var(--gallery-muted);white-space:nowrap;font-size:12px;padding-top:6px}
+#design-library .layout{display:grid;grid-template-columns:205px minmax(0,1fr);gap:24px;align-items:start}
+#design-library .catalog{background:#f4f7fc;border:1px solid var(--gallery-line);border-radius:16px;padding:12px}
+#design-library input,#design-library select{width:100%;min-width:0;border:1px solid #d9e2ef;border-radius:9px;background:#fff;color:#263859;padding:9px 10px;font-size:12px}
+#design-library select{margin:8px 0 12px}
+#design-library .catalog-list{max-height:720px;overflow:auto;scrollbar-width:thin}
+#design-library details{margin:0 0 10px}
+#design-library summary{font-size:11px;color:#61728e;font-weight:600;cursor:pointer;padding:6px 0;line-height:1.4}
+#design-library .entry{width:100%;text-align:left;border:1px solid transparent;background:transparent;color:#273958;border-radius:9px;padding:8px;margin:2px 0;cursor:pointer;line-height:1.3}
+#design-library .entry:hover{background:#e8eef8}
+#design-library .entry[aria-pressed=true]{background:#fff;border-color:#d1dffa;box-shadow:inset 3px 0 #0051fb}
+#design-library .entry strong{display:block;font-size:12px;font-weight:500}
+#design-library .entry small{font-size:11px;color:#76859a;display:block;margin-top:3px}
+#design-library .empty{font-size:12px;color:#66758c;padding:10px 0}
+#design-library .preview-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+#design-library .current-group{font-size:11px;color:#75839a;margin-bottom:3px}
+#design-library h2{font-size:19px;line-height:1.3;letter-spacing:-.4px;margin:0;font-weight:600}
+#design-library .open-study{display:inline-flex;flex-shrink:0;align-items:center;border:1px solid #dbe3f0;color:#0051fb;background:#fff;text-decoration:none;border-radius:9px;padding:7px 9px;font-size:11px;white-space:nowrap}
+#design-library .viewer-wrap{max-width:460px;margin:auto}
+#design-library iframe{display:block;width:100%;height:1000px;border:0;background:transparent;border-radius:14px}
+#design-library .study-note{font-size:12px;color:#6b7a90;margin:12px 0 0;padding-top:12px;border-top:1px solid #e3e9f2}
+#design-library .library-footer{margin-top:20px;color:#7b889a;font-size:11px;border-top:1px solid #e3e9f2;padding-top:12px}
+@media(max-width:640px){#design-library .layout{grid-template-columns:1fr;gap:18px}#design-library .catalog-list{max-height:220px}#design-library .library-header{margin-bottom:16px}#design-library h1{font-size:25px}#design-library .counter{white-space:normal;text-align:right}#design-library .catalog{padding:10px}#design-library .preview-head{gap:8px}#design-library .open-study{font-size:10px;padding:6px}}
+</style></head><body>
+<main id="design-library">
+ <header class="library-header"><div><div class="eyebrow">BITLESS / DESIGN LIBRARY</div><h1>Every direction. One place.</h1><p class="subtitle">Browse the latest review, revisit earlier ideas, and keep the design history together.</p></div><div class="counter" id="library-count"></div></header>
+ <div class="layout"><aside class="catalog" aria-label="Design catalog"><input id="library-search" type="search" placeholder="Search designs…" aria-label="Search designs"><select id="library-filter" aria-label="Filter designs"><option value="all">All designs</option><option value="latest">Latest review</option><option value="Home">Home</option><option value="Accounts">Accounts</option><option value="Strategy">Strategy</option><option value="archive">Earlier boards & references</option></select><div class="catalog-list" id="library-list"></div></aside>
+ <section aria-label="Selected design"><div class="preview-head"><div><div class="current-group" id="current-group"></div><h2 id="current-title"></h2></div><a id="open-study" class="open-study" target="_blank" rel="noopener">Open full study ↗</a></div><div class="viewer-wrap"><iframe id="study-viewer" title="Selected BitLess design" sandbox="allow-scripts allow-popups allow-modals"></iframe></div><p class="study-note" id="study-note"></p></section></div>
+ <footer class="library-footer">Design history · Original studies remain intact · Sample financial values · A proposal is not implementation approval</footer>
+</main>
+<script id="gallery-data" type="application/json">__GALLERY_DATA__</script>
+<script>
+(()=>{
+ const data=JSON.parse(document.getElementById('gallery-data').textContent);const list=document.getElementById('library-list');const search=document.getElementById('library-search');const filter=document.getElementById('library-filter');const viewer=document.getElementById('study-viewer');let selected=data.entries[0];let fullUrl;
+ document.getElementById('library-count').textContent=Object.keys(data.documents).length+' studies · '+data.entries.length+' views';
+ const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ function hydrated(file){return data.documents[file].replace(/gallery-asset-[a-f0-9]{18}/g,key=>data.assets[key]||key)}
+ const baseStyle='<style>:root{--background:#fff;--foreground:#182032;--card:#fff;--card-foreground:#182032;--secondary:#f1f5fa;--muted:#edf1f7;--muted-foreground:#68758a;--border:#dde5ef;--primary:#0051fb;--primary-foreground:#fff;--accent:#e5f2ff;--accent-foreground:#0051fb;--radius:14px;--font-sans:Arial,sans-serif;--font-size-base:14px}body{margin:0;padding:8px;font:14px/1.5 Arial,sans-serif;background:transparent;color:#182032}button,input,select{font-family:inherit}button{cursor:pointer}button:focus-visible,a:focus-visible{outline:2px solid #0051fb;outline-offset:3px}[hidden]{display:none!important}</style>';
+ function prepare(entry,preview){
+  let doc=hydrated(entry.file);if(!/<body[\s>]/i.test(doc))doc='<!doctype html><html><head></head><body>'+doc+'</body></html>';doc=doc.replace(/<head[^>]*>/i,m=>m+baseStyle);
+  let activation='';if(entry.selector)activation+='document.querySelector('+JSON.stringify('['+entry.selector+'="'+entry.variant+'"]')+')?.click();';
+  if(entry.pageSelector)activation+='document.querySelector('+JSON.stringify('['+entry.pageSelector+'="'+entry.page.toLowerCase()+'"]')+')?.click();';
+  const hide=preview&&!entry.archive?'<style>.design-picker,.screen-picker,.study-controls,.choices,.controls-bar,.preview-note,.palette-caption{display:none!important}</style>':'';
+  const notify=preview?'const report=()=>parent.postMessage({type:"bitless-gallery-size",height:document.body.scrollHeight},"*");new ResizeObserver(report).observe(document.body);report();':'';
+  const script='<script>'+activation+notify+'<\/script>';
+  return doc.replace(/<\/body>/i,hide+script+'</body>');
+ }
+ function renderList(){const q=search.value.trim().toLowerCase();const mode=filter.value;const matches=data.entries.filter(e=>(mode==='all'||mode==='latest'&&e.latest||mode==='archive'&&e.archive||mode===e.page)&&[e.title,e.page,e.group,e.file].join(' ').toLowerCase().includes(q));const groups=new Map();matches.forEach(e=>{if(!groups.has(e.group))groups.set(e.group,[]);groups.get(e.group).push(e)});list.innerHTML='';for(const [group,items]of groups){const section=document.createElement('details');section.open=q.length>0||mode!=='all'||items.some(e=>e.id===selected.id)||group.startsWith('Latest');section.innerHTML='<summary>'+escape(group)+' <span>('+items.length+')</span></summary>';for(const e of items){const b=document.createElement('button');b.className='entry';b.setAttribute('aria-pressed',String(e.id===selected.id));b.innerHTML='<strong>'+escape(e.title)+'</strong><small>'+escape(e.page)+'</small>';b.addEventListener('click',()=>select(e));section.appendChild(b)}list.appendChild(section)}if(!matches.length)list.innerHTML='<div class="empty">No matching studies.</div>'}
+ function select(entry,updateHash=true){selected=entry;document.getElementById('current-group').textContent=entry.group;document.getElementById('current-title').textContent=entry.title+' / '+entry.page;document.getElementById('study-note').textContent=entry.note;viewer.title=entry.title+' '+entry.page+' design';viewer.style.height='1000px';viewer.srcdoc=prepare(entry,true);if(fullUrl)URL.revokeObjectURL(fullUrl);fullUrl=URL.createObjectURL(new Blob([prepare(entry,false)],{type:'text/html;charset=utf-8'}));document.getElementById('open-study').href=fullUrl;if(updateHash)try{history.replaceState(null,'','#'+entry.id)}catch{}renderList()}
+ window.addEventListener('message',event=>{if(event.source!==viewer.contentWindow||event.data?.type!=='bitless-gallery-size')return;const height=Number(event.data.height);if(Number.isFinite(height))viewer.style.height=Math.max(360,Math.min(selected.archive?1800:1250,height+8))+'px'});
+ search.addEventListener('input',renderList);filter.addEventListener('change',renderList);window.addEventListener('hashchange',()=>{const e=data.entries.find(e=>e.id===location.hash.slice(1));if(e)select(e,false)});
+ const bookmarked=data.entries.find(e=>e.id===location.hash.slice(1));select(bookmarked||selected,false);
+})();
+</script></body></html>

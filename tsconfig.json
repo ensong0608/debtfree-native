@@ -5,6 +5,8 @@
   },
   "exclude": [
     "node_modules",
-    "references"
+    "references",
+    "supabase/functions",
+    "scratch"
   ]
 }

@@ -273,8 +273,9 @@ export function calculateMilestones(params: {
   debts: readonly ProgressDebtItem[];
   transactions: readonly LedgerTransaction[];
   currencyCode?: string;
+  excludedUtilizationDebtIds?: readonly string[];
 }): Milestone[] {
-  const { debts, transactions, currencyCode = 'USD' } = params;
+  const { debts, transactions, currencyCode = 'USD', excludedUtilizationDebtIds = [] } = params;
   const debtIds = new Set(debts.map(debt => debt.id));
   const paymentTxs = transactions.filter(tx =>
     tx.deletedAt === null && !tx.isPending && tx.category === 'payment' &&
@@ -288,7 +289,8 @@ export function calculateMilestones(params: {
   const debtById = new Map(debts.map(debt => [debt.id, debt]));
   const total = roundToCurrency(paymentTxs.reduce((sum, tx) => sum - moneyToMajor(calculateTransactionBalanceDelta(tx, debtById.get(tx.accountId!)!.category)), 0), currencyCode);
   const firstDate = paymentTxs.reduce<string | null>((first, tx) => !first || tx.date < first ? tx.date : first, null);
-  const utilization = calculateCreditUtilization(debts, currencyCode);
+  const excludedUtilizationIds = new Set(excludedUtilizationDebtIds);
+  const utilization = calculateCreditUtilization(debts.filter(debt => !excludedUtilizationIds.has(debt.id)), currencyCode);
   const hasPendingBalanceWrites = transactions.some(tx => tx.isPending && tx.deletedAt === null && tx.accountId !== null);
   const unavailable = (id: string, title: string, targetValue: number): Milestone => ({
     id, title, targetValue, currentValue: 0, percent: 0, status: 'locked',

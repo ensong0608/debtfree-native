@@ -1,0 +1,76 @@
+name: Android production release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: Positive Android version code for this candidate
+        required: true
+        type: string
+      version_name:
+        description: Android version name for this candidate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production-mobile
+    env:
+      EXPO_PUBLIC_APP_ENV: production
+      EXPO_PUBLIC_APP_SCHEME: ${{ vars.EXPO_PUBLIC_APP_SCHEME }}
+      DFN_APP_NAME: ${{ vars.DFN_APP_NAME }}
+      DFN_APP_SLUG: ${{ vars.DFN_APP_SLUG }}
+      DFN_ANDROID_PACKAGE: ${{ vars.DFN_ANDROID_PACKAGE }}
+      DFN_OFFICIAL_DOMAIN: ${{ vars.DFN_OFFICIAL_DOMAIN }}
+      DFN_APP_ICON_PATH: ${{ vars.DFN_APP_ICON_PATH }}
+      DFN_ANDROID_ADAPTIVE_ICON_PATH: ${{ vars.DFN_ANDROID_ADAPTIVE_ICON_PATH }}
+      DFN_SPLASH_IMAGE_PATH: ${{ vars.DFN_SPLASH_IMAGE_PATH }}
+      DFN_ANDROID_VERSION_CODE: ${{ inputs.version_code }}
+      DFN_ANDROID_VERSION_NAME: ${{ inputs.version_name }}
+      EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_URL }}
+      EXPO_PUBLIC_MOBILE_PRODUCTION_PROJECT_REF: ${{ vars.EXPO_PUBLIC_MOBILE_PRODUCTION_PROJECT_REF }}
+      EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_PUBLISHABLE_KEY: ${{ vars.EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_PUBLISHABLE_KEY }}
+      EXPO_PUBLIC_ACCOUNT_DELETION_ENABLED: ${{ vars.EXPO_PUBLIC_ACCOUNT_DELETION_ENABLED }}
+      EXPO_PUBLIC_HELP_URL: ${{ vars.EXPO_PUBLIC_HELP_URL }}
+      EXPO_PUBLIC_PRIVACY_URL: ${{ vars.EXPO_PUBLIC_PRIVACY_URL }}
+      EXPO_PUBLIC_TERMS_URL: ${{ vars.EXPO_PUBLIC_TERMS_URL }}
+      EXPO_PUBLIC_ACCOUNT_DELETION_URL: ${{ vars.EXPO_PUBLIC_ACCOUNT_DELETION_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: npm ci
+      - name: Prepare release signing file
+        shell: bash
+        env:
+          DFN_RELEASE_KEYSTORE_BASE64: ${{ secrets.DFN_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$DFN_RELEASE_KEYSTORE_BASE64"
+          printf '%s' "$DFN_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/debtfree-release.keystore"
+          echo "DFN_RELEASE_STORE_FILE=$RUNNER_TEMP/debtfree-release.keystore" >> "$GITHUB_ENV"
+      - name: Generate Android project with production configuration
+        run: npx expo prebuild --platform android --no-install
+      - name: Build signed Android App Bundle
+        working-directory: android
+        env:
+          DFN_RELEASE_STORE_PASSWORD: ${{ secrets.DFN_RELEASE_STORE_PASSWORD }}
+          DFN_RELEASE_KEY_ALIAS: ${{ secrets.DFN_RELEASE_KEY_ALIAS }}
+          DFN_RELEASE_KEY_PASSWORD: ${{ secrets.DFN_RELEASE_KEY_PASSWORD }}
+        run: ./gradlew bundleRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DebtFree-Android-Release-Candidate
+          path: android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 14

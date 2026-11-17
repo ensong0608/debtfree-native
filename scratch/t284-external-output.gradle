@@ -1,0 +1,1 @@
+gradle.beforeProject { p -> if (p.path == ":app") { p.layout.buildDirectory.set(new File("C:/Users/lawre/AppData/Local/BitLessBuilds/T284-final-20261115")) } }

@@ -1,4 +1,6 @@
-export const CALLBACK = 'com.debtfree.native.test://auth/callback';
+const DEFAULT_APP_SCHEME = 'com.debtfree.native.test';
+export const APP_SCHEME = process.env.EXPO_PUBLIC_APP_SCHEME ?? DEFAULT_APP_SCHEME;
+export const CALLBACK = `${APP_SCHEME}://auth/callback`;
 /** Project reference of the DebtFree web production project. It must never be used by this client. */
 export const PRODUCTION_PROJECT_REF = 'acpderotiyoecmwwyfsu';
 
@@ -25,6 +27,30 @@ export function sandboxConfigProblem(projectUrl: string, projectRef: string, pub
   }
   if (!/^sb_publishable_[A-Za-z0-9_-]+$/.test(publishableKey)) {
     return 'EXPO_PUBLIC_SANDBOX_SUPABASE_PUBLISHABLE_KEY must be a publishable (sb_publishable_) key. Secret and legacy keys are rejected.';
+  }
+  return null;
+}
+
+/** Production mobile builds use the owner-selected mobile project, never the separate web production project. */
+export function productionConfigProblem(projectUrl: string, projectRef: string, publishableKey: string): string | null {
+  if (!projectUrl || !projectRef || !publishableKey) {
+    const missing = [
+      !projectUrl && 'EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_URL',
+      !projectRef && 'EXPO_PUBLIC_MOBILE_PRODUCTION_PROJECT_REF',
+      !publishableKey && 'EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_PUBLISHABLE_KEY',
+    ].filter(Boolean);
+    return `Missing ${missing.join(', ')}.`;
+  }
+  if (!/^[a-z0-9-]+$/.test(projectRef)) return 'EXPO_PUBLIC_MOBILE_PRODUCTION_PROJECT_REF is not a valid project reference.';
+  if (projectRef === PRODUCTION_PROJECT_REF) return 'The web production project is not allowed in the mobile app.';
+  let url: URL;
+  try { url = new URL(projectUrl); } catch { return 'EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_URL is not a valid URL.'; }
+  if (url.protocol !== 'https:' || url.hostname !== `${projectRef}.supabase.co` || url.port !== '' ||
+      url.username !== '' || url.password !== '' || url.pathname !== '/' || url.search || url.hash) {
+    return 'EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_URL must match the configured mobile project reference.';
+  }
+  if (!/^sb_publishable_[A-Za-z0-9_-]+$/.test(publishableKey)) {
+    return 'EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_PUBLISHABLE_KEY must be a publishable key. Secret and legacy keys are rejected.';
   }
   return null;
 }

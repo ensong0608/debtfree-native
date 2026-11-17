@@ -1,22 +1,20 @@
+import { resolveAuthenticatedStage } from './onboarding-domain';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  View,
 } from 'react-native';
+import { View, Text, TextInput, Pressable, ScrollView, NativeAppearanceProvider, useNativeAppearance, type AppearancePalette } from './components/NativeAppearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Crypto from 'expo-crypto';
+import * as WebBrowser from 'expo-web-browser';
 import type { Session } from '@supabase/supabase-js';
 import {
   AI_REFERRAL_SOURCE,
-  CURRENCY_OPTIONS, resolveCurrencyOption, activeDebts, acceptMoneyEdit, acceptAprEdit, formatEditableMoney,
+  CURRENCY_OPTIONS, resolveCurrencyOption, acceptMoneyEdit, acceptAprEdit, formatEditableMoney,
   COUNTRY_OPTIONS,
   DEBT_CATEGORIES,
   PAY_FREQUENCY_OPTIONS,
@@ -41,14 +39,12 @@ import {
   type FlowStage,
   type PayFrequency,
   type PayoffStrategy,
-  type PremiumPlanChoice,
   type UserOnboardingData,
   type VehicleOwnershipStatus,
 } from './onboarding-domain';
 import {
   deleteUserDebt,
   loadUserOnboardingData,
-  requestNativeNotificationPermission,
   saveUserOnboardingData,
   saveUserOnboardingSettingsPatch,
   upsertUserDebt,
@@ -67,9 +63,12 @@ import {
   executeDeleteRecurringBill,
 } from './finance/finance-commands';
 import { type LedgerTransaction, type ReconciliationAnchor } from './finance/ledger';
+import { transactionHasBillId } from './finance/bill-identity';
 import { createRecurringBillDeletionPreview, type RecurringBill } from './finance/recurring-bills';
-import { createOnboardingLoanBill, onboardingLoanBillSaveAction, withoutDeletedBillPairings, withoutDeletedDebtPairing, withoutIncompatibleDebtPairing } from './finance/loan-bill-pairing';
-import { parseMoney, moneyToMajor, type Money } from './finance/money';
+import { annualFeeTransactionId, createAnnualFeeTransaction, nextAnnualFeeRenewalDate } from './finance/annual-fees';
+import { validatedLoanBillLinks, withoutDeletedBillPairings, withoutIncompatibleDebtPairing, canEditDebtCategoryWithPairings } from './finance/loan-bill-pairing';
+import { prepareUnifiedLoanSettings } from './finance/unified-loan';
+import { parseMoney, type Money } from './finance/money';
 import { type DateOnly, currentHouseholdDate } from './finance/calendar';
 import {
   confirmObligationPaidToday,
@@ -79,7 +78,7 @@ import {
   saveObligationEditorSchedule,
   removeObligationEditorSchedule,
 } from './finance/obligation-editor';
-import { getObligationCycle, obligationScheduleKey } from './finance/obligation-schedule';
+import { obligationScheduleKey } from './finance/obligation-schedule';
 import type { ObligationSchedule, ObligationScheduleKey } from './finance/obligation-schedule';
 import {
   loadFinanceRecords,
@@ -89,16 +88,23 @@ import {
   PROTOTYPE_TRANSACTIONS,
   PROTOTYPE_RECONCILIATION_ANCHORS,
 } from './finance/prototype-loader';
+import type { HouseholdMembershipSummary } from './household-context';
 
 type Props = {
   session: Session | null;
   onboardingData: UserOnboardingData | null;
+  householdSummaries?: HouseholdMembershipSummary[];
+  onSwitchHousehold?: (householdId: string) => Promise<void>;
+  onRefreshHouseholdContexts?: () => Promise<HouseholdMembershipSummary[]>;
+  onAcceptHouseholdInvite?: (tokenOrUrl: string) => Promise<void>;
   stage: FlowStage;
   onChangeStage: (next: FlowStage) => void;
   onUpdateOnboardingData: (next: UserOnboardingData) => void;
   onGoogleSignIn: () => Promise<Session | null>;
   onAppleSignIn: () => Promise<Session | null>;
   onSignOut: () => Promise<void>;
+  onDeleteAccount: () => Promise<void>;
+  accountDeletionEnabled: boolean;
   onTestUserSignIn?: () => void;
   appleAvailable: boolean;
   configured: boolean;
@@ -110,6 +116,7 @@ type Props = {
 };
 
 function AppleMark() {
+  const styles = createStyles(useNativeAppearance().palette);
   return (
     <View style={styles.appleMarkBox}>
       <View style={styles.appleMarkLeaf} />
@@ -133,6 +140,8 @@ function ProgressHeader({
   total: number;
   onBack?: () => void;
 }) {
+  const { palette } = useNativeAppearance();
+  const styles = createStyles(palette);
   return (
     <View style={styles.topBar}>
       {onBack ? (
@@ -143,7 +152,7 @@ function ProgressHeader({
           style={styles.backButton}
           onPress={onBack}
         >
-          <AppIcon name="back" size={22} color="#F1F1F0" />
+          <AppIcon name="back" size={22} color={palette.text} />
         </Pressable>
       ) : null}
       <Text style={styles.stepText} accessibilityRole="header">
@@ -176,6 +185,8 @@ function ChoiceButton({
   flex?: boolean;
   pill?: boolean;
 }) {
+  const { palette } = useNativeAppearance();
+  const styles = createStyles(palette);
   return (
     <Pressable
       accessibilityRole="button"
@@ -193,7 +204,7 @@ function ChoiceButton({
     >
       {selected ? (
         <View style={[styles.choiceCheck, compact && styles.choiceCheckCompact]}>
-          <AppIcon name="check" size={compact ? 12 : 14} color="#FF9367" />
+          <AppIcon name="check" size={compact ? 12 : 14} color={palette.brand} />
         </View>
       ) : null}
       <Text
@@ -216,15 +227,25 @@ const DEBT_CATEGORY_DROPDOWN_OPTIONS: readonly DropdownOption<DebtCategory>[] = 
   subtitle: cat === 'Credit card' ? 'Revolving card balance' : (cat === 'Auto loan' ? 'Vehicle loan' : 'Fixed installment loan'),
 }));
 
-export function DebtFreeFlow({
+export function DebtFreeFlow(props: Props) {
+  return <NativeAppearanceProvider themePreference="System" userId={props.session?.user.id}><DebtFreeFlowContent {...props} /></NativeAppearanceProvider>;
+}
+
+function DebtFreeFlowContent({
   session,
   onboardingData,
+  householdSummaries = [],
+  onSwitchHousehold,
+  onRefreshHouseholdContexts,
+  onAcceptHouseholdInvite,
   stage,
   onChangeStage,
   onUpdateOnboardingData,
   onGoogleSignIn,
   onAppleSignIn,
   onSignOut,
+  onDeleteAccount,
+  accountDeletionEnabled,
   onTestUserSignIn,
   appleAvailable,
   configured,
@@ -234,6 +255,8 @@ export function DebtFreeFlow({
   authNotice,
   onClearAuthError,
 }: Props) {
+  const { palette } = useNativeAppearance();
+  const styles = createStyles(palette);
   const [signInMode, setSignInMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState('');
@@ -269,9 +292,6 @@ export function DebtFreeFlow({
   const [debtMinimum, setDebtMinimum] = useState('');
   const [debtDueDay, setDebtDueDay] = useState('');
   const [debtCreditLimit, setDebtCreditLimit] = useState('');
-  const [onboardingBillRecovery, setOnboardingBillRecovery] = useState<
-    null | 'needed' | 'loading' | 'pending' | 'confirmed' | 'retry' | 'conflict' | 'error'
-  >(null);
 
   // Onboarding Step 4 (Payoff strategy) extra monthly payment input
   const [extraPaymentInput, setExtraPaymentInput] = useState(() =>
@@ -309,9 +329,23 @@ export function DebtFreeFlow({
     kind: 'success' | 'warning' | 'error';
     message: string;
   } | null>(null);
-  const financeRecordsVerified = verifiedFinanceScope === `${session?.user?.id ?? 'offline'}:${onboardingData?.userId ?? 'none'}:${currencyCode}`;
+  const financeRecordsVerified = verifiedFinanceScope === `${session?.user?.id ?? 'offline'}:${onboardingData?.userId ?? 'none'}:${onboardingData?.householdId ?? 'none'}:${currencyCode}`;
+
+  const financeScopeResetKey = `${session?.user?.id ?? 'offline'}:${onboardingData?.userId ?? 'none'}:${onboardingData?.householdId ?? 'none'}:${currencyCode}:${isPrototypeHousehold}`;
+  const [prevFinanceScopeResetKey, setPrevFinanceScopeResetKey] = useState(financeScopeResetKey);
+  if (prevFinanceScopeResetKey !== financeScopeResetKey) {
+    setPrevFinanceScopeResetKey(financeScopeResetKey);
+    if (!isPrototypeHousehold) {
+      setVerifiedFinanceScope('');
+      setReloadFeedback(null);
+      setTransactions([]);
+      setRecurringBills([]);
+      setReconciliationAnchors([]);
+    }
+  }
 
   // Load finance records from remote/cache on session/user ready
+  const onboardingHouseholdContext = onboardingData?.householdContext;
   useEffect(() => {
     if (!onboardingData?.userId) return;
     let isCancelled = false;
@@ -319,11 +353,12 @@ export function DebtFreeFlow({
       session,
       userId: onboardingData.userId,
       currency: currencyCode,
+      householdContext: onboardingHouseholdContext,
     }).then(records => {
       if (isCancelled) return;
       if (records.syncStatus === 'synced' || records.syncStatus === 'cached_offline') {
         const completeSnapshot = records.snapshotStatus === 'authoritative';
-        setVerifiedFinanceScope(completeSnapshot ? `${session?.user?.id ?? 'offline'}:${onboardingData.userId}:${currencyCode}` : '');
+        setVerifiedFinanceScope(completeSnapshot ? `${session?.user?.id ?? 'offline'}:${onboardingData.userId}:${onboardingData.householdId}:${currencyCode}` : '');
         if (records.snapshotStatus === 'authoritative') {
           setReloadFeedback(null);
         } else if (records.snapshotStatus === 'authoritative_with_pending_writes') {
@@ -350,11 +385,30 @@ export function DebtFreeFlow({
       if (!isCancelled) setReloadFeedback({ kind: 'error', message: 'Unable to load financial records. Existing data remains on this device.' });
     });
     return () => { isCancelled = true; };
-  }, [session, onboardingData?.userId, currencyCode, isPrototypeHousehold]);
+  }, [session, onboardingData?.userId, onboardingData?.householdId, onboardingHouseholdContext, currencyCode, isPrototypeHousehold]);
 
   const [reloading, setReloading] = useState(false);
+  const accountRefreshScopeKey = `${session?.user.id ?? 'offline'}:${onboardingData?.userId ?? 'none'}:${onboardingData?.householdId ?? 'none'}:${currencyCode}`;
+  const accountRefreshScope = useMemo(() => ({ key: accountRefreshScopeKey }), [accountRefreshScopeKey]);
+  const activeAccountRefresh = useRef<{ scope: { key: string } } | null>(null);
+  const refreshMounted = useRef(true);
+  useEffect(() => {
+    refreshMounted.current = true;
+    return () => { refreshMounted.current = false; activeAccountRefresh.current = null; };
+  }, []);
+  useEffect(() => {
+    if (activeAccountRefresh.current?.scope !== accountRefreshScope) {
+      activeAccountRefresh.current = null;
+      setReloading(false);
+    }
+  }, [accountRefreshScope]);
   const handleReloadAppData = async () => {
-    if (!onboardingData || reloading) return;
+    if (!onboardingData || (session && session.user.id !== onboardingData.userId)) return;
+    const scope = accountRefreshScope;
+    if (activeAccountRefresh.current?.scope === scope) return;
+    const request = { scope };
+    activeAccountRefresh.current = request;
+    const isCurrent = () => refreshMounted.current && accountRefreshScope === scope && activeAccountRefresh.current === request;
     setReloading(true);
     setVerifiedFinanceScope('');
     setLocalError('');
@@ -364,17 +418,22 @@ export function DebtFreeFlow({
       let settingsError: Error | null = null;
       if (session) {
         try {
-          refreshedData = await loadUserOnboardingData(session);
-          if (refreshedData.userId !== onboardingData.userId) {
+          void onRefreshHouseholdContexts?.();
+          refreshedData = await loadUserOnboardingData(session, { householdId: onboardingData.householdId });
+          if (!isCurrent()) return;
+          if (refreshedData.userId !== onboardingData.userId || refreshedData.householdId !== onboardingData.householdId) {
             throw new Error('The signed-in account changed. Sign in again to reload.');
           }
           onUpdateOnboardingData(refreshedData);
         } catch (error) {
+          if (!isCurrent()) return;
           if (error instanceof Error && error.message.includes('signed-in account changed')) throw error;
           settingsError = error instanceof Error ? error : new Error(String(error));
         }
       }
-      const records = await loadFinanceRecords({ session, userId: refreshedData.userId, currency: resolveCurrencyOption(refreshedData).code });
+      if (!isCurrent()) return;
+      const records = await loadFinanceRecords({ session, userId: refreshedData.userId, currency: resolveCurrencyOption(refreshedData).code, householdContext: refreshedData.householdContext });
+      if (!isCurrent()) return;
       const hasServerSnapshot = records.snapshotStatus === 'authoritative' || records.snapshotStatus === 'authoritative_with_pending_writes';
       if (hasServerSnapshot) {
         setTransactions(records.transactions);
@@ -382,39 +441,45 @@ export function DebtFreeFlow({
         setReconciliationAnchors(records.reconciliationAnchors);
       }
       const completeSnapshot = records.snapshotStatus === 'authoritative' && settingsError === null;
-      setVerifiedFinanceScope(completeSnapshot ? `${session?.user?.id ?? 'offline'}:${refreshedData.userId}:${resolveCurrencyOption(refreshedData).code}` : '');
+      setVerifiedFinanceScope(completeSnapshot ? `${session?.user?.id ?? 'offline'}:${refreshedData.userId}:${refreshedData.householdId}:${resolveCurrencyOption(refreshedData).code}` : '');
       if (settingsError) {
-        setReloadFeedback({ kind: 'error', message: 'Reload was incomplete. Settings and debts could not be refreshed; existing financial records were kept unless a server snapshot was available.' });
+        setReloadFeedback({ kind: 'error', message: 'Account data refresh was incomplete. Settings and debts could not be refreshed; existing financial records were kept unless a server snapshot was available.' });
       } else if (records.snapshotStatus === 'authoritative') {
-        setReloadFeedback({ kind: 'success', message: 'App data refreshed from the server.' });
+        setReloadFeedback(null);
       } else if (records.snapshotStatus === 'authoritative_with_pending_writes') {
         setReloadFeedback({
           kind: 'warning',
           message: `${records.pendingWriteCount} local financial change${records.pendingWriteCount === 1 ? '' : 's'} still await confirmation. Server records were refreshed, but this snapshot is not fully verified.`,
         });
       } else if (records.error || records.failureKind) {
-        setReloadFeedback({ kind: 'error', message: 'Reload failed. Existing financial records remain on screen; saved offline data was not used to replace them.' });
+        setReloadFeedback({ kind: 'error', message: 'Account data refresh failed. Existing financial records remain on screen; saved offline data was not used to replace them.' });
       } else {
         setReloadFeedback({ kind: 'warning', message: 'Showing saved offline data. It has not been verified against the server.' });
       }
     } catch (err) {
+      if (!isCurrent()) return;
       setReloadFeedback({
         kind: 'error',
         message: err instanceof Error
-          ? `Reload failed: ${err.message}. Existing financial records remain on screen.`
-          : 'Reload failed. Existing financial records remain on screen.',
+          ? `Account data refresh failed: ${err.message}. Existing financial records remain on screen.`
+          : 'Account data refresh failed. Existing financial records remain on screen.',
       });
     } finally {
-      setReloading(false);
+      if (isCurrent()) {
+        activeAccountRefresh.current = null;
+        setReloading(false);
+      }
     }
   };
 
   const handleAddRecurringBill = async (bill: RecurringBill) => {
     if (!onboardingData) throw new Error('Onboarding settings are unavailable. Reload and retry.');
+    if (Object.values(onboardingData.loanBillPairingByDebtId ?? {}).some(relation => relation?.status === 'linked' && relation.billId === bill.id)) throw new Error('Edit this loan from Accounts or Budget. Its historical bill is not independently editable.');
     try {
       const res = await executeAddRecurringBill({
         session,
         userId: onboardingData.userId,
+        householdContext: onboardingData.householdContext,
         bill,
         currentBills: recurringBills,
       });
@@ -431,7 +496,8 @@ export function DebtFreeFlow({
     if (!session || session.user.id !== onboardingData.userId) throw new Error('The signed-in owner could not be verified. Reconnect and review the bill before retrying; nothing was changed.');
     const freshData = await loadUserOnboardingData(session);
     if (freshData.userId !== session.user.id) throw new Error('The refreshed owner does not match this session. Review the bill again; nothing was changed.');
-    const freshRecords = await loadFinanceRecords({ session, userId: freshData.userId, currency: resolveCurrencyOption(freshData).code });
+    if (Object.values(freshData.loanBillPairingByDebtId ?? {}).some(relation => relation?.status === 'linked' && relation.billId === billId)) throw new Error('This recurring item belongs to a loan history. Remove the loan through its account confirmation; no records were changed.');
+    const freshRecords = await loadFinanceRecords({ session, userId: freshData.userId, currency: resolveCurrencyOption(freshData).code, householdContext: freshData.householdContext });
     if (freshRecords.snapshotStatus !== 'authoritative' || freshRecords.pendingWriteCount !== 0 || freshRecords.syncStatus !== 'synced') {
       throw new Error('A complete authoritative finance snapshot is unavailable. Reload financial records and review the bill again; nothing was changed.');
     }
@@ -487,7 +553,7 @@ export function DebtFreeFlow({
       // Re-read immediately before ending the bill. This catches transactions or
       // balance revisions that changed while the transaction deletions ran.
       const latestData = await loadUserOnboardingData(session);
-      const latestRecords = await loadFinanceRecords({ session, userId: latestData.userId, currency: resolveCurrencyOption(latestData).code });
+      const latestRecords = await loadFinanceRecords({ session, userId: latestData.userId, currency: resolveCurrencyOption(latestData).code, householdContext: latestData.householdContext });
       if (latestData.userId !== session.user.id || latestRecords.snapshotStatus !== 'authoritative' || latestRecords.pendingWriteCount !== 0 || latestRecords.syncStatus !== 'synced') {
         throw new Error('A complete authoritative finance snapshot is unavailable after processing linked transactions. The recurring item was not ended; reload and review again.');
       }
@@ -515,6 +581,7 @@ export function DebtFreeFlow({
       const result = await executeDeleteRecurringBill({
         session,
         userId: currentData.userId,
+        householdContext: currentData.householdContext,
         billId,
         currentBills: latestRecords.recurringBills,
       });
@@ -536,6 +603,16 @@ export function DebtFreeFlow({
             onUpdateOnboardingData(cleanupData);
           } catch (error) {
             cleanupFailures.push(`Loan/bill link cleanup: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        const billPaymentSplitPlansByBillId = { ...(cleanupData.billPaymentSplitPlansByBillId ?? {}) };
+        delete billPaymentSplitPlansByBillId[billId];
+        if (Object.keys(billPaymentSplitPlansByBillId).length !== Object.keys(cleanupData.billPaymentSplitPlansByBillId ?? {}).length) {
+          try {
+            cleanupData = await saveUserOnboardingSettingsPatch(cleanupData, { billPaymentSplitPlansByBillId }, session!);
+            onUpdateOnboardingData(cleanupData);
+          } catch (error) {
+            cleanupFailures.push(`Bill split plan cleanup: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
         const recurringBillCategoryLabelByBillId = { ...(cleanupData.recurringBillCategoryLabelByBillId ?? {}) };
@@ -602,12 +679,59 @@ export function DebtFreeFlow({
       if (res.updatedOnboardingData) {
         onUpdateOnboardingData(res.updatedOnboardingData);
       }
-      return { outcome: res.outcome, syncStatus: res.syncResult.syncStatus };
+      return { outcome: res.outcome, syncStatus: res.syncResult.syncStatus, updatedOnboardingData: res.updatedOnboardingData };
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unable to record transaction.';
       setLocalError(msg);
       throw err;
     }
+  };
+
+  const handleConfirmAnnualFee = async (debtId: string, renewalDate: DateOnly): Promise<{ outcome: 'confirmed' | 'pending' }> => {
+    if (!onboardingData) throw new Error('Financial data is unavailable. Reload and retry.');
+    const debt = onboardingData.debts.find(item => item.id === debtId);
+    if (!debt || debt.category !== 'Credit card' || debt.annualFeeNextDueDate !== renewalDate || debt.annualFeeAmount == null) {
+      throw new Error('The annual-fee schedule changed. Reload and retry.');
+    }
+    const transactionId = annualFeeTransactionId(debtId, renewalDate);
+    const matchingTransactions = transactions.filter(tx => tx.id === transactionId);
+    if (matchingTransactions.some(tx => tx.deletedAt !== null)) {
+      throw new Error('This renewal has a deleted fee record. Review the transaction history before recording it again.');
+    }
+    const existingTransaction = matchingTransactions.find(tx => tx.deletedAt === null);
+    if (existingTransaction?.isPending) return { outcome: 'pending' };
+
+    let currentData = onboardingData;
+    if (!existingTransaction) {
+      const transaction = createAnnualFeeTransaction({
+        debt,
+        renewalDate,
+        actualDate: currentHouseholdDate(onboardingData.householdTimeZone),
+        currencyCode,
+      });
+      const result = await executeAddTransaction({
+        session,
+        onboardingData,
+        transaction,
+        currentTransactions: transactions,
+        currencyCode,
+      });
+      setTransactions(result.transactions);
+      if (result.updatedOnboardingData) {
+        currentData = result.updatedOnboardingData;
+        onUpdateOnboardingData(currentData);
+      }
+      if (result.outcome !== 'confirmed') return { outcome: 'pending' };
+    }
+
+    const currentDebt = currentData.debts.find(item => item.id === debtId);
+    if (!currentDebt) throw new Error('The credit-card account is unavailable. Reload and retry.');
+    const nextDueDate = nextAnnualFeeRenewalDate(renewalDate);
+    if (currentDebt.annualFeeNextDueDate === nextDueDate) return { outcome: 'confirmed' };
+    if (currentDebt.annualFeeNextDueDate !== renewalDate) throw new Error('The annual-fee renewal date changed. Reload and retry.');
+    const updated = await upsertUserDebt(currentData, { ...currentDebt, annualFeeNextDueDate: nextDueDate });
+    onUpdateOnboardingData(updated);
+    return { outcome: 'confirmed' };
   };
 
   const handleUpdateTransaction = async (tx: LedgerTransaction) => {
@@ -715,7 +839,7 @@ export function DebtFreeFlow({
       stage === 'onboard_4' && parsedExtra !== null
         ? parsedExtra
         : onboardingData.extraMonthlyPayment;
-    return calculatePayoffPlan(onboardingData.debts, onboardingData.strategy, effectiveExtra, new Date(), currencyCode);
+    return calculatePayoffPlan(onboardingData.debts, onboardingData.strategy, effectiveExtra, new Date(), currencyCode, onboardingData.householdTimeZone ?? 'UTC', onboardingData.archivedPaidOffDebtIds);
   }, [onboardingData, extraPaymentInput, stage, currencyCode]);
 
   const clearErrors = () => {
@@ -732,14 +856,20 @@ export function DebtFreeFlow({
     setSaving(true);
     setLocalError('');
     try {
-      const updated = await saveUserOnboardingData({
+      const isSharedMember = Boolean(onboardingData.householdContext && onboardingData.householdContext.role !== 'owner');
+      const candidate = {
         ...onboardingData,
         ...patch,
+        ...(isSharedMember ? { countryCode: onboardingData.countryCode, currencyCode: onboardingData.currencyCode } : {}),
         currentStage: nextStage,
-      });
+      };
+      const destination = resolveAuthenticatedStage(candidate);
+      const updated = await saveUserOnboardingData({ ...candidate, currentStage: destination }, { personalOnly: isSharedMember });
       onUpdateOnboardingData(updated);
-      onChangeStage(nextStage);
+      onChangeStage(destination);
     } catch (err) {
+      const reconciled = (err as { reconciledData?: UserOnboardingData })?.reconciledData;
+      if (reconciled) onUpdateOnboardingData(reconciled);
       setLocalError(err instanceof Error ? err.message : 'Unable to save your progress. Please try again.');
     } finally {
       savingRef.current = false;
@@ -749,7 +879,6 @@ export function DebtFreeFlow({
 
   const openNewDebtEditor = (category: DebtCategory) => {
     clearErrors();
-    setOnboardingBillRecovery(null);
     const existingForUniqueType =
       category === 'Mortgage' || category === 'Auto loan'
         ? onboardingData?.debts.find(d => d.category === category)
@@ -782,7 +911,6 @@ export function DebtFreeFlow({
 
   const openEditDebtEditor = (item: DebtItem) => {
     clearErrors();
-    setOnboardingBillRecovery(null);
     setEditingDebtId(item.id);
     draftDebtIdRef.current = null;
     draftDebtPaidTodayRef.current = {};
@@ -814,13 +942,21 @@ export function DebtFreeFlow({
       setLocalError(validation.error);
       return;
     }
+    if (!editingDebtId && validation.debt.balance > 0 &&
+        (validation.debt.category === 'Mortgage' || validation.debt.category === 'Auto loan') &&
+        validation.debt.dueDay === null) {
+      setLocalError('Please select a due day for this loan.');
+      return;
+    }
 
     const debtId = editingDebtId ?? (draftDebtIdRef.current ??= Crypto.randomUUID());
     const isDraftDebt = draftDebtIdRef.current === debtId;
     const existingDebt = onboardingData.debts.find(d => d.id === debtId);
     const dueDay = validation.debt.dueDay;
-    const shouldCreateOnboardingBill = stage === 'onboard_3' && !onboardingData.onboardingCompleted &&
-      (validation.debt.category === 'Mortgage' || validation.debt.category === 'Auto loan') && validation.debt.balance > 0;
+    if (existingDebt) {
+      const allowed = canEditDebtCategoryWithPairings(onboardingData.loanBillPairingByDebtId, debtId, validation.debt.category, recurringBills);
+      if (!allowed.valid) { setLocalError(allowed.error); return; }
+    }
     // Prevent duplicate rapid creation of identical debt name + category when not editing
     if (
       !editingDebtId &&
@@ -839,10 +975,6 @@ export function DebtFreeFlow({
     setSaving(true);
     try {
       const today = currentHouseholdDate(onboardingData.householdTimeZone);
-    if (shouldCreateOnboardingBill && dueDay === null) {
-      setLocalError('Enter the monthly due day so the linked recurring payment can keep its correct schedule.');
-      return;
-    }
       const key = obligationScheduleKey('debt', debtId);
       const priorSchedule = onboardingData.obligationSchedules?.[key];
       let paidToday = draftDebtPaidTodayRef.current[debtId] ?? false;
@@ -860,12 +992,24 @@ export function DebtFreeFlow({
         existingDebt.originalBalance === validation.debt.originalBalance && existingDebt.apr === validation.debt.apr &&
         existingDebt.minimumPayment === validation.debt.minimumPayment && existingDebt.dueDay === validation.debt.dueDay &&
         existingDebt.creditLimit === validation.debt.creditLimit);
-      const updated = debtUnchanged ? onboardingData : await upsertUserDebt(onboardingData, {
-        id: debtId,
-        ...validation.debt,
-      });
+      const debtInput = { id: debtId, ...validation.debt };
+      const unified = debtInput.category === 'Mortgage' || debtInput.category === 'Auto loan';
+      const loanSettings = unified ? prepareUnifiedLoanSettings({
+        current: onboardingData,
+        debt: {
+          ...debtInput,
+          createdAt: existingDebt?.createdAt ?? new Date().toISOString(),
+          updatedAt: existingDebt?.updatedAt ?? existingDebt?.createdAt ?? new Date().toISOString(),
+        },
+        bills: recurringBills,
+        today,
+        currency: currencyCode,
+        paidToday,
+      }) : undefined;
+      const updated = !unified && debtUnchanged ? onboardingData : await upsertUserDebt(onboardingData, debtInput, loanSettings, recurringBills.find(bill => bill.id === onboardingData.loanBillPairingByDebtId?.[debtId]?.billId));
       onUpdateOnboardingData(updated);
       let settingsData = updated;
+      if (!unified) {
       const savedDebt = updated.debts.find(debt => debt.id === debtId);
       const nextPairings = savedDebt
         ? withoutIncompatibleDebtPairing(updated.loanBillPairingByDebtId, savedDebt, recurringBills)
@@ -894,150 +1038,16 @@ export function DebtFreeFlow({
         settingsData = settings;
         onUpdateOnboardingData(settings);
       }
-      if (shouldCreateOnboardingBill && savedDebt && dueDay !== null) {
-        const bill = createOnboardingLoanBill(savedDebt, currencyCode, savedDebt.createdAt);
-        const billScheduleKey = obligationScheduleKey('bill', bill.id);
-        const currentBillSchedule = settingsData.obligationSchedules?.[billScheduleKey];
-        const debtCycle = settingsData.obligationSchedules?.[key]
-          ? getObligationCycle(settingsData.obligationSchedules[key], today.slice(0, 7))
-          : null;
-        const billSchedule = prepareObligationEditorSchedule({
-          kind: 'bill', id: bill.id, today, timeZone: onboardingData.householdTimeZone,
-          dueDay, amount: bill.amount, createdAt: bill.createdAt, isNew: !currentBillSchedule,
-          paidToday: Boolean(debtCycle?.dueDate === today && debtCycle.acknowledgedPaid), existing: currentBillSchedule,
-        });
-        settingsData = await saveObligationEditorSchedule({ current: settingsData, key: billScheduleKey, schedule: billSchedule, session });
-        onUpdateOnboardingData(settingsData);
-
-        const existingBill = recurringBills.find(item => item.id === bill.id);
-        const billSaveAction = onboardingLoanBillSaveAction({ existingBill, desiredBill: bill, authoritativeSnapshot: financeRecordsVerified });
-        if (billSaveAction === 'wait_for_recovery') {
-          setOnboardingBillRecovery('needed');
-          setLocalError('The recurring item needs a safe server readback before another bill write. Use Refresh bill status below; no bill write was replayed.');
-          return;
-        }
-        if (billSaveAction === 'conflict') {
-          setOnboardingBillRecovery('conflict');
-          setLocalError('The server has a recurring item with this account ID, but its details differ from this draft. No bill was changed. Refresh status again or resolve the server record before saving this linked payment.');
-          return;
-        }
-        let billOutcome: 'confirmed' | 'pending';
-        if (billSaveAction === 'reuse_confirmed') {
-          billOutcome = 'confirmed';
-        } else {
-          // This is an explicit Save after a complete authoritative readback proved the ID absent.
-          setOnboardingBillRecovery('needed');
-          billOutcome = (await handleAddRecurringBill(bill)).outcome;
-        }
-        if (billOutcome !== 'confirmed') {
-          setOnboardingBillRecovery('needed');
-          setLocalError('The linked recurring item is still awaiting server confirmation. Refresh bill status below before retrying; no payment or debt balance change was created.');
-          return;
-        }
-        setOnboardingBillRecovery(current => current ? 'confirmed' : null);
-        const existingPairing = settingsData.loanBillPairingByDebtId?.[debtId];
-        if (existingPairing?.status !== 'linked' || existingPairing.billId !== bill.id) {
-          if (!session) throw new Error('Signed-in session is unavailable to confirm the loan payment link. The debt and recurring item are saved; retry from this onboarding step.');
-          settingsData = await saveUserOnboardingSettingsPatch(settingsData, {
-            loanBillPairingByDebtId: { ...(settingsData.loanBillPairingByDebtId ?? {}), [debtId]: { status: 'linked', billId: bill.id } },
-          }, session);
-          onUpdateOnboardingData(settingsData);
-        }
       }
       setShowDebtForm(false);
       setEditingDebtId(null);
       draftDebtIdRef.current = null;
       delete draftDebtPaidTodayRef.current[debtId];
-      setOnboardingBillRecovery(null);
     } catch (err) {
-      if (shouldCreateOnboardingBill) setOnboardingBillRecovery(current => current ?? 'needed');
       setLocalError(err instanceof Error ? err.message : 'Unable to save debt account.');
     } finally {
       savingRef.current = false;
       setSaving(false);
-    }
-  };
-
-  const handleRefreshOnboardingBillStatus = async () => {
-    if (!onboardingData || onboardingBillRecovery === 'loading') return;
-    if (!session || session.user.id !== onboardingData.userId) {
-      setOnboardingBillRecovery('error');
-      setLocalError('A matching signed-in session is required to refresh this bill. Reconnect, then refresh status again; no write was sent.');
-      return;
-    }
-    setOnboardingBillRecovery('loading');
-    setLocalError('');
-    setVerifiedFinanceScope('');
-    try {
-      const freshData = await loadUserOnboardingData(session);
-      if (freshData.userId !== session.user.id || freshData.userId !== onboardingData.userId) {
-        throw new Error('The refreshed onboarding owner does not match this signed-in account. No changes were made.');
-      }
-      const freshRecords = await loadFinanceRecords({
-        session,
-        userId: freshData.userId,
-        currency: resolveCurrencyOption(freshData).code,
-      });
-      onUpdateOnboardingData(freshData);
-      if (freshRecords.snapshotStatus === 'authoritative' || freshRecords.snapshotStatus === 'authoritative_with_pending_writes') {
-        setTransactions(freshRecords.transactions);
-        setRecurringBills(freshRecords.recurringBills);
-        setReconciliationAnchors(freshRecords.reconciliationAnchors);
-      }
-      const complete = freshRecords.snapshotStatus === 'authoritative' &&
-        freshRecords.pendingWriteCount === 0 && freshRecords.syncStatus === 'synced';
-      setVerifiedFinanceScope(complete
-        ? `${session.user.id}:${freshData.userId}:${resolveCurrencyOption(freshData).code}`
-        : '');
-      if (!complete) {
-        setOnboardingBillRecovery(freshRecords.failureKind ? 'error' : 'pending');
-        setLocalError(freshRecords.error
-          ? `Server readback failed: ${freshRecords.error.message}. The current form and draft ID are preserved; retry Refresh bill status when connected.`
-          : freshRecords.pendingWriteCount > 0
-            ? `${freshRecords.pendingWriteCount} financial change(s) still await confirmation. The server snapshot is not complete; retry Refresh bill status before saving the linked payment.`
-            : 'A complete authoritative finance snapshot is unavailable. The current form and draft ID are preserved; retry Refresh bill status when connected.');
-        return;
-      }
-      const debtId = draftDebtIdRef.current ?? editingDebtId;
-      const freshDebt = debtId ? freshData.debts.find(debt => debt.id === debtId) : undefined;
-      const draftValidation = validateDebtDraft({
-        name: debtName, category: debtCategory, balanceRaw: debtBalance,
-        originalBalanceRaw: debtOriginalBalance, aprRaw: debtApr,
-        minimumPaymentRaw: debtMinimum, dueDayRaw: debtDueDay,
-        creditLimitRaw: debtCreditLimit,
-      }, resolveCurrencyOption(freshData).code);
-      const expectedBill = freshDebt && draftValidation.valid
-        ? createOnboardingLoanBill({ ...freshDebt, ...draftValidation.debt }, resolveCurrencyOption(freshData).code, freshDebt.createdAt)
-        : null;
-      const serverBill = debtId ? freshRecords.recurringBills.find(bill => bill.id === debtId) : undefined;
-      if (!freshDebt) {
-        setOnboardingBillRecovery('retry');
-        setLocalError('The authoritative refresh completed, but the debt row is absent. Review the preserved form and press Save to retry with the same draft ID.');
-      } else if (!draftValidation.valid) {
-        setOnboardingBillRecovery('error');
-        setLocalError(`The authoritative refresh completed, but the current form needs correction: ${draftValidation.error}. Your draft ID and paid-today answer are preserved.`);
-      } else if (!expectedBill) {
-        setOnboardingBillRecovery('error');
-        setLocalError('The authoritative refresh completed, but the linked recurring item could not be compared safely. Correct the form or refresh again; no bill was changed.');
-      } else {
-        const action = onboardingLoanBillSaveAction({ existingBill: serverBill, desiredBill: expectedBill, authoritativeSnapshot: true });
-        if (action === 'reuse_confirmed') {
-          setOnboardingBillRecovery('confirmed');
-          setLocalError('Server readback confirmed the recurring item matches this debt. Press Save to finish or confirm its link; no bill write is needed.');
-        } else if (action === 'persist') {
-          setOnboardingBillRecovery('retry');
-          setLocalError('The authoritative server snapshot contains no recurring item with this draft ID. Press Save to retry once; the same ID will be used.');
-        } else if (action === 'conflict') {
-          setOnboardingBillRecovery('conflict');
-          setLocalError('The server has a recurring item with this account ID, but its details differ from the saved debt. No bill was changed. Resolve that server record before saving this linked payment.');
-        } else {
-          setOnboardingBillRecovery('pending');
-          setLocalError('The server returned a row without enough confirmation metadata to safely reuse it. Refresh status again or recover the record before saving.');
-        }
-      }
-    } catch (error) {
-      setOnboardingBillRecovery('error');
-      setLocalError(`Authoritative readback failed: ${error instanceof Error ? error.message : String(error)}. The current form and draft ID are preserved; retry Refresh bill status when connected.`);
     }
   };
 
@@ -1047,32 +1057,28 @@ export function DebtFreeFlow({
     savingRef.current = true;
     setSaving(true);
     try {
-      const updated = await deleteUserDebt(onboardingData, debtId);
+      const localBillId = validatedLoanBillLinks(onboardingData.loanBillPairingByDebtId, recurringBills, onboardingData.debts)[debtId] ?? null;
+      const relation = onboardingData.loanBillPairingByDebtId?.[debtId];
+      if (relation?.status === 'linked' && relation.billId !== localBillId) throw new Error('Historical bill ownership cannot be safely validated for deletion. No records were removed.');
+      const { data: updated, receipt } = await deleteUserDebt(onboardingData, debtId, localBillId);
       onUpdateOnboardingData(updated);
-      const loanBillPairingByDebtId = withoutDeletedDebtPairing(updated.loanBillPairingByDebtId, debtId);
-      const mortgageEscrowByDebtId = { ...(updated.mortgageEscrowByDebtId ?? {}) };
-      const mortgageExtraPaymentByDebtId = { ...(updated.mortgageExtraPaymentByDebtId ?? {}) };
-      const obligationSchedules = { ...(updated.obligationSchedules ?? {}) };
-      delete mortgageEscrowByDebtId[debtId];
-      delete mortgageExtraPaymentByDebtId[debtId];
-      delete obligationSchedules[obligationScheduleKey('debt', debtId)];
-      const cleanupPatch: Partial<UserOnboardingData> = {
-        ...(Object.keys(loanBillPairingByDebtId).length !== Object.keys(updated.loanBillPairingByDebtId ?? {}).length ? { loanBillPairingByDebtId } : {}),
-        ...(Object.keys(mortgageEscrowByDebtId).length !== Object.keys(updated.mortgageEscrowByDebtId ?? {}).length ? { mortgageEscrowByDebtId } : {}),
-        ...(Object.keys(mortgageExtraPaymentByDebtId).length !== Object.keys(updated.mortgageExtraPaymentByDebtId ?? {}).length ? { mortgageExtraPaymentByDebtId } : {}),
-        ...(Object.keys(obligationSchedules).length !== Object.keys(updated.obligationSchedules ?? {}).length ? { obligationSchedules } : {}),
-      };
-      if (Object.keys(cleanupPatch).length) {
-        try {
-          if (!session) throw new Error('Signed-in session is unavailable for settings cleanup.');
-          onUpdateOnboardingData(await saveUserOnboardingSettingsPatch(updated, cleanupPatch, session));
-        } catch (error) {
-          setLocalError(`Debt deletion was confirmed, but related settings cleanup could not be confirmed: ${error instanceof Error ? error.message : String(error)}. Export preserves the remaining metadata for recovery.`);
-        }
+      if (receipt) {
+        const removedTransactionIds = new Set(transactions.filter(transaction =>
+          transaction.accountId === debtId || Boolean(receipt.billId && transactionHasBillId(transaction, receipt.billId)),
+        ).map(transaction => transaction.id));
+        setTransactions(current => current.filter(transaction =>
+          transaction.accountId !== debtId && !(receipt.billId && transactionHasBillId(transaction, receipt.billId)),
+        ));
+        if (receipt.billId) setRecurringBills(current => current.filter(bill => bill.id !== receipt.billId));
+        setReconciliationAnchors(current => current.filter(anchor =>
+          anchor.accountId !== debtId && !(anchor.createdAdjustmentId && removedTransactionIds.has(anchor.createdAdjustmentId)),
+        ));
       }
       if (editingDebtId === debtId) {
         setShowDebtForm(false);
         setEditingDebtId(null);
+        draftDebtIdRef.current = null;
+        delete draftDebtPaidTodayRef.current[debtId];
       }
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Unable to remove debt account.');
@@ -1087,12 +1093,12 @@ export function DebtFreeFlow({
   // ============================================================================
   if (stage === 'welcome') {
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ScrollView contentContainerStyle={styles.welcomeScroll} showsVerticalScrollIndicator={false}>
           <View style={styles.logoRow}>
             <View style={styles.logoBrand} accessible accessibilityRole="header" accessibilityLabel="DebtFree">
               <View style={styles.brandMark}>
-                <AppIcon name="brandRise" size={16} color="#FFFFFF" />
+                <AppIcon name="brandRise" size={16} color={palette.onBrand} />
               </View>
               <Text style={styles.logoText}>
                 Debt<Text style={styles.logoTextAccent}>Free</Text>
@@ -1131,7 +1137,7 @@ export function DebtFreeFlow({
             <View style={[styles.floatingCard, styles.floatingCardRight]}>
               <Text style={styles.floatingCardLabel}>{"You're making progress"}</Text>
               <View style={styles.floatingCardValueRow}>
-                <AppIcon name="trendDown" size={14} color="#73D9C6" />
+                <AppIcon name="trendDown" size={14} color="#86E3B8" />
                 <Text style={[styles.floatingCardValue, { marginTop: 0 }]}>$325 this month</Text>
               </View>
             </View>
@@ -1169,10 +1175,10 @@ export function DebtFreeFlow({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Preview app with prototype household"
-                style={[styles.primaryButton, { backgroundColor: '#1E2C28', borderColor: '#81DFD2', borderWidth: 1, marginTop: 10 }]}
+                style={[styles.primaryButton, { backgroundColor: palette.tint, borderColor: palette.brand, borderWidth: 1, marginTop: 10 }]}
                 onPress={onTestUserSignIn}
               >
-                <Text style={[styles.primaryButtonText, { color: '#81DFD2' }]}>
+                <Text style={[styles.primaryButtonText, { color: palette.brand }]}>
                   Preview Prototype Household (Skip Sign-in)
                 </Text>
               </Pressable>
@@ -1193,9 +1199,27 @@ export function DebtFreeFlow({
               </Pressable>
             </View>
 
-            <Text style={styles.legalNote}>
-              By continuing you agree to our Terms & Privacy Policy.
-            </Text>
+            {process.env.EXPO_PUBLIC_TERMS_URL && process.env.EXPO_PUBLIC_PRIVACY_URL ? (
+              <View style={{ alignItems: 'center', marginTop: 14 }}>
+                <Text style={styles.legalNote}>By continuing, you agree to our Terms and acknowledge our Privacy Policy.</Text>
+                <View style={{ flexDirection: 'row', gap: 18, marginTop: 8 }}>
+                  <Pressable
+                    accessibilityRole="link"
+                    accessibilityLabel="Read Terms of Service"
+                    onPress={() => { void WebBrowser.openBrowserAsync(process.env.EXPO_PUBLIC_TERMS_URL!).catch(() => setLocalError('Unable to open the Terms of Service page.')); }}
+                  >
+                    <Text style={styles.linkText}>Terms of Service</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="link"
+                    accessibilityLabel="Read Privacy Policy"
+                    onPress={() => { void WebBrowser.openBrowserAsync(process.env.EXPO_PUBLIC_PRIVACY_URL!).catch(() => setLocalError('Unable to open the Privacy Policy page.')); }}
+                  >
+                    <Text style={styles.linkText}>Privacy Policy</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
           </View>
         </ScrollView>
       </SafeAreaView>
@@ -1210,7 +1234,7 @@ export function DebtFreeFlow({
     const isSignedIn = Boolean(session?.user);
 
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ProgressHeader
           label="Step"
           step={1}
@@ -1233,7 +1257,7 @@ export function DebtFreeFlow({
           {!configured ? (
             <View style={styles.calloutOrange}>
               <Text style={styles.calloutOrangeText} accessibilityRole="alert">
-                A separate test sign-in service has not been configured yet.
+                The sign-in service has not been configured yet.
               </Text>
               {__DEV__ && !!configProblem ? (
                 <Text style={styles.helpText}>{configProblem}</Text>
@@ -1271,7 +1295,7 @@ export function DebtFreeFlow({
             }}
           >
             {authBusy ? (
-              <ActivityIndicator color="#58CBD0" />
+              <ActivityIndicator color={palette.brand} />
             ) : (
               <>
                 <Text style={styles.googleLetterIcon}>G</Text>
@@ -1306,11 +1330,11 @@ export function DebtFreeFlow({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Preview app with prototype household"
-              style={[styles.providerButton, { backgroundColor: '#1E2C28', borderColor: '#81DFD2', borderWidth: 1, marginTop: 12 }]}
+              style={[styles.providerButton, { backgroundColor: palette.tint, borderColor: palette.brand, borderWidth: 1, marginTop: 12 }]}
               onPress={onTestUserSignIn}
             >
-              <AppIcon name="brandRise" size={16} color="#81DFD2" />
-              <Text style={[styles.providerButtonText, { color: '#81DFD2', fontWeight: 'bold' }]}>
+              <AppIcon name="brandRise" size={16} color={palette.brand} />
+              <Text style={[styles.providerButtonText, { color: palette.brand, fontWeight: 'bold' }]}>
                 Preview Prototype Household (Skip Auth)
               </Text>
             </Pressable>
@@ -1369,7 +1393,7 @@ export function DebtFreeFlow({
               clearErrors();
               if (isSignedIn) {
                 onChangeStage(
-                  onboardingData?.onboardingCompleted ? 'home' : 'signup_2',
+                  onboardingData ? resolveAuthenticatedStage(onboardingData) : 'signup_2',
                 );
               } else {
                 void onGoogleSignIn();
@@ -1389,8 +1413,8 @@ export function DebtFreeFlow({
   // Require loaded onboardingData for all authenticated steps (signup_2..home)
   if (!onboardingData) {
     return (
-      <SafeAreaView style={[styles.root, styles.centered]} edges={['top', 'bottom', 'left', 'right']}>
-        <ActivityIndicator size="large" color="#58CBD0" />
+      <SafeAreaView style={[styles.root, styles.centered, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
+        <ActivityIndicator size="large" color={palette.brand} />
         <Text style={[styles.helpText, { marginTop: 12 }]}>Loading your account setup…</Text>
       </SafeAreaView>
     );
@@ -1419,7 +1443,7 @@ export function DebtFreeFlow({
     };
 
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ProgressHeader
           label="Step"
           step={2}
@@ -1432,7 +1456,7 @@ export function DebtFreeFlow({
         <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
           <View style={styles.introBox}>
             <Text style={styles.introTitle} accessibilityRole="header">
-              What brings you to DebtFree?
+              What brings you to DebtFree? *
             </Text>
             <Text style={styles.introSubtitle}>
               Choose what matters most. We’ll use it to tailor your experience.
@@ -1468,7 +1492,7 @@ export function DebtFreeFlow({
             onPress={handleContinueStep2}
           >
             {saving ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color={palette.onBrand} />
             ) : (
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
@@ -1503,7 +1527,7 @@ export function DebtFreeFlow({
     };
 
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ProgressHeader
           label="Step"
           step={3}
@@ -1516,10 +1540,7 @@ export function DebtFreeFlow({
         <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
           <View style={[styles.introBox, styles.introCompact]}>
             <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">
-              How did you hear about DebtFree?
-            </Text>
-            <Text style={styles.introSubtitle}>
-              Your answer helps us understand what brought you here.
+              How did you hear about DebtFree? *
             </Text>
           </View>
 
@@ -1546,7 +1567,7 @@ export function DebtFreeFlow({
             <View style={styles.calloutOrange}>
               <Text style={styles.calloutOrangeTitle}>If you chose AI</Text>
               <Text style={styles.calloutOrangeText}>
-                Were you considering DebtFree before asking an AI assistant?
+                Were you considering DebtFree before asking an AI assistant? *
               </Text>
               <View style={[styles.choiceGrid2, { marginTop: 10 }]}>
                 <ChoiceButton
@@ -1587,7 +1608,7 @@ export function DebtFreeFlow({
             onPress={handleContinueStep3}
           >
             {saving ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color={palette.onBrand} />
             ) : (
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
@@ -1623,7 +1644,7 @@ export function DebtFreeFlow({
     };
 
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ProgressHeader
           label="Step"
           step={4}
@@ -1650,7 +1671,7 @@ export function DebtFreeFlow({
             onPress={() => setShowCountryPicker(prev => !prev)}
           >
             <Text style={styles.countryFlagText}>{countryInfo.flag}</Text>
-            <AppIcon name="chevronDown" size={16} color="#AAAAAA" />
+            <AppIcon name="chevronDown" size={16} color={palette.brand} />
           </Pressable>
 
           {showCountryPicker ? (
@@ -1676,18 +1697,18 @@ export function DebtFreeFlow({
           <Text style={styles.fieldLabel}>Currency</Text>
           <Pressable accessibilityRole="button" accessibilityLabel="Choose currency" style={styles.countrySelector} onPress={() => setShowCurrencyPicker(prev => !prev)}>
             <Text style={styles.choiceText}>{currency.code} ({currency.symbol})</Text>
-            <AppIcon name="chevronDown" size={16} color="#AAAAAA" />
+            <AppIcon name="chevronDown" size={16} color={palette.brand} />
           </Pressable>
           {showCurrencyPicker ? (
             <View style={styles.countryDropdown}>
-              <TextInput accessibilityLabel="Search currencies" style={styles.textInputField} value={currencySearch} onChangeText={setCurrencySearch} placeholder="Search currency code" placeholderTextColor="#6E7571" />
+              <TextInput accessibilityLabel="Search currencies" style={styles.textInputField} value={currencySearch} onChangeText={setCurrencySearch} placeholder="Search currency code" placeholderTextColor={palette.muted} />
               {CURRENCY_OPTIONS.filter(opt => (opt.code + ' ' + opt.label + ' ' + opt.symbol).toLowerCase().includes(currencySearch.toLowerCase())).map(opt => (
                 <ChoiceButton key={opt.code} label={opt.code + ' (' + opt.symbol + ')'} selected={currencyCode === opt.code} onPress={() => { try { assertCurrencyChangeAllowed(onboardingData, opt.code, { transactions, recurringBills, reconciliationAnchors, complete: financeRecordsVerified }); onUpdateOnboardingData({ ...onboardingData, currencyCode: opt.code }); setLocalError(''); setShowCurrencyPicker(false); setCurrencySearch(''); } catch (error) { setLocalError(error instanceof Error ? error.message : 'Cannot change currency.'); } }} />
               ))}
             </View>
           ) : null}
 
-          <Text style={styles.fieldLabel}>Do you manage finances with a partner?</Text>
+          <Text style={styles.fieldLabel}>Do you manage finances with a partner? *</Text>
           <View style={styles.choiceGrid2}>
             <ChoiceButton
               label="Yes"
@@ -1710,7 +1731,7 @@ export function DebtFreeFlow({
           </View>
 
           <Text style={[styles.fieldLabel, { marginTop: 24 }]}>
-            Do you work with a financial professional?
+            Do you work with a financial professional? *
           </Text>
           <View style={styles.choiceGrid2}>
             <ChoiceButton
@@ -1755,7 +1776,7 @@ export function DebtFreeFlow({
             onPress={handleStartOnboarding}
           >
             {saving ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color={palette.onBrand} />
             ) : (
               <Text style={styles.primaryButtonText}>Start onboarding</Text>
             )}
@@ -1837,16 +1858,16 @@ export function DebtFreeFlow({
           primaryMonthlyIncome: monthly,
           additionalIncomes: onboardingData.additionalIncomes,
         },
-        'onboard_2',
+        'onboard_3',
       );
     };
 
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ProgressHeader
           label="Setup"
           step={1}
-          total={5}
+          total={4}
           onBack={() => {
             clearErrors();
             onChangeStage('signup_4');
@@ -1862,15 +1883,15 @@ export function DebtFreeFlow({
                 Let’s start with your income
               </Text>
               <Text style={styles.introSubtitle}>
-                What is your monthly take-home income, after taxes?
+                Enter your take-home income after taxes.
               </Text>
             </View>
 
-            <Text style={styles.fieldLabel}>Monthly take-home income</Text>
+            <Text style={styles.fieldLabel}>Monthly take-home income *</Text>
             <View style={styles.bigFieldBox}>
               <Text style={styles.bigFieldPrefix}>{currencySymbol}</Text>
               <TextInput
-                accessibilityLabel="Take-home income amount"
+                accessibilityLabel="Take-home income amount" accessibilityHint="Required"
                 style={styles.bigFieldInput}
                 keyboardType="decimal-pad"
                 value={incomeInput}
@@ -1879,7 +1900,7 @@ export function DebtFreeFlow({
                   setIncomeInput(prev => acceptMoneyEdit(prev, text, currencyCode));
                 }}
                 placeholder="5,200.00"
-                placeholderTextColor="#6E7571"
+                placeholderTextColor={palette.muted}
               />
               <Text style={styles.fieldMutedUnit}>{currencyCode}</Text>
             </View>
@@ -1956,24 +1977,24 @@ export function DebtFreeFlow({
             {showAddIncomeForm ? (
               <View style={styles.inlineEditorCard}>
                 <Text style={styles.inlineEditorTitle}>Add household income source</Text>
-                <Text style={styles.fieldLabelSmall}>Source name</Text>
+                <Text style={styles.fieldLabelSmall}>Source name *</Text>
                 <TextInput
-                  accessibilityLabel="Additional income source name"
+                  accessibilityLabel="Additional income source name" accessibilityHint="Required"
                   style={styles.textInputField}
                   value={extraIncomeName}
                   onChangeText={setExtraIncomeName}
                   placeholder="Partner salary or side income"
-                  placeholderTextColor="#6E7571"
+                  placeholderTextColor={palette.muted}
                 />
-                <Text style={styles.fieldLabelSmall}>Take-home amount</Text>
+                <Text style={styles.fieldLabelSmall}>Take-home amount *</Text>
                 <TextInput
-                  accessibilityLabel="Additional income amount"
+                  accessibilityLabel="Additional income amount" accessibilityHint="Required"
                   style={styles.textInputField}
                   keyboardType="decimal-pad"
                   value={extraIncomeAmount}
                   onChangeText={text => setExtraIncomeAmount(prev => acceptMoneyEdit(prev, text, currencyCode))}
                   placeholder="1500.00"
-                  placeholderTextColor="#6E7571"
+                  placeholderTextColor={palette.muted}
                 />
                 <Text style={styles.fieldLabelSmall}>Frequency</Text>
                 <View style={styles.choiceGrid2}>
@@ -2029,7 +2050,7 @@ export function DebtFreeFlow({
                   setShowAddIncomeForm(true);
                 }}
               >
-                <AppIcon name="add" size={18} color="#81D8CF" />
+                <AppIcon name="add" size={18} color={palette.brand} />
                 <Text style={styles.smallAddText}>Add another income source</Text>
               </Pressable>
             )}
@@ -2067,7 +2088,7 @@ export function DebtFreeFlow({
             onPress={handleContinueIncome}
           >
             {saving ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color={palette.onBrand} />
             ) : (
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
@@ -2078,149 +2099,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 07: ONBOARDING SETUP 2 OF 5 — CHOOSE PREMIUM (onboard_02.png)
-  // ============================================================================
-  if (stage === 'onboard_2') {
-    const selectPlan = (plan: PremiumPlanChoice) => {
-      clearErrors();
-      onUpdateOnboardingData({ ...onboardingData, selectedPlan: plan });
-    };
-
-    const handleContinuePremium = () => {
-      void persistAndMove({ selectedPlan: onboardingData.selectedPlan }, 'onboard_3');
-    };
-
-    return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
-        <ProgressHeader
-          label="Setup"
-          step={2}
-          total={5}
-          onBack={() => {
-            clearErrors();
-            onChangeStage('onboard_1');
-          }}
-        />
-        <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
-          <View style={[styles.introBox, styles.introCompact]}>
-            <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">
-              Choose how you’d like to track
-            </Text>
-            <Text style={styles.introSubtitle}>
-              Start with manual tracking or add optional bank account syncing.
-            </Text>
-          </View>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: onboardingData.selectedPlan === 'premium' }}
-            accessibilityLabel="DebtFree Premium"
-            style={[
-              styles.planCard,
-              onboardingData.selectedPlan === 'premium' && styles.planCardSelected,
-            ]}
-            onPress={() => selectPlan('premium')}
-          >
-            <View style={styles.planHead}>
-              <Text style={styles.planTitle}>DebtFree Premium</Text>
-              <View style={styles.planChip}>
-                <Text style={styles.planChipText}>
-                  {onboardingData.selectedPlan === 'premium' ? 'SELECTED' : 'MANUAL'}
-                </Text>
-              </View>
-            </View>
-            <Text style={styles.planDescription}>
-              Stay in control with simple manual updates.
-            </Text>
-            <View style={styles.planBulletRow}>
-              <AppIcon name="check" size={13} color="#7DD3C9" style={styles.planBulletIcon} />
-              <Text style={styles.planBulletText}>Track debts and payments</Text>
-            </View>
-            <View style={styles.planBulletRow}>
-              <AppIcon name="check" size={13} color="#7DD3C9" style={styles.planBulletIcon} />
-              <Text style={styles.planBulletText}>Snowball & Avalanche strategies</Text>
-            </View>
-            <View style={styles.planBulletRow}>
-              <AppIcon name="check" size={13} color="#7DD3C9" style={styles.planBulletIcon} />
-              <Text style={styles.planBulletText}>Budget, progress and reminders</Text>
-            </View>
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: onboardingData.selectedPlan === 'premium_bank_sync' }}
-            accessibilityLabel="Premium plus Bank Sync"
-            style={[
-              styles.planCard,
-              onboardingData.selectedPlan === 'premium_bank_sync' && styles.planCardSelected,
-            ]}
-            onPress={() => selectPlan('premium_bank_sync')}
-          >
-            <View style={styles.planHead}>
-              <Text style={styles.planTitle}>Premium + Bank Sync</Text>
-              <View style={styles.planChip}>
-                <Text style={styles.planChipText}>
-                  {onboardingData.selectedPlan === 'premium_bank_sync' ? 'SELECTED' : 'OPTIONAL'}
-                </Text>
-              </View>
-            </View>
-            <Text style={styles.planDescription}>
-              Everything in Premium, plus account connections.
-            </Text>
-            <View style={styles.planBulletRow}>
-              <AppIcon name="check" size={13} color="#7DD3C9" style={styles.planBulletIcon} />
-              <Text style={styles.planBulletText}>Automatic balance updates</Text>
-            </View>
-            <View style={styles.planBulletRow}>
-              <AppIcon name="check" size={13} color="#7DD3C9" style={styles.planBulletIcon} />
-              <Text style={styles.planBulletText}>Sync supported bank accounts</Text>
-            </View>
-            <View style={styles.planBulletRow}>
-              <AppIcon name="check" size={13} color="#7DD3C9" style={styles.planBulletIcon} />
-              <Text style={styles.planBulletText}>Review imported activity</Text>
-            </View>
-          </Pressable>
-
-          <Text style={[styles.helpText, styles.textCenter]}>
-            Pricing will be shown before purchase. Bank connection requires your permission.
-          </Text>
-
-          {onboardingData.selectedPlan === 'premium_bank_sync' ? (
-            <View style={styles.calloutOrange}>
-              <Text style={styles.calloutOrangeTitle}>Sandbox preview note</Text>
-              <Text style={styles.calloutOrangeText}>
-                Live store billing and bank-sync aggregation are not enabled in this test build. No
-                charge or bank connection will occur now — your preference is saved and you can
-                continue setting up your debts manually.
-              </Text>
-            </View>
-          ) : null}
-        </ScrollView>
-
-        <View style={styles.footer}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Continue with Premium"
-            disabled={saving}
-            style={[styles.primaryButton, saving && styles.disabledButton]}
-            onPress={handleContinuePremium}
-          >
-            {saving ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.primaryButtonText}>Continue with Premium</Text>
-            )}
-          </Pressable>
-          <Text style={styles.footerNoteText}>
-            You can choose syncing later. No account is connected now.
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  // ============================================================================
-  // SCREEN 08: ONBOARDING SETUP 3 OF 5 — ADD YOUR DEBTS (onboard_03.png)
+  // SCREEN 08: ONBOARDING SETUP 2 OF 4 — ADD YOUR DEBTS (onboard_03.png)
   // ============================================================================
   if (stage === 'onboard_3') {
     const mortgageDebt = onboardingData.debts.find(d => d.category === 'Mortgage');
@@ -2238,15 +2117,6 @@ export function DebtFreeFlow({
     };
 
     const handleContinueDebts = () => {
-      const unlinkedLoan = onboardingData.debts.find(debt => {
-        if ((debt.category !== 'Mortgage' && debt.category !== 'Auto loan') || debt.balance <= 0) return false;
-        const relation = onboardingData.loanBillPairingByDebtId?.[debt.id];
-        return relation?.status !== 'linked' || !recurringBills.some(bill => bill.id === relation.billId && bill.active);
-      });
-      if (unlinkedLoan) {
-        setLocalError(`${unlinkedLoan.name} still needs its linked recurring payment confirmed. Reopen its editor, refresh bill status, and retry or resolve the server record before continuing setup.`);
-        return;
-      }
       const err = validateDebtsStep(
         onboardingData.homeStatus,
         onboardingData.vehicleStatus,
@@ -2267,14 +2137,14 @@ export function DebtFreeFlow({
     };
 
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ProgressHeader
           label="Setup"
-          step={3}
-          total={5}
+          step={2}
+          total={4}
           onBack={() => {
             clearErrors();
-            onChangeStage('onboard_2');
+            onChangeStage('onboard_1');
           }}
         />
         <KeyboardAvoidingView
@@ -2315,7 +2185,7 @@ export function DebtFreeFlow({
               onPress={() => openNewDebtEditor('Mortgage')}
             >
               <View style={styles.twoRowLeft}>
-                <View style={styles.iconCircle}><AppIcon name="homeLoan" size={18} color="#91DED7" /></View>
+                <View style={styles.iconCircle}><AppIcon name="homeLoan" size={18} color={palette.brand} /></View>
                 <View style={styles.flex1}>
                   <Text style={styles.twoRowTitle}>Home / Mortgage</Text>
                   <Text style={styles.twoRowSub}>{mortgageDebt
@@ -2324,7 +2194,7 @@ export function DebtFreeFlow({
                 </View>
               </View>
               <View style={[styles.selectCircle, Boolean(mortgageDebt) && styles.selectCircleSelected]}>
-                <AppIcon name={mortgageDebt ? 'check' : 'plus'} size={11} color="#FFFFFF" />
+                <AppIcon name={mortgageDebt ? 'check' : 'plus'} size={11} color={palette.onBrand} />
               </View>
             </Pressable>
 
@@ -2341,13 +2211,13 @@ export function DebtFreeFlow({
             >
               <View style={styles.twoRowLeft}>
                 <View style={styles.iconCircle}>
-                  <AppIcon name="auto" size={18} color="#91DED7" />
+                  <AppIcon name="auto" size={18} color={palette.brand} />
                 </View>
                 <View style={styles.flex1}>
                   <Text style={styles.twoRowTitle}>Auto loan</Text>
                   <Text style={styles.twoRowSub}>
                     {autoLoanDebt
-                      ? `${autoLoanDebt.name} Â· ${formatCurrency(autoLoanDebt.balance, currencyCode)} Â· ${autoLoanDebt.apr}% APR`
+                      ? `${autoLoanDebt.name} · ${formatCurrency(autoLoanDebt.balance, currencyCode)} · ${autoLoanDebt.apr}% APR`
                       : 'Balance, APR & payment'}
                   </Text>
                 </View>
@@ -2362,7 +2232,7 @@ export function DebtFreeFlow({
                 <AppIcon
                   name={Boolean(autoLoanDebt) || onboardingData.vehicleStatus === 'Finance' ? 'check' : 'plus'}
                   size={11}
-                  color="#FFFFFF"
+                  color={palette.onBrand}
                 />
               </View>
             </Pressable>
@@ -2379,18 +2249,18 @@ export function DebtFreeFlow({
             >
               <View style={styles.twoRowLeft}>
                 <View style={styles.iconCircle}>
-                  <AppIcon name="creditCard" size={18} color="#91DED7" />
+                  <AppIcon name="creditCard" size={18} color={palette.brand} />
                 </View>
                 <View style={styles.flex1}>
                   <Text style={styles.twoRowTitle}>Credit cards & other loans</Text>
                   <Text style={styles.twoRowSub}>
                     {otherDebts.length > 0
-                      ? `${otherDebts.length} account${otherDebts.length === 1 ? '' : 's'} added Â· Tap to add another`
+                      ? `${otherDebts.length} account${otherDebts.length === 1 ? '' : 's'} added · Tap to add another`
                       : 'Add each account'}
                   </Text>
                 </View>
               </View>
-              <AppIcon name="add" size={20} color="#8EE2D5" />
+              <AppIcon name="add" size={20} color={palette.brand} />
             </Pressable>
 
             {/* Inline Debt Form */}
@@ -2401,65 +2271,65 @@ export function DebtFreeFlow({
                 </Text>
 
                 <SelectDropdown
-                  label="Account category"
+                  label="Account category *"
                   sheetTitle="Select Debt Category"
                   value={debtCategory}
                   options={DEBT_CATEGORY_DROPDOWN_OPTIONS}
                   onSelect={setDebtCategory}
                 />
 
-                <Text style={styles.fieldLabelSmall}>Debt name</Text>
+                <Text style={styles.fieldLabelSmall}>Debt name *</Text>
                 <TextInput
-                  accessibilityLabel="Debt name"
+                  accessibilityLabel="Debt name" accessibilityHint="Required"
                   style={styles.textInputField}
                   value={debtName}
                   onChangeText={setDebtName}
                   placeholder="e.g., Chase Freedom, Auto Loan"
-                  placeholderTextColor="#6E7571"
+                  placeholderTextColor={palette.muted}
                 />
 
                 <View style={styles.choiceGrid2}>
                   <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>Current balance ({currencySymbol})</Text>
+                    <Text style={styles.fieldLabelSmall}>Current balance ({currencySymbol}) *</Text>
                     <TextInput
-                      accessibilityLabel="Current balance"
+                      accessibilityLabel="Current balance" accessibilityHint="Required"
                       style={styles.textInputField}
                       keyboardType={Platform.OS === "ios" ? "numbers-and-punctuation" : "numeric"}
                       value={debtBalance}
                       onChangeText={text => setDebtBalance(prev => acceptMoneyEdit(prev, text, currencyCode, true))}
                       placeholder="4200.00"
-                      placeholderTextColor="#6E7571"
+                      placeholderTextColor={palette.muted}
                     />
                   </View>
                   <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>APR (%)</Text>
+                    <Text style={styles.fieldLabelSmall}>APR (%) *</Text>
                     <TextInput
-                      accessibilityLabel="APR percentage"
+                      accessibilityLabel="APR percentage" accessibilityHint="Required"
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtApr}
                       onChangeText={text => setDebtApr(prev => acceptAprEdit(prev, text))}
                       placeholder="19.99"
-                      placeholderTextColor="#6E7571"
+                      placeholderTextColor={palette.muted}
                     />
                   </View>
                 </View>
 
                 <View style={styles.choiceGrid2}>
                   <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>Minimum payment ({currencySymbol}/mo)</Text>
+                    <Text style={styles.fieldLabelSmall}>Minimum payment ({currencySymbol}/mo) *</Text>
                     <TextInput
-                      accessibilityLabel="Minimum monthly payment"
+                      accessibilityLabel="Minimum monthly payment" accessibilityHint="Required"
                       style={styles.textInputField}
                       keyboardType="decimal-pad"
                       value={debtMinimum}
                       onChangeText={text => setDebtMinimum(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="125.00"
-                      placeholderTextColor="#6E7571"
+                      placeholderTextColor={palette.muted}
                     />
                   </View>
                   <View style={styles.flex1}>
-                  <Text style={styles.fieldLabelSmall}>{!onboardingData.onboardingCompleted && (debtCategory === 'Mortgage' || debtCategory === 'Auto loan') ? 'Monthly due day (1–31, required)' : 'Due day (1–31, optional)'}</Text>
+                  <Text style={styles.fieldLabelSmall}>Due day (1–31, optional)</Text>
                     <TextInput
                       accessibilityLabel="Due day of month"
                       style={styles.textInputField}
@@ -2467,7 +2337,7 @@ export function DebtFreeFlow({
                       value={debtDueDay}
                       onChangeText={setDebtDueDay}
                       placeholder="15"
-                      placeholderTextColor="#6E7571"
+                      placeholderTextColor={palette.muted}
                     />
                   </View>
                 </View>
@@ -2486,7 +2356,7 @@ export function DebtFreeFlow({
                       value={debtCreditLimit}
                       onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="10000.00"
-                      placeholderTextColor="#6E7571"
+                      placeholderTextColor={palette.muted}
                     />
                   </>
                 ) : (
@@ -2501,47 +2371,10 @@ export function DebtFreeFlow({
                       value={debtOriginalBalance}
                       onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
                       placeholder="25000.00"
-                      placeholderTextColor="#6E7571"
+                      placeholderTextColor={palette.muted}
                     />
                   </>
                 )}
-
-                {onboardingBillRecovery ? (
-                  <View style={[styles.calloutOrange, { marginTop: 12 }]}>
-                    <Text style={styles.calloutOrangeTitle}>
-                      {onboardingBillRecovery === 'loading' ? 'Checking server status' :
-                        onboardingBillRecovery === 'confirmed' ? 'Recurring item confirmed' :
-                          onboardingBillRecovery === 'retry' ? 'Safe retry available' :
-                            onboardingBillRecovery === 'conflict' ? 'Server record conflict' :
-                              onboardingBillRecovery === 'error' ? 'Readback error' :
-                                'Confirmation still pending'}
-                    </Text>
-                    <Text style={styles.calloutOrangeText}>
-                      {onboardingBillRecovery === 'loading'
-                        ? 'Reading your authenticated onboarding and finance records. Your form, draft ID, and paid-today answer are being kept.'
-                        : onboardingBillRecovery === 'confirmed'
-                          ? 'The server row matches this draft. Press Save to finish the link; no recurring item will be recreated.'
-                          : onboardingBillRecovery === 'retry'
-                            ? 'A complete server snapshot found no row for this draft ID. Press Save to retry once with the same ID.'
-                            : onboardingBillRecovery === 'conflict'
-                              ? `A server row exists with this ID but has different details. No bill will be overwritten or duplicated. Adjust the draft to the server row shown here, then Save to reuse it, or recover the server record. ${(() => { const row = recurringBills.find(bill => bill.id === (draftDebtIdRef.current ?? editingDebtId)); return row ? `Server row: ${row.name}, ${formatCurrency(moneyToMajor(row.amount), currencyCode)} monthly, due day ${row.dueDay}.` : ''; })()}`
-                              : onboardingBillRecovery === 'error'
-                                ? 'The server could not be verified. Retry this readback when connected; no mutation was replayed.'
-                                : 'The server state is not yet conclusive. Refresh again before retrying Save; no mutation was replayed.'}
-                    </Text>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Refresh bill status from server"
-                      disabled={onboardingBillRecovery === 'loading' || saving}
-                      style={[styles.subtleActionBtn, { marginTop: 10, alignSelf: 'flex-start' }, (onboardingBillRecovery === 'loading' || saving) && styles.disabledButton]}
-                      onPress={() => void handleRefreshOnboardingBillStatus()}
-                    >
-                      {onboardingBillRecovery === 'loading'
-                        ? <ActivityIndicator color="#FFFFFF" size="small" />
-                        : <Text style={styles.subtleActionBtnText}>Refresh bill status</Text>}
-                    </Pressable>
-                  </View>
-                ) : null}
 
                 <View style={[styles.choiceGrid2, { marginTop: 14 }]}>
                   <Pressable
@@ -2554,7 +2387,6 @@ export function DebtFreeFlow({
                       setEditingDebtId(null);
                       draftDebtIdRef.current = null;
                       draftDebtPaidTodayRef.current = {};
-                      setOnboardingBillRecovery(null);
                     }}
                   >
                     <Text style={styles.subtleActionBtnText}>Cancel</Text>
@@ -2567,7 +2399,7 @@ export function DebtFreeFlow({
                     onPress={() => void handleSaveDebt()}
                   >
                     {saving ? (
-                      <ActivityIndicator color="#FFFFFF" size="small" />
+                      <ActivityIndicator color={palette.onBrand} size="small" />
                     ) : (
                       <Text style={styles.saveInlineBtnText}>Save debt</Text>
                     )}
@@ -2586,11 +2418,11 @@ export function DebtFreeFlow({
                   <View key={item.id} style={styles.addedItemCard}>
                     <View style={styles.flex1}>
                       <Text style={styles.addedItemTitle}>
-                        {`${item.name} Â· ${item.category}`}
+                        {`${item.name} · ${item.category}`}
                       </Text>
                       <Text style={styles.addedItemSub}>
-                        {`${formatCurrency(item.balance, currencyCode)} balance Â· ${item.apr}% APR Â· ${formatCurrency(item.minimumPayment, currencyCode)}/mo min${
-                          item.dueDay ? ` Â· Due day ${item.dueDay}` : ''
+                        {`${formatCurrency(item.balance, currencyCode)} balance · ${item.apr}% APR · ${formatCurrency(item.minimumPayment, currencyCode)}/mo min${
+                          item.dueDay ? ` · Due day ${item.dueDay}` : ''
                         }`}
                       </Text>
                     </View>
@@ -2636,7 +2468,7 @@ export function DebtFreeFlow({
             onPress={handleContinueDebts}
           >
             {saving ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color={palette.onBrand} />
             ) : (
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
@@ -2647,7 +2479,7 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 09: ONBOARDING SETUP 4 OF 5 — PAYOFF STRATEGY (onboard_04.png)
+  // SCREEN 09: ONBOARDING SETUP 3 OF 4 — PAYOFF STRATEGY (onboard_04.png)
   // ============================================================================
   if (stage === 'onboard_4') {
     const selectStrategy = (strategy: PayoffStrategy) => {
@@ -2671,11 +2503,11 @@ export function DebtFreeFlow({
     };
 
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ProgressHeader
           label="Setup"
-          step={4}
-          total={5}
+          step={3}
+          total={4}
           onBack={() => {
             clearErrors();
             onChangeStage('onboard_3');
@@ -2691,7 +2523,7 @@ export function DebtFreeFlow({
                 Choose your payoff strategy
               </Text>
               <Text style={styles.introSubtitle}>
-                Pick the approach that fits you. You can change it later.
+                You can change this later.
               </Text>
             </View>
 
@@ -2709,7 +2541,7 @@ export function DebtFreeFlow({
             >
               <View style={styles.twoRowLeft}>
                 <View style={styles.iconCircle}>
-                  <AppIcon name="snowball" size={18} color="#91DED7" />
+                  <AppIcon name="snowball" size={18} color={palette.brand} />
                 </View>
                 <View style={styles.flex1}>
                   <Text style={styles.twoRowTitle}>Debt Snowball</Text>
@@ -2723,7 +2555,7 @@ export function DebtFreeFlow({
                 ]}
               >
                 {onboardingData.strategy === 'snowball' ? (
-                  <AppIcon name="check" size={11} color="#FFFFFF" />
+                  <AppIcon name="check" size={11} color={palette.onBrand} />
                 ) : null}
               </View>
             </Pressable>
@@ -2742,7 +2574,7 @@ export function DebtFreeFlow({
             >
               <View style={styles.twoRowLeft}>
                 <View style={styles.iconCircle}>
-                  <AppIcon name="avalanche" size={18} color="#91DED7" />
+                  <AppIcon name="avalanche" size={18} color={palette.brand} />
                 </View>
                 <View style={styles.flex1}>
                   <Text style={styles.twoRowTitle}>Debt Avalanche</Text>
@@ -2756,7 +2588,7 @@ export function DebtFreeFlow({
                 ]}
               >
                 {onboardingData.strategy === 'avalanche' ? (
-                  <AppIcon name="check" size={11} color="#FFFFFF" />
+                  <AppIcon name="check" size={11} color={palette.onBrand} />
                 ) : null}
               </View>
             </Pressable>
@@ -2776,7 +2608,7 @@ export function DebtFreeFlow({
                   setExtraPaymentInput(prev => acceptMoneyEdit(prev, text, currencyCode));
                 }}
                 placeholder="150.00"
-                placeholderTextColor="#6E7571"
+                placeholderTextColor={palette.muted}
               />
               <Text style={styles.fieldMutedUnit}>/ month</Text>
             </View>
@@ -2801,7 +2633,7 @@ export function DebtFreeFlow({
                   {`Total monthly plan: ${formatCurrency(
                     payoffPlan.monthlyTotalPayment,
                     currencyCode,
-                  )} Â· Tracked-account forecast: ${payoffPlan.debtFreeDateLabel}${
+                  )} · Tracked-account forecast: ${payoffPlan.debtFreeDateLabel}${
                     payoffPlan.monthsToPayoff !== null
                       ? ` (${payoffPlan.monthsToPayoff} mo)`
                       : ''
@@ -2834,7 +2666,7 @@ export function DebtFreeFlow({
             onPress={handleContinueStrategy}
           >
             {saving ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <ActivityIndicator color={palette.onBrand} />
             ) : (
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
@@ -2845,40 +2677,20 @@ export function DebtFreeFlow({
   }
 
   // ============================================================================
-  // SCREEN 10: ONBOARDING SETUP 5 OF 5 — NOTIFICATIONS (onboard_05.png)
+  // SCREEN 10: ONBOARDING COMPLETE (background notifications are not available)
   // ============================================================================
   if (stage === 'onboard_5') {
-    const prefs = onboardingData.notifications;
-
-    const toggleNotificationPref = (
-      key: 'upcomingReminders' | 'overdueAlerts' | 'milestonesAndProgress',
-    ) => {
-      clearErrors();
-      onUpdateOnboardingData({
-        ...onboardingData,
-        notifications: {
-          ...prefs,
-          [key]: !prefs[key],
-        },
-      });
-    };
-
-    const completeOnboarding = async (requestOsPermission: boolean) => {
+    const completeOnboarding = () => {
       if (savingRef.current) return;
       clearErrors();
-      let osStatus = prefs.osPermissionStatus;
-      if (requestOsPermission) {
-        osStatus = await requestNativeNotificationPermission();
-      }
-      const now = new Date().toISOString();
-      await persistAndMove(
+      void persistAndMove(
         {
           onboardingCompleted: true,
-          completedAt: now,
+          completedAt: new Date().toISOString(),
           notifications: {
-            ...prefs,
-            permissionRequested: requestOsPermission,
-            osPermissionStatus: osStatus,
+            ...onboardingData.notifications,
+            permissionRequested: false,
+            osPermissionStatus: 'unavailable',
           },
         },
         'home',
@@ -2886,127 +2698,23 @@ export function DebtFreeFlow({
     };
 
     return (
-      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
-        <ProgressHeader
-          label="Setup"
-          step={5}
-          total={5}
-          onBack={() => {
-            clearErrors();
-            onChangeStage('onboard_4');
-          }}
-        />
+      <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
+        <ProgressHeader label="Setup" step={4} total={4} onBack={() => onChangeStage('onboard_4')} />
         <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
           <View style={[styles.introBox, styles.introCompact]}>
-            <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">
-              Stay on track
-            </Text>
-            <Text style={styles.introSubtitle}>
-              Choose the alerts that would help you most.
-            </Text>
+            <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">You’re ready to get started</Text>
+            <Text style={styles.introSubtitle}>Upcoming bills and account status are available in the app. Background notifications are not available yet.</Text>
           </View>
-
-          <View style={styles.notifyArtWrap}>
-            <View style={styles.bellBox}>
-              <AppIcon name="bell" size={34} color="#79D9CD" />
-            </View>
-          </View>
-
-          <Pressable
-            accessibilityRole="switch"
-            accessibilityState={{ checked: prefs.upcomingReminders }}
-            accessibilityLabel="Upcoming payment reminders"
-            style={styles.toggleRow}
-            onPress={() => toggleNotificationPref('upcomingReminders')}
-          >
-            <View style={styles.flex1}>
-              <Text style={styles.toggleTitle}>Upcoming payment reminders</Text>
-              <Text style={styles.toggleSub}>Get a heads-up before bills are due</Text>
-            </View>
-            <View style={[styles.toggleTrack, prefs.upcomingReminders && styles.toggleTrackOn]}>
-              <View style={[styles.toggleThumb, prefs.upcomingReminders && styles.toggleThumbOn]} />
-            </View>
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="switch"
-            accessibilityState={{ checked: prefs.overdueAlerts }}
-            accessibilityLabel="Past-due alerts"
-            style={styles.toggleRow}
-            onPress={() => toggleNotificationPref('overdueAlerts')}
-          >
-            <View style={styles.flex1}>
-              <Text style={styles.toggleTitle}>Past-due alerts</Text>
-              <Text style={styles.toggleSub}>Know when a bill needs attention</Text>
-            </View>
-            <View style={[styles.toggleTrack, prefs.overdueAlerts && styles.toggleTrackOn]}>
-              <View style={[styles.toggleThumb, prefs.overdueAlerts && styles.toggleThumbOn]} />
-            </View>
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="switch"
-            accessibilityState={{ checked: prefs.milestonesAndProgress }}
-            accessibilityLabel="Milestones and progress"
-            style={styles.toggleRow}
-            onPress={() => toggleNotificationPref('milestonesAndProgress')}
-          >
-            <View style={styles.flex1}>
-              <Text style={styles.toggleTitle}>Milestones & progress</Text>
-              <Text style={styles.toggleSub}>Celebrate payoff achievements</Text>
-            </View>
-            <View style={[styles.toggleTrack, prefs.milestonesAndProgress && styles.toggleTrackOn]}>
-              <View
-                style={[styles.toggleThumb, prefs.milestonesAndProgress && styles.toggleThumbOn]}
-              />
-            </View>
-          </Pressable>
-
-          <View style={[styles.calloutTeal, { marginTop: 24 }]}>
-            <Text style={styles.calloutTealText}>
-              We’ll ask your device for notification permission only after you choose to enable
-              alerts.
-            </Text>
-          </View>
-
-          {!!localError ? (
-            <Text style={styles.errorText} accessibilityRole="alert">
-              {localError}
-            </Text>
-          ) : null}
+          {!!localError ? <Text style={styles.errorText} accessibilityRole="alert">{localError}</Text> : null}
         </ScrollView>
-
         <View style={styles.footer}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Enable notifications"
-            disabled={saving}
-            style={[styles.primaryButton, saving && styles.disabledButton]}
-            onPress={() => void completeOnboarding(true)}
-          >
-            {saving ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.primaryButtonText}>Enable notifications</Text>
-            )}
+          <Pressable accessibilityRole="button" accessibilityLabel="Finish setup" disabled={saving} style={[styles.primaryButton, saving && styles.disabledButton]} onPress={completeOnboarding}>
+            {saving ? <ActivityIndicator color={palette.onBrand} /> : <Text style={styles.primaryButtonText}>Finish setup</Text>}
           </Pressable>
-
-          <View style={styles.footerInlineRow}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Not now"
-              disabled={saving}
-              onPress={() => void completeOnboarding(false)}
-            >
-              <Text style={styles.linkText}>Not now</Text>
-            </Pressable>
-            <Text style={styles.footerNoteText}>  Â·  You can change this in Settings.</Text>
-          </View>
         </View>
       </SafeAreaView>
     );
   }
-
   // ============================================================================
   // SCREEN 11: HOME DASHBOARD (stage === 'home')
   // ============================================================================
@@ -3014,6 +2722,10 @@ export function DebtFreeFlow({
     <HomeScreen
       session={session}
       onboardingData={onboardingData}
+      householdSummaries={householdSummaries}
+      onSwitchHousehold={onSwitchHousehold}
+      onRefreshHouseholdContexts={onRefreshHouseholdContexts}
+      onAcceptHouseholdInvite={onAcceptHouseholdInvite}
       onUpdateOnboardingData={onUpdateOnboardingData}
       transactions={transactions}
       recurringBills={recurringBills}
@@ -3021,11 +2733,14 @@ export function DebtFreeFlow({
       currencyCode={currencyCode}
       currencySymbol={currencySymbol}
       onSignOut={onSignOut}
+      onDeleteAccount={onDeleteAccount}
+      accountDeletionEnabled={accountDeletionEnabled}
       onChangeStage={onChangeStage}
       onAddTransaction={handleAddTransaction}
       onUpdateTransaction={handleUpdateTransaction}
       onDeleteTransaction={handleDeleteTransaction}
       onRecordBillPayment={handleRecordBillPayment}
+      onConfirmAnnualFee={handleConfirmAnnualFee}
       onReconcileDebt={handleReconcileDebt}
       onAddRecurringBill={handleAddRecurringBill}
       onDeleteRecurringBill={handleDeleteRecurringBill}
@@ -3036,15 +2751,16 @@ export function DebtFreeFlow({
       authBusy={authBusy}
       onReload={handleReloadAppData}
       reloading={reloading}
+      financeRecordsVerified={financeRecordsVerified}
       reloadFeedback={reloadFeedback}
     />
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (palette: AppearancePalette) => StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#1F201F',
+    backgroundColor: palette.canvas,
   },
   flex1: {
     flex: 1,
@@ -3079,7 +2795,7 @@ const styles = StyleSheet.create({
   stepText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#F9F9F6',
+    color: palette.text,
     letterSpacing: 0.1,
   },
   progressRow: {
@@ -3095,10 +2811,10 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 3,
     borderRadius: 5,
-    backgroundColor: '#414743',
+    backgroundColor: palette.raised,
   },
   progressSegmentDone: {
-    backgroundColor: '#AD5637',
+    backgroundColor: palette.brand,
   },
   // Welcome Screen
   welcomeScroll: {
@@ -3120,7 +2836,7 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 8,
-    backgroundColor: '#369B97',
+    backgroundColor: palette.raised,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 7,
@@ -3128,14 +2844,14 @@ const styles = StyleSheet.create({
   logoText: {
     fontSize: 22,
     fontWeight: '800',
-    color: '#F9F9F6',
+    color: palette.text,
     letterSpacing: -0.8,
   },
   logoTextAccent: {
-    color: '#50C7C0',
+    color: palette.muted,
   },
   topSignInLink: {
-    color: '#58CBD0',
+    color: palette.muted,
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.4,
@@ -3160,7 +2876,7 @@ const styles = StyleSheet.create({
     height: 160,
     borderRadius: 80,
     borderWidth: 16,
-    borderColor: '#3B3E3A',
+    borderColor: palette.border,
   },
   orbitArcTeal: {
     position: 'absolute',
@@ -3169,8 +2885,8 @@ const styles = StyleSheet.create({
     borderRadius: 80,
     borderWidth: 16,
     borderColor: 'transparent',
-    borderTopColor: '#58CCC5',
-    borderRightColor: '#58CCC5',
+    borderTopColor: palette.border,
+    borderRightColor: palette.border,
     transform: [{ rotate: '-28deg' }],
   },
   orbitArcTerracotta: {
@@ -3180,7 +2896,7 @@ const styles = StyleSheet.create({
     borderRadius: 80,
     borderWidth: 16,
     borderColor: 'transparent',
-    borderBottomColor: '#AD5637',
+    borderBottomColor: palette.border,
     transform: [{ rotate: '-28deg' }],
   },
   orbitCenter: {
@@ -3190,19 +2906,19 @@ const styles = StyleSheet.create({
   heroBigText: {
     fontSize: 33,
     fontWeight: '800',
-    color: '#F9F9F6',
+    color: palette.text,
     letterSpacing: -1,
   },
   heroMiniText: {
     fontSize: 11,
-    color: '#B7C6C0',
+    color: palette.muted,
     marginTop: 2,
   },
   floatingCard: {
     position: 'absolute',
-    backgroundColor: '#2A2C2B',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#414743',
+    borderColor: palette.border,
     borderRadius: 9,
     paddingHorizontal: 11,
     paddingVertical: 9,
@@ -3218,7 +2934,7 @@ const styles = StyleSheet.create({
   },
   floatingCardLabel: {
     fontSize: 11,
-    color: '#E8EDE9',
+    color: palette.text,
   },
   floatingCardValueRow: {
     flexDirection: 'row',
@@ -3229,7 +2945,7 @@ const styles = StyleSheet.create({
   floatingCardValue: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#73D9C6',
+    color: palette.muted,
     marginTop: 3,
   },
   welcomeCopy: {
@@ -3238,7 +2954,7 @@ const styles = StyleSheet.create({
     paddingTop: 6,
   },
   badgeSmall: {
-    backgroundColor: '#303C38',
+    backgroundColor: palette.surface,
     borderRadius: 5,
     paddingHorizontal: 9,
     paddingVertical: 5,
@@ -3247,14 +2963,14 @@ const styles = StyleSheet.create({
   badgeSmallText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#81DFD2',
+    color: palette.muted,
     letterSpacing: 0.7,
   },
   welcomeTitle: {
     fontSize: 29,
     lineHeight: 34,
     fontWeight: '800',
-    color: '#F9F9F6',
+    color: palette.text,
     textAlign: 'center',
     letterSpacing: -0.8,
     marginBottom: 12,
@@ -3262,7 +2978,7 @@ const styles = StyleSheet.create({
   welcomeSubtitle: {
     fontSize: 14,
     lineHeight: 21,
-    color: '#ADB8AF',
+    color: palette.muted,
     textAlign: 'center',
     maxWidth: 310,
   },
@@ -3285,7 +3001,7 @@ const styles = StyleSheet.create({
     fontSize: 23,
     lineHeight: 29,
     fontWeight: '700',
-    color: '#F9F9F6',
+    color: palette.text,
     textAlign: 'center',
     letterSpacing: -0.5,
     marginBottom: 11,
@@ -3296,7 +3012,7 @@ const styles = StyleSheet.create({
   introSubtitle: {
     fontSize: 14,
     lineHeight: 21,
-    color: '#B5B9B5',
+    color: palette.muted,
     textAlign: 'center',
     maxWidth: 310,
   },
@@ -3306,22 +3022,22 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 42,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.04)',
-    backgroundColor: '#1F201F',
+    borderTopColor: palette.border,
+    backgroundColor: palette.canvas,
   },
   primaryButton: {
     minHeight: 51,
     borderRadius: 9,
-    backgroundColor: '#A34F34',
+    backgroundColor: palette.brand,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 18,
   },
   primaryButtonHot: {
-    backgroundColor: '#FA6E2B',
+    backgroundColor: palette.brand,
   },
   primaryButtonText: {
-    color: '#FFFFFF',
+    color: palette.onBrand,
     fontSize: 15,
     fontWeight: '700',
     letterSpacing: 0.1,
@@ -3337,14 +3053,14 @@ const styles = StyleSheet.create({
   },
   footerNoteText: {
     fontSize: 11,
-    color: '#9DA5A0',
+    color: palette.muted,
     textAlign: 'center',
     lineHeight: 16,
     marginTop: 11,
   },
   linkText: {
     fontSize: 12,
-    color: '#58CBD0',
+    color: palette.muted,
     fontWeight: '700',
   },
   inlineLinkWithIcon: {
@@ -3354,14 +3070,14 @@ const styles = StyleSheet.create({
   },
   legalNote: {
     fontSize: 11,
-    color: '#747D77',
+    color: palette.brand,
     textAlign: 'center',
     marginTop: 14,
   },
   // Provider buttons (Step 1 of 4)
   providerButton: {
     borderWidth: 1,
-    borderColor: '#474D49',
+    borderColor: palette.border,
     borderRadius: 9,
     minHeight: 46,
     flexDirection: 'row',
@@ -3369,25 +3085,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 11,
     marginBottom: 9,
-    backgroundColor: '#232524',
+    backgroundColor: palette.surface,
     paddingHorizontal: 14,
   },
   providerButtonConnected: {
-    borderColor: '#35645B',
-    backgroundColor: '#243531',
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
   },
   providerButtonPassive: {
     opacity: 0.85,
   },
   providerButtonText: {
-    color: '#F9F9F6',
+    color: palette.text,
     fontSize: 13,
     fontWeight: '700',
   },
   googleLetterIcon: {
     fontSize: 17,
     fontWeight: '800',
-    color: '#4285F4',
+    color: palette.muted,
   },
   appleMarkBox: {
     width: 18,
@@ -3398,7 +3114,7 @@ const styles = StyleSheet.create({
   appleMarkLeaf: {
     width: 5,
     height: 5,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: palette.text,
     borderTopLeftRadius: 5,
     borderBottomRightRadius: 5,
     marginLeft: 2,
@@ -3415,14 +3131,14 @@ const styles = StyleSheet.create({
   appleMarkLobeLeft: {
     width: 9,
     height: 13,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: palette.text,
     borderRadius: 6,
     marginRight: -2,
   },
   appleMarkLobeRight: {
     width: 9,
     height: 13,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: palette.text,
     borderRadius: 6,
   },
   appleMarkBite: {
@@ -3432,7 +3148,7 @@ const styles = StyleSheet.create({
     width: 5,
     height: 5,
     borderRadius: 2.5,
-    backgroundColor: '#232524',
+    backgroundColor: palette.surface,
   },
   appleNativeButton: {
     width: '100%',
@@ -3448,10 +3164,10 @@ const styles = StyleSheet.create({
   hlineBar: {
     flex: 1,
     height: 1,
-    backgroundColor: '#454947',
+    backgroundColor: palette.raised,
   },
   hlineLabel: {
-    color: '#707872',
+    color: palette.brand,
     fontSize: 10,
     fontWeight: '600',
     letterSpacing: 0.6,
@@ -3461,9 +3177,9 @@ const styles = StyleSheet.create({
     minHeight: 43,
     width: '100%',
     borderWidth: 1,
-    borderColor: '#5E635F',
+    borderColor: palette.border,
     borderRadius: 9,
-    backgroundColor: '#272928',
+    backgroundColor: palette.surface,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -3493,8 +3209,8 @@ const styles = StyleSheet.create({
   },
   choiceSelected: {
     borderWidth: 1.5,
-    borderColor: '#BA6748',
-    backgroundColor: '#392B24',
+    borderColor: palette.brand,
+    backgroundColor: palette.tint,
   },
   choiceCheck: {
     position: 'absolute',
@@ -3506,7 +3222,7 @@ const styles = StyleSheet.create({
     left: 7,
   },
   choiceText: {
-    color: '#F5F5F3',
+    color: palette.text,
     fontWeight: '600',
     fontSize: 13,
     textAlign: 'center',
@@ -3515,7 +3231,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   choiceTextSelected: {
-    color: '#FFFFFF',
+    color: palette.text,
   },
   choiceGrid2: {
     flexDirection: 'row',
@@ -3524,7 +3240,7 @@ const styles = StyleSheet.create({
   splitLabel: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#B3BBB5',
+    color: palette.muted,
     marginTop: 6,
     marginBottom: 8,
   },
@@ -3541,33 +3257,33 @@ const styles = StyleSheet.create({
   // Callouts
   calloutTeal: {
     padding: 12,
-    backgroundColor: '#243531',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#35645B',
+    borderColor: palette.border,
     borderRadius: 9,
     marginTop: 13,
   },
   calloutTealText: {
-    color: '#B8DDD4',
+    color: palette.muted,
     fontSize: 12,
     lineHeight: 18,
   },
   calloutOrange: {
     padding: 12,
-    backgroundColor: '#332921',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#6F4939',
+    borderColor: palette.border,
     borderRadius: 9,
     marginTop: 13,
   },
   calloutOrangeTitle: {
-    color: '#FFFFFF',
+    color: palette.text,
     fontSize: 12,
     fontWeight: '700',
     marginBottom: 3,
   },
   calloutOrangeText: {
-    color: '#E5C6B4',
+    color: palette.muted,
     fontSize: 12,
     lineHeight: 18,
   },
@@ -3575,14 +3291,14 @@ const styles = StyleSheet.create({
   fieldLabel: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#B1B4B0',
+    color: palette.muted,
     marginTop: 16,
     marginBottom: 7,
   },
   fieldLabelSmall: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#B1B4B0',
+    color: palette.muted,
     marginTop: 10,
     marginBottom: 5,
   },
@@ -3590,9 +3306,9 @@ const styles = StyleSheet.create({
     width: 112,
     minHeight: 54,
     borderWidth: 1,
-    borderColor: '#555B57',
+    borderColor: palette.border,
     borderRadius: 9,
-    backgroundColor: '#222423',
+    backgroundColor: palette.surface,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -3609,9 +3325,9 @@ const styles = StyleSheet.create({
     width: '100%',
     minHeight: 60,
     borderWidth: 1,
-    borderColor: '#555B57',
+    borderColor: palette.border,
     borderRadius: 9,
-    backgroundColor: '#222423',
+    backgroundColor: palette.surface,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
@@ -3619,18 +3335,18 @@ const styles = StyleSheet.create({
   bigFieldPrefix: {
     fontSize: 23,
     fontWeight: '700',
-    color: '#FBFBF9',
+    color: palette.text,
     marginRight: 6,
   },
   bigFieldInput: {
     flex: 1,
     fontSize: 23,
     fontWeight: '700',
-    color: '#FBFBF9',
+    color: palette.text,
     paddingVertical: 10,
   },
   fieldMutedUnit: {
-    color: '#9DA6A0',
+    color: palette.muted,
     fontSize: 12,
     fontWeight: '600',
     marginLeft: 8,
@@ -3639,11 +3355,11 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 11,
     lineHeight: 16,
-    color: '#929B95',
+    color: palette.muted,
   },
   sectionTitle: {
     fontSize: 13,
-    color: '#E9EBEA',
+    color: palette.text,
     fontWeight: '700',
     marginTop: 18,
     marginBottom: 10,
@@ -3654,68 +3370,14 @@ const styles = StyleSheet.create({
     gap: 10,
     borderWidth: 1,
     borderStyle: 'dashed',
-    borderColor: '#62736C',
+    borderColor: palette.border,
     borderRadius: 10,
     padding: 13,
   },
   smallAddText: {
-    color: '#81D8CF',
+    color: palette.muted,
     fontSize: 12,
     fontWeight: '700',
-  },
-  // Plan Cards (Step 2 of 5)
-  planCard: {
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#515853',
-    backgroundColor: '#262927',
-    borderRadius: 12,
-    marginBottom: 11,
-  },
-  planCardSelected: {
-    backgroundColor: '#322922',
-    borderColor: '#B85B39',
-  },
-  planHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 7,
-  },
-  planTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#F9F9F6',
-  },
-  planChip: {
-    backgroundColor: '#3A4C45',
-    borderRadius: 5,
-    paddingHorizontal: 7,
-    paddingVertical: 4,
-  },
-  planChipText: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: '#96DBCC',
-    letterSpacing: 0.4,
-  },
-  planDescription: {
-    fontSize: 11,
-    color: '#B8C0B9',
-    marginBottom: 8,
-    lineHeight: 16,
-  },
-  planBulletRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 3,
-  },
-  planBulletIcon: {
-    marginRight: 7,
-  },
-  planBulletText: {
-    fontSize: 11,
-    color: '#EBEEEB',
   },
   // Two-Row Cards (Step 3 & Step 4)
   twoRowCard: {
@@ -3723,17 +3385,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     borderWidth: 1,
-    borderColor: '#454C47',
+    borderColor: palette.border,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 13,
-    backgroundColor: '#282A28',
+    backgroundColor: palette.surface,
     marginBottom: 9,
     minHeight: 56,
   },
   twoRowCardSelected: {
-    borderColor: '#BA684A',
-    backgroundColor: '#362A26',
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
   },
   twoRowLeft: {
     flexDirection: 'row',
@@ -3746,18 +3408,18 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 9,
-    backgroundColor: '#344743',
+    backgroundColor: palette.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
   twoRowTitle: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#F9F9F6',
+    color: palette.text,
   },
   twoRowSub: {
     fontSize: 11,
-    color: '#ADB4AD',
+    color: palette.muted,
     marginTop: 3,
   },
   selectCircle: {
@@ -3765,19 +3427,19 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#626B64',
+    borderColor: palette.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
   selectCircleSelected: {
-    backgroundColor: '#AA563B',
-    borderColor: '#AA563B',
+    backgroundColor: palette.brand,
+    borderColor: palette.brand,
   },
   // Inline Editor & Added Items
   inlineEditorCard: {
-    backgroundColor: '#262927',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#555B57',
+    borderColor: palette.border,
     borderRadius: 11,
     padding: 14,
     marginVertical: 10,
@@ -3785,7 +3447,7 @@ const styles = StyleSheet.create({
   inlineEditorTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#F9F9F6',
+    color: palette.text,
     marginBottom: 6,
   },
   categoryPillsRow: {
@@ -3795,25 +3457,25 @@ const styles = StyleSheet.create({
   textInputField: {
     minHeight: 44,
     borderWidth: 1,
-    borderColor: '#555B57',
+    borderColor: palette.border,
     borderRadius: 8,
-    backgroundColor: '#222423',
+    backgroundColor: palette.surface,
     paddingHorizontal: 12,
     fontSize: 14,
-    color: '#FBFBF9',
+    color: palette.text,
   },
   subtleActionBtn: {
     flex: 1,
     minHeight: 42,
     borderRadius: 8,
-    backgroundColor: '#2D302E',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#5D6660',
+    borderColor: palette.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
   subtleActionBtnText: {
-    color: '#E5E7E5',
+    color: palette.text,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -3821,12 +3483,12 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 42,
     borderRadius: 8,
-    backgroundColor: '#A34F34',
+    backgroundColor: palette.raised,
     alignItems: 'center',
     justifyContent: 'center',
   },
   saveInlineBtnText: {
-    color: '#FFFFFF',
+    color: palette.text,
     fontSize: 13,
     fontWeight: '700',
   },
@@ -3834,9 +3496,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#262927',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#414743',
+    borderColor: palette.border,
     borderRadius: 9,
     padding: 12,
     marginBottom: 8,
@@ -3845,11 +3507,11 @@ const styles = StyleSheet.create({
   addedItemTitle: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#F9F9F6',
+    color: palette.text,
   },
   addedItemSub: {
     fontSize: 11,
-    color: '#AAB3AC',
+    color: palette.muted,
     marginTop: 3,
   },
   addedItemActions: {
@@ -3858,12 +3520,12 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   editActionText: {
-    color: '#58CBD0',
+    color: palette.muted,
     fontSize: 12,
     fontWeight: '700',
   },
   removeActionText: {
-    color: '#FF8A75',
+    color: palette.muted,
     fontSize: 12,
     fontWeight: '700',
   },
@@ -3871,26 +3533,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#283330',
+    backgroundColor: palette.surface,
     borderRadius: 9,
     padding: 12,
     marginTop: 10,
   },
   summaryRowLabel: {
     fontSize: 12,
-    color: '#B8DDD4',
+    color: palette.muted,
     fontWeight: '600',
   },
   summaryRowValue: {
     fontSize: 15,
-    color: '#FFFFFF',
+    color: palette.text,
     fontWeight: '800',
   },
   // Strategy Preview (Step 4)
   strategyPreviewCard: {
-    backgroundColor: '#283330',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#3E6B62',
+    borderColor: palette.border,
     borderRadius: 9,
     padding: 12,
     marginTop: 14,
@@ -3898,12 +3560,12 @@ const styles = StyleSheet.create({
   strategyPreviewHeading: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#80D8CF',
+    color: palette.muted,
     marginBottom: 4,
   },
   strategyPreviewLine: {
     fontSize: 12,
-    color: '#E9EBEA',
+    color: palette.text,
     lineHeight: 18,
   },
   // Notifications (Step 5)
@@ -3916,9 +3578,9 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 22,
-    backgroundColor: '#293B36',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#3E6B62',
+    borderColor: palette.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -3928,17 +3590,17 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 15,
     borderBottomWidth: 1,
-    borderBottomColor: '#333A35',
+    borderBottomColor: palette.border,
     gap: 12,
   },
   toggleTitle: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#F9F9F6',
+    color: palette.text,
   },
   toggleSub: {
     fontSize: 11,
-    color: '#AAB3AC',
+    color: palette.muted,
     marginTop: 4,
     lineHeight: 16,
   },
@@ -3946,22 +3608,22 @@ const styles = StyleSheet.create({
     width: 39,
     height: 23,
     borderRadius: 12,
-    backgroundColor: '#454A46',
+    backgroundColor: palette.raised,
     justifyContent: 'center',
     paddingHorizontal: 3,
   },
   toggleTrackOn: {
-    backgroundColor: '#388B80',
+    backgroundColor: palette.raised,
   },
   toggleThumb: {
     width: 17,
     height: 17,
     borderRadius: 8.5,
-    backgroundColor: '#C9CECA',
+    backgroundColor: palette.raised,
   },
   toggleThumbOn: {
     alignSelf: 'flex-end',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: palette.raised,
   },
   // Error text
   errorText: {
@@ -3981,7 +3643,7 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#2E3330',
+    borderBottomColor: palette.border,
   },
   homeHeaderActions: {
     flexDirection: 'row',
@@ -3995,12 +3657,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 6,
     borderRadius: 7,
-    backgroundColor: '#2A2F2C',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#454C47',
+    borderColor: palette.border,
   },
   headerActionPillText: {
-    color: '#81DFD2',
+    color: palette.muted,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -4008,12 +3670,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 6,
     borderRadius: 7,
-    backgroundColor: '#392B24',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#BA6748',
+    borderColor: palette.border,
   },
   headerSignOutPillText: {
-    color: '#FF9367',
+    color: palette.muted,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -4023,9 +3685,9 @@ const styles = StyleSheet.create({
     paddingBottom: 34,
   },
   homeHeroCard: {
-    backgroundColor: '#262927',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#414743',
+    borderColor: palette.border,
     borderRadius: 14,
     padding: 16,
   },
@@ -4038,19 +3700,19 @@ const styles = StyleSheet.create({
   overlineTeal: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#7BD5CD',
+    color: palette.muted,
     letterSpacing: 1.2,
     marginBottom: 4,
   },
   homeTotalDebtAmount: {
     fontSize: 28,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: palette.text,
     letterSpacing: -0.6,
   },
   homeHeroSub: {
     fontSize: 11,
-    color: '#AAB3AC',
+    color: palette.muted,
     marginTop: 2,
   },
   homeProgressBadge: {
@@ -4058,19 +3720,19 @@ const styles = StyleSheet.create({
     height: 68,
     borderRadius: 34,
     borderWidth: 4,
-    borderColor: '#58CCC5',
-    backgroundColor: '#243531',
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
   homeProgressPercent: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: palette.text,
   },
   homeProgressCaption: {
     fontSize: 9,
-    color: '#81DFD2',
+    color: palette.muted,
   },
   homeStatsGrid: {
     flexDirection: 'row',
@@ -4079,32 +3741,32 @@ const styles = StyleSheet.create({
   },
   homeStatCell: {
     flex: 1,
-    backgroundColor: '#202321',
+    backgroundColor: palette.canvas,
     borderRadius: 9,
     padding: 10,
     borderWidth: 1,
-    borderColor: '#343A36',
+    borderColor: palette.border,
   },
   homeStatLabel: {
     fontSize: 10,
-    color: '#9DA5A0',
+    color: palette.muted,
     fontWeight: '600',
   },
   homeStatValue: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#D9F7EA',
+    color: palette.text,
     marginTop: 2,
   },
   homeStatMicro: {
     fontSize: 10,
-    color: '#89928D',
+    color: palette.muted,
     marginTop: 2,
   },
   priorityCard: {
-    backgroundColor: '#362A26',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#BA684A',
+    borderColor: palette.border,
     borderRadius: 12,
     padding: 14,
     marginTop: 16,
@@ -4112,11 +3774,11 @@ const styles = StyleSheet.create({
   priorityTitle: {
     fontSize: 17,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: palette.text,
   },
   prioritySub: {
     fontSize: 11,
-    color: '#E5C6B4',
+    color: palette.muted,
     marginTop: 3,
     marginBottom: 8,
   },
@@ -4127,12 +3789,12 @@ const styles = StyleSheet.create({
   },
   priorityMetricLabel: {
     fontSize: 11,
-    color: '#E5C6B4',
+    color: palette.muted,
   },
   priorityMetricValue: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: palette.text,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
@@ -4142,9 +3804,9 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   homeDebtCard: {
-    backgroundColor: '#262927',
+    backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: '#414743',
+    borderColor: palette.border,
     borderRadius: 11,
     padding: 13,
     marginBottom: 9,
@@ -4155,30 +3817,30 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   priorityOrderPill: {
-    backgroundColor: '#344743',
+    backgroundColor: palette.surface,
     borderRadius: 7,
     paddingHorizontal: 8,
     paddingVertical: 5,
   },
   priorityOrderPillText: {
-    color: '#91DED7',
+    color: palette.muted,
     fontSize: 11,
     fontWeight: '800',
   },
   homeDebtName: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#F9F9F6',
+    color: palette.text,
   },
   homeDebtMeta: {
     fontSize: 11,
-    color: '#AAB3AC',
+    color: palette.muted,
     marginTop: 2,
   },
   homeDebtBalance: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: palette.text,
   },
   homeDebtFooter: {
     flexDirection: 'row',
@@ -4187,11 +3849,11 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#333A35',
+    borderTopColor: palette.border,
   },
   homeDebtPlanText: {
     fontSize: 11,
-    color: '#81DFD2',
+    color: palette.muted,
     fontWeight: '600',
   },
 });

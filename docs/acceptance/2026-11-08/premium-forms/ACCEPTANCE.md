@@ -1,0 +1,15 @@
+# Income/forms and recurring presentation acceptance
+
+Manager: GPT-6.1 Sol Medium. Current workspace source, already-running local Android emulator and Metro 8081. This is bounded UI/source acceptance, not a full-app certification.
+
+- Source: Monthly Income Edit button and Budget Upcoming shortcut removed. Original income name is editable with the same name/amount/frequency controls as added sources; optional name survives existing settings spread/CAS and backup validation. No server schema or financial rules changed.
+- Android: Budget showed the original source's custom name; separate Edit/Upcoming buttons were absent. Expanded debt rows showed 189.45 + 400.00 + 3432.00 = 4021.45, with Auto separate. These are observed owner-entered values, not fixtures.
+- Android: Add recurring bill displayed all five category radios together, all unchecked. Required labels included Bill name, Amount, Category and Payment method; the initially missed Due day marker was then corrected and confirmed by a fresh snapshot. Existing bill category retention and no-category rejection were source-reviewed. No form Save was submitted.
+- Upcoming: unpaid remaining total/count and chronological month/date groups; pending amounts are excluded from actionable To pay total. Genuine overdue cycles stay in Upcoming. Current/next horizon follows the existing selector scope.
+- Scheduled: month calendar includes paid/unpaid/pending indicators; selected month only, date groups below, tap a day to filter. November 15 selection returned its two paid items and exposed All dates. Paid/pending rows have status text without duplicate disabled payment buttons. Full month pagination/schedule eligibility remains in shared selectors.
+- Fixed shared section scrolling so switching FinancialScreen sections starts at the top, avoiding a hidden month header from the previous section's scroll offset.
+- Final typecheck passed. Five existing backup checks passed with the renamed source added to the fixture and blank-name rejection. Sixteen existing schedule/product checks passed. No full suites, builds, server queries or agent-submitted financial writes.
+- Saved current viewport evidence: budget-overview.png, upcoming.png, scheduled.png. The saved scheduled image predates removal of redundant disabled Paid buttons. Category radio state was observed in the tool screenshot and later snapshot; a subsequent disk capture caught Budget after navigation and was correctly named budget-overview.png.
+- One touch-injection refusal was diagnosed and a single advised debug retry succeeded. Device content also changed between some calls; no further inputs were sent after verification finished. No rename-save persistence, payment writes, full onboarding runtime, light mode or iOS acceptance is claimed.
+
+Debt and Progress premium layouts remain HTML proposals in design/premium-direction-2026-11-08.html. Current Debt embeds the supplied screenshot; current Progress is reconstructed from source. Proposed figures are illustrative. No historical payoff awards are invented.
