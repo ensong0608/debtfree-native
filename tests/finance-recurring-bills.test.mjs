@@ -95,3 +95,25 @@ test('confirmed recurring bills retain separate posting and cycle dates across c
     assert.equal(tx.accountId, `card-${item.code.toLowerCase()}`);
   }
 });
+
+test('T-299: credit recurring bills for housing, insurance, and other_bill map to purchase instead of utilities', () => {
+  for (const billCategory of ['housing', 'insurance', 'other_bill']) {
+    const tx = createConfirmedRecurringBillTransaction({
+      bill: {
+        id: `bill-${billCategory}`,
+        name: `Test ${billCategory}`,
+        category: billCategory,
+        amount: parseMoney('50.00', 'USD'),
+        dueDay: 10,
+        paymentMethod: 'credit',
+        creditAccountId: 'card-1',
+        autoPost: false,
+        active: true,
+        createdAt: '2026-11-01T00:00:00Z',
+      },
+      dueCycle: parseDateOnly('2026-12-10'),
+      actualDate: parseDateOnly('2026-11-18'),
+    });
+    assert.equal(tx.category, 'purchase');
+  }
+});

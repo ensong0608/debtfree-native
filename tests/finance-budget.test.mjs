@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateMonthlyCashflow, calculateCategoryBreakdown, summarizeSinglePurchases, selectCardDebtCommitment, buildMonthlyBudgetBreakdown } from '../src/finance/budget.ts';
+import { calculateMonthlyCashflow, calculateCategoryBreakdown, summarizeAnnualCardFeesMonthly, summarizeSinglePurchases, summarizeMonthlyExpenses, selectCardDebtCommitment, selectDebtPlanCommitment, buildMonthlyBudgetBreakdown } from '../src/finance/budget.ts';
 import { makeMoney } from '../src/finance/money.ts';
 
 test('T-090: Budget uses entered card minimums plus extra, excludes loan projections and counts Auto once', () => {
@@ -100,7 +100,7 @@ test('T-028: calculateMonthlyCashflow correctly differentiates debit cashflow fr
   // Free cashflow = 5000 - 629.49 = 4370.51
   assert.equal(cashflow.remainingFreeCashflow, 4370.51);
   assert.equal(cashflow.isDeficit, false);
-  assert.equal(cashflow.debtPaymentPercent, 8); // (400 + 21.99) / 5000 rounds to 8%
+  assert.equal(cashflow.debtPaymentPercent, 8); // 400 / 5000 = 8% (excludes credit bills)
   assert.equal(cashflow.debitBillsPercent, 4); // 207.50 / 5000 = 4%
   assert.equal(cashflow.freeCashPercent, 87); // 4370.51 / 5000 rounds to 87%
 });
@@ -187,7 +187,7 @@ test('T-079: custom recurring labels are grouped by reusable name while storage 
   ];
   const rows = calculateCategoryBreakdown({ recurringBills: bills, customCategoryLabelsByBillId: { driveway: 'Transportation', parking: 'transportation' }, monthlyIncome: 1000, monthlyDebtPlanPayment: 0, currencyCode: 'USD' });
   const transportation = rows.find(row => row.categoryKey === 'custom:transportation');
-  assert.equal(transportation.label, 'Transportation');
+  assert.equal(transportation.label, 'Auto');
   assert.equal(transportation.amount, 90);
   assert.equal(transportation.count, 2);
   assert.equal(rows.find(row => row.categoryKey === 'other_bill').amount, 5);
@@ -225,7 +225,7 @@ test('single purchases include only confirmed standalone purchases in the select
   assert.equal(summarizeSinglePurchases(transactions, '2026-10', 'USD').total, 12.5);
 });
 
-test('T-273: unified Mortgage and Auto loans group into Housing & Rent and Transportation alongside recurring expenses', () => {
+test('T-273: unified Mortgage and Auto loans group into Home and Auto alongside recurring expenses', () => {
   const bills = [
     {
       id: 'b-hoa',
@@ -271,7 +271,7 @@ test('T-273: unified Mortgage and Auto loans group into Housing & Rent and Trans
   ];
 
   const customCategoryLabelsByBillId = {
-    'b-ins-auto': 'Transportation',
+    'b-ins-auto': 'Auto',
     'b-fuel': 'Transportation',
   };
 
@@ -299,11 +299,12 @@ test('T-273: unified Mortgage and Auto loans group into Housing & Rent and Trans
   });
 
   const housing = breakdown.find(row => row.categoryKey === 'housing');
+  assert.equal(housing.label, 'Home');
   assert.equal(housing.amount, 1970); // $1,850 Mortgage + $120 HOA
   assert.equal(housing.count, 2);
 
   const transport = breakdown.find(row => row.categoryKey === 'custom:transportation');
-  assert.equal(transport.label, 'Transportation');
+  assert.equal(transport.label, 'Auto');
   assert.equal(transport.amount, 845); // $460 Auto loan + $165 Insurance + $220 Fuel
   assert.equal(transport.count, 3);
 
@@ -312,4 +313,276 @@ test('T-273: unified Mortgage and Auto loans group into Housing & Rent and Trans
   assert.equal(breakdown.reduce((sum, row) => sum + row.amount, 0), cashflow.totalCommitments);
 });
 
+test('T-299: selectDebtPlanCommitment includes non-Mortgage/non-Auto loans and excludes $0 or Mortgage/Auto debts', () => {
+  const debts = [
+    { id: 'cc-1', category: 'Credit card', balance: 1500, minimumPayment: 45 },
+    { id: 'pl-1', category: 'Personal loan', balance: 4000, minimumPayment: 120 },
+    { id: 'sl-1', category: 'Student loan', balance: 8000, minimumPayment: 95 },
+    { id: 'med-1', category: 'Medical debt', balance: 900, minimumPayment: 50 },
+    { id: 'oth-1', category: 'Other loan', balance: 1200, minimumPayment: 40 },
+    { id: 'paid-1', category: 'Personal loan', balance: 0, minimumPayment: 110 },
+    { id: 'mtg-1', category: 'Mortgage', balance: 220000, minimumPayment: 1850 },
+    { id: 'auto-1', category: 'Auto loan', balance: 18000, minimumPayment: 460 },
+  ];
 
+  const commitment = selectDebtPlanCommitment(debts, 100, 'USD');
+  assert.deepEqual(
+    commitment.accounts.map(d => d.id),
+    ['cc-1', 'pl-1', 'sl-1', 'med-1', 'oth-1'],
+  );
+  assert.equal(commitment.extra, 100);
+  assert.equal(commitment.total, 450); // 45 + 120 + 95 + 50 + 40 + 100
+});
+
+test('T-299: budget cashflow includes singlePurchasesTotal, keeps percentages uncapped over 100%, and excludes credit bills from debtPaymentPercent', () => {
+  const bills = [
+    {
+      id: 'b-rent',
+      name: 'Rent',
+      category: 'housing',
+      amount: makeMoney('USD', 220000), // $2,200 debit
+      dueDay: 1,
+      paymentMethod: 'debit',
+      autoPost: true,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'b-cc-sub',
+      name: 'Cloud Suite',
+      category: 'subscription',
+      amount: makeMoney('USD', 20000), // $200 credit bill
+      dueDay: 5,
+      paymentMethod: 'credit',
+      creditAccountId: 'cc-1',
+      autoPost: true,
+      active: true,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+  ];
+
+  // debtPaymentPercent excludes $200 credit bill: 400 / 5000 = 8% (would be 12% if credit bills were added).
+  const normalCashflow = calculateMonthlyCashflow({
+    monthlyIncome: 5000,
+    recurringBills: bills,
+    monthlyDebtPlanPayment: 400,
+    singlePurchasesTotal: 150,
+    currencyCode: 'USD',
+  });
+  assert.equal(normalCashflow.debtPaymentPercent, 8);
+  assert.equal(normalCashflow.totalCommitments, 2950); // 2200 + 200 + 400 + 150
+  assert.equal(normalCashflow.remainingFreeCashflow, 2050);
+
+  // Over-budget scenario: percentages exceed 100% without artificial capping, and total matches breakdown + single purchases.
+  const deficitCashflow = calculateMonthlyCashflow({
+    monthlyIncome: 1000,
+    recurringBills: bills,
+    monthlyDebtPlanPayment: 1200,
+    singlePurchasesTotal: 1500,
+    currencyCode: 'USD',
+  });
+  assert.equal(deficitCashflow.debtPaymentPercent, 120);
+  assert.equal(deficitCashflow.debitBillsPercent, 220);
+  assert.equal(deficitCashflow.freeCashPercent, 0);
+  assert.equal(deficitCashflow.isDeficit, true);
+  assert.equal(deficitCashflow.totalCommitments, 5100); // 2200 + 200 + 1200 + 1500
+  assert.equal(deficitCashflow.remainingFreeCashflow, -4100);
+
+  const categories = calculateCategoryBreakdown({
+    monthlyIncome: 1000,
+    recurringBills: bills,
+    monthlyDebtPlanPayment: 1200,
+    debtAccountCount: 2,
+    currencyCode: 'USD',
+  });
+  const breakdown = buildMonthlyBudgetBreakdown({
+    categories,
+    hasActiveDebt: true,
+    purchases: { total: 1500, count: 2 },
+    monthlyIncome: 1000,
+  });
+  const purchasesRow = breakdown.find(row => row.categoryKey === 'purchases');
+  assert.equal(purchasesRow.percentOfIncome, 150);
+  assert.equal(breakdown.reduce((sum, row) => sum + row.amount, 0), deficitCashflow.totalCommitments);
+});
+
+test('T-301: summarizeAnnualCardFeesMonthly calculates monthly reserve across positive annual-fee credit cards', () => {
+  const empty = summarizeAnnualCardFeesMonthly([
+    { category: 'Credit card', annualFeeAmount: 0 },
+    { category: 'Auto loan', annualFeeAmount: 120 },
+  ]);
+  assert.deepEqual(empty, { totalAnnualFees: 0, monthlySinkingReserve: 0, cardCount: 0 });
+
+  const reserve = summarizeAnnualCardFeesMonthly([
+    { category: 'Credit card', annualFeeAmount: 95 },
+    { category: 'Credit card', annualFeeAmount: 250 },
+    { category: 'Credit card', annualFeeAmount: null },
+    { category: 'Mortgage', annualFeeAmount: 100 },
+  ], 'USD');
+  assert.deepEqual(reserve, {
+    totalAnnualFees: 345,
+    monthlySinkingReserve: 28.75,
+    cardCount: 2,
+  });
+});
+
+test('T-312: summarizeMonthlyExpenses classifies payments, recurring bill settlements, and standalone charges while excluding pending, deleted, other months, adjustments, and foreign currencies', () => {
+  const debts = [
+    { id: 'cc-1', name: 'Sapphire', category: 'Credit card', balance: 2400, minimumPayment: 120, dueDay: 15 },
+    { id: 'pl-1', name: 'Personal Loan', category: 'Personal loan', balance: 4000, minimumPayment: 150, dueDay: 20 },
+    { id: 'mtg-1', name: 'Home Mortgage', category: 'Mortgage', balance: 200000, minimumPayment: 1850, dueDay: 1 },
+    { id: 'auto-1', name: 'Civic Loan', category: 'Auto loan', balance: 12000, minimumPayment: 420, dueDay: 10 },
+    { id: 'cc-paid', name: 'Paid Off Card', category: 'Credit card', balance: 0, minimumPayment: 0, dueDay: 5 },
+  ];
+  const recurringBills = [
+    { id: 'bill-ins', name: 'Auto & Home Ins', category: 'insurance', amount: makeMoney('USD', 17980), dueDay: 8, paymentMethod: 'credit', creditAccountId: 'cc-1', autoPost: true, active: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-sub', name: 'Streaming', category: 'subscription', amount: makeMoney('USD', 2199), dueDay: 12, paymentMethod: 'credit', creditAccountId: 'cc-1', autoPost: true, active: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-util', name: 'Electric', category: 'utilities', amount: makeMoney('USD', 14250), dueDay: 14, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-child', name: 'Aftercare', category: 'other_bill', amount: makeMoney('USD', 25000), dueDay: 18, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-mtg-linked', name: 'Legacy Mortgage', category: 'housing', amount: makeMoney('USD', 185000), dueDay: 1, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-01-01T00:00:00Z' },
+  ];
+  const txBase = {
+    appliesToDate: null,
+    payee: 'Payee',
+    memo: '',
+    source: 'manual',
+    reconciled: false,
+    createdAt: '2026-11-10T00:00:00Z',
+    deletedAt: null,
+    isPending: false,
+  };
+  const transactions = [
+    // Payments -> Debts (cc-1, pl-1, cc-paid), Home (mtg-1), Auto (auto-1)
+    { ...txBase, id: 'p-cc', accountId: 'cc-1', date: '2026-11-15', amount: makeMoney('USD', 50000), category: 'payment', payee: 'Payment' },
+    { ...txBase, id: 'p-pl', accountId: 'pl-1', date: '2026-11-20', amount: makeMoney('USD', 15000), category: 'payment', payee: 'Payment' },
+    { ...txBase, id: 'p-paid', accountId: 'cc-paid', date: '2026-11-05', amount: makeMoney('USD', 7500), category: 'payment', payee: 'Final payment' },
+    { ...txBase, id: 'p-mtg', accountId: 'mtg-1', date: '2026-11-01', appliesToDate: '2026-11-01', amount: makeMoney('USD', 185000), principalAmount: makeMoney('USD', 90000), category: 'payment', payee: 'Payment' },
+    { ...txBase, id: 'p-auto', accountId: 'auto-1', date: '2026-11-10', amount: makeMoney('USD', 42000), category: 'payment', payee: 'Payment' },
+    // Recurring bill settlements (credit insurance uses category 'purchase' with bill id; credit sub uses 'subscription')
+    { ...txBase, id: 'bill:bill-ins:2026-11-08', accountId: 'cc-1', date: '2026-11-08', appliesToDate: '2026-11-08', amount: makeMoney('USD', 17980), category: 'purchase', payee: 'Auto & Home Ins', memo: '[bill:bill-ins]', source: 'recurring_bill' },
+    { ...txBase, id: 'bill:bill-sub:2026-11-12', accountId: 'cc-1', date: '2026-11-12', appliesToDate: '2026-11-12', amount: makeMoney('USD', 2199), category: 'subscription', payee: 'Streaming', memo: '[bill:bill-sub]', source: 'recurring_bill' },
+    { ...txBase, id: 'bill:bill-util:2026-11-14', accountId: null, date: '2026-11-14', appliesToDate: '2026-11-14', amount: makeMoney('USD', 14250), category: 'debit_bill', payee: 'Electric', memo: '[bill:bill-util]', source: 'recurring_bill' },
+    { ...txBase, id: 'bill:bill-child:2026-11-18', accountId: null, date: '2026-11-18', appliesToDate: '2026-11-18', amount: makeMoney('USD', 25000), category: 'debit_bill', payee: 'Aftercare', source: 'recurring_bill' },
+    // Automatic credit billing is an unpaid charge, while direct debit is paid spending.
+    { ...txBase, id: 'bill:bill-sub:2026-11', accountId: 'cc-1', date: '2026-11-20', amount: makeMoney('USD', 1000), category: 'subscription', memo: 'Auto-recorded recurring bill (Charged to credit card)', source: 'recurring_bill' },
+    { ...txBase, id: 'c-purch', accountId: 'cc-1', date: '2026-11-04', amount: makeMoney('USD', 8450), category: 'purchase', payee: 'Grocery' },
+    { ...txBase, id: 'c-debit', accountId: null, date: '2026-11-06', amount: makeMoney('USD', 2500), category: 'debit_spending', payee: 'Coffee' },
+    { ...txBase, id: 'c-int', accountId: 'cc-1', date: '2026-11-28', amount: makeMoney('USD', 3210), category: 'interest', payee: 'Interest' },
+    { ...txBase, id: 'c-fee', accountId: 'cc-1', date: '2026-11-28', amount: makeMoney('USD', 1500), category: 'fee', payee: 'Late fee' },
+    { ...txBase, id: 'c-ann', accountId: 'cc-1', date: '2026-11-02', amount: makeMoney('USD', 9500), category: 'annual_fee', payee: 'Annual fee' },
+    { ...txBase, id: 'c-sub', accountId: 'cc-1', date: '2026-11-09', amount: makeMoney('USD', 1200), category: 'subscription', payee: 'One-off App' },
+    // Exclusions: pending, deleted, prior month, foreign currency, refund, reconciliation, adjustments
+    { ...txBase, id: 'ex-pend', accountId: 'cc-1', date: '2026-11-19', amount: makeMoney('USD', 99900), category: 'purchase', isPending: true },
+    { ...txBase, id: 'ex-del', accountId: 'cc-1', date: '2026-11-19', amount: makeMoney('USD', 88800), category: 'payment', deletedAt: '2026-11-20T00:00:00Z' },
+    { ...txBase, id: 'ex-oct', accountId: 'cc-1', date: '2026-10-31', amount: makeMoney('USD', 77700), category: 'purchase' },
+    { ...txBase, id: 'ex-eur', accountId: 'cc-1', date: '2026-11-11', amount: makeMoney('EUR', 50000), category: 'purchase' },
+    { ...txBase, id: 'ex-ref', accountId: 'cc-1', date: '2026-11-11', amount: makeMoney('USD', 2000), category: 'refund' },
+    { ...txBase, id: 'ex-rec', accountId: 'cc-1', date: '2026-11-11', amount: makeMoney('USD', 3000), category: 'balance_adjustment', source: 'reconciliation' },
+    { ...txBase, id: 'ex-adj', accountId: 'cc-1', date: '2026-11-11', amount: makeMoney('USD', 1000), category: 'interest_adjustment' },
+  ];
+
+  const summary = summarizeMonthlyExpenses({
+    month: '2026-11',
+    currencyCode: 'USD',
+    transactions,
+    debts,
+    recurringBills,
+    loanBillPairingByDebtId: { 'mtg-1': { status: 'linked', billId: 'bill-mtg-linked', canonical: true } },
+    customCategoryLabelsByBillId: { 'bill-child': 'Childcare' },
+    archivedPaidOffDebtIds: ['cc-paid'],
+  });
+
+  const byKey = Object.fromEntries(summary.categories.map(cat => [cat.categoryKey, cat]));
+  assert.equal(byKey.debt.amount, 725); // 500 + 150 + 75
+  assert.equal(byKey.debt.paymentCount, 3);
+  assert.equal(byKey.housing.amount, 1850);
+  assert.equal(byKey['custom:transportation'].amount, 420);
+  assert.equal(byKey.insurance.amount, 179.8);
+  assert.equal(byKey.subscription.amount, 21.99);
+  assert.equal(byKey.utilities.amount, 142.5);
+  assert.equal(byKey['custom:childcare'].amount, 250);
+  assert.equal(byKey['custom:childcare'].label, 'Childcare');
+  assert.equal(byKey.charges.amount, 248.6);
+  assert.equal(byKey.charges.chargeCount, 6);
+  assert.equal(byKey.other_spending.amount, 25);
+  assert.equal(summary.totalDebtPayments, 2995);
+  assert.equal(summary.others, 619.29);
+  assert.equal(summary.cashOutflow, 3614.29);
+  assert.equal(summary.unpaidCharges, 248.6);
+  assert.equal(summary.netBalanceChange, -2746.4);
+  assert.equal(summary.cashBreakdown.reduce((sum, entry) => sum + Math.round(entry.amount * 100), 0), 361429);
+  assert.equal(summary.transactions.some(tx => tx.id.startsWith('ex-')), false);
+});
+
+test('T-312: summarizeMonthlyExpenses avoids linked Mortgage/Auto and duplicate settlement double counting while preserving split payments and currency scale', () => {
+  const debts = [
+    { id: 'mtg-1', name: 'Home Loan', category: 'Mortgage', balance: 250000, minimumPayment: 2010, dueDay: 1 },
+    { id: 'auto-1', name: 'Auto Loan', category: 'Auto loan', balance: 15000, minimumPayment: 460, dueDay: 15 },
+    { id: 'cc-1', name: 'Card', category: 'Credit card', balance: 1000, minimumPayment: 50, dueDay: 20 },
+  ];
+  const recurringBills = [
+    { id: 'bill-mtg', name: 'Old Mortgage', category: 'housing', amount: makeMoney('USD', 201000), dueDay: 1, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-auto', name: 'Old Auto', category: 'other_bill', amount: makeMoney('USD', 46000), dueDay: 15, paymentMethod: 'debit', autoPost: false, active: false, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-sub', name: 'Media', category: 'subscription', amount: makeMoney('USD', 2000), dueDay: 5, paymentMethod: 'credit', creditAccountId: 'cc-1', autoPost: true, active: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-rent-split', name: 'Parking', category: 'other_bill', amount: makeMoney('USD', 10000), dueDay: 1, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-01-01T00:00:00Z' },
+  ];
+  const base = { appliesToDate: null, payee: 'Pay', memo: '', source: 'manual', reconciled: false, createdAt: '2026-11-01T00:00:00Z', deletedAt: null, isPending: false };
+  const billSubTx = { ...base, id: 'bill:bill-sub:2026-11-05', accountId: 'cc-1', date: '2026-11-05', appliesToDate: '2026-11-05', amount: makeMoney('USD', 2000), category: 'subscription', memo: '[bill:bill-sub] [bill:bill-rent-split]', source: 'recurring_bill' };
+  const transactions = [
+    // Direct Mortgage payment + duplicate legacy excluded bill settlement for the exact same cycle
+    { ...base, id: 'pay-mtg', accountId: 'mtg-1', date: '2026-11-01', appliesToDate: '2026-11-01', amount: makeMoney('USD', 201000), category: 'payment' },
+    { ...base, id: 'bill:bill-mtg:2026-11-01', accountId: null, date: '2026-11-01', appliesToDate: '2026-11-01', amount: makeMoney('USD', 201000), category: 'debit_bill', memo: '[bill:bill-mtg]', source: 'recurring_bill' },
+    { ...base, id: 'bill:bill-mtg:2026-11-01:part2', accountId: null, date: '2026-11-18', appliesToDate: '2026-11-01', amount: makeMoney('USD', 2000), category: 'debit_bill', memo: '[bill:bill-mtg]', source: 'recurring_bill' },
+    // Historical alias debit_bill settling Auto loan when no direct loan payment exists
+    { ...base, id: 'bill:bill-auto:2026-11-15', accountId: null, date: '2026-11-15', appliesToDate: '2026-11-15', amount: makeMoney('USD', 46000), category: 'debit_bill', memo: '[bill:bill-auto]', source: 'recurring_bill' },
+    // Repeated array entry & multi-bill memo tag on credit bill settlement
+    billSubTx,
+    billSubTx,
+    // Genuine 2-part split payment on a recurring bill (both must count)
+    { ...base, id: 'bill:bill-rent-split:2026-11-01', accountId: null, date: '2026-11-01', appliesToDate: '2026-11-01', amount: makeMoney('USD', 5000), category: 'debit_bill', source: 'recurring_bill' },
+    { ...base, id: 'bill:bill-rent-split:2026-11-01:part2', accountId: null, date: '2026-11-15', appliesToDate: '2026-11-01', amount: makeMoney('USD', 5000), category: 'debit_bill', source: 'recurring_bill' },
+  ];
+
+  const summary = summarizeMonthlyExpenses({
+    month: '2026-11',
+    currencyCode: 'USD',
+    transactions,
+    debts,
+    recurringBills,
+    loanBillPairingByDebtId: {
+      'mtg-1': { status: 'linked', billId: 'bill-mtg', canonical: true },
+      'auto-1': { status: 'linked', billId: 'bill-auto', canonical: true },
+    },
+    historicalBillIdsByDebtId: { 'auto-1': ['bill-auto'] },
+  });
+
+  const byKey = Object.fromEntries(summary.categories.map(cat => [cat.categoryKey, cat]));
+  assert.equal(byKey.housing.amount, 2030);
+  assert.equal(byKey.housing.count, 2);
+  assert.deepEqual(byKey.housing.items.map(tx => tx.id), ['bill:bill-mtg:2026-11-01:part2', 'pay-mtg']);
+  assert.equal(byKey['custom:transportation'].amount, 460);
+  assert.equal(byKey.subscription.amount, 20);
+  assert.equal(byKey.subscription.count, 1);
+  assert.equal(byKey.other_bill.amount, 100);
+  assert.equal(byKey.other_bill.count, 2);
+  assert.equal(byKey.charges, undefined);
+  assert.equal(summary.cashOutflow, 2610);
+  assert.equal(summary.totalDebtPayments, 2490);
+  assert.equal(summary.unpaidCharges, 0);
+  assert.equal(summary.netBalanceChange, -2490);
+
+  const kwd = summarizeMonthlyExpenses({
+    month: '2026-11',
+    currencyCode: 'KWD',
+    transactions: [
+      { ...base, id: 'k1', accountId: 'cc-1', date: '2026-11-02', amount: makeMoney('KWD', 1001), category: 'payment' },
+      { ...base, id: 'k2', accountId: 'cc-1', date: '2026-11-03', amount: makeMoney('KWD', 2002), category: 'purchase' },
+      { ...base, id: 'u1', accountId: 'cc-1', date: '2026-11-04', amount: makeMoney('USD', 5000), category: 'purchase' },
+    ],
+    debts,
+  });
+  assert.equal(kwd.cashOutflow, 1.001);
+  assert.equal(kwd.totalDebtPayments, 1.001);
+  assert.equal(kwd.unpaidCharges, 2.002);
+  assert.equal(kwd.netBalanceChange, 1.001);
+});

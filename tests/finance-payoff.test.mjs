@@ -118,3 +118,30 @@ test('inventory scope distinguishes complete zero coverage from incomplete or st
   const excluded = run([a('excluded',100000,0,0,'excluded')],0);
   assert.equal(excluded.status, 'insufficientData');
 });
+
+test('T-299: multi-debt non-amortization returns notAmortizingUnderAssumptions at period 1 when no active debt shrinks', () => {
+  const r = run([a('card-a', 100000, 24000, 1000), a('card-b', 100000, 24000, 1000)], undefined, 0);
+  assert.equal(r.status, 'notAmortizingUnderAssumptions');
+  assert.equal(r.period, 1);
+  assert.deepEqual(r.nonAmortizingAccountIds, ['card-a', 'card-b']);
+});
+
+test('T-313: extraOneTimePayment targets a specific monthly cycle and preserves compatibility', () => {
+  const targeted = calculatePayoff({
+    ...input([a('A', 10000, 0, 1000)], undefined, 0),
+    extraOneTimePayment: m(5000),
+    extraOneTimePeriod: 3,
+  });
+  assert.equal(targeted.status, 'paidOff');
+  assert.equal(targeted.monthsToPayoff, 5);
+  assert.deepEqual(targeted.schedule.map(p => n(p.totalPaid)), [1000, 1000, 6000, 1000, 1000]);
+  assert.deepEqual(targeted.schedule.map(p => p.paymentDate), ['2024-01-31', '2024-02-29', '2024-03-31', '2024-04-30', '2024-05-31']);
+
+  const nonAmortizing = calculatePayoff({
+    ...input([a('A', 100000, 24000, 1000)], undefined, 0),
+    extraOneTimePayment: m(10000),
+    extraOneTimePeriod: 2,
+  });
+  assert.equal(nonAmortizing.status, 'notAmortizingUnderAssumptions');
+  assert.equal(nonAmortizing.period, 3);
+});

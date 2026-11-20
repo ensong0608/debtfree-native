@@ -13,14 +13,15 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Pressable, ScrollView, Text, TextInput, View, useNativeAppearance, type ThemePreference } from '../components/NativeAppearance';
+import { Pressable, ScrollView, Text, TextInput, View, appearanceColor, useNativeAppearance, type AppearancePalette, type AccentColor } from '../components/NativeAppearance';
 import type { Session } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import { AppIcon, type AppIconName } from '../components/AppIcon';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { Card, Segments, ui } from '../components/FinancialScreen';
-import { InspireQuote } from '../components/InspireArt';
+import { InspireBackdrop, InspireCornerArt, InspireQuote, type InspireArtKind } from '../components/InspireArt';
+import { ACCENT_COLORS, accentDetails, THEME_MODES, THEME_STYLES } from '../components/appearance-theme';
 import { SelectDropdown, type DropdownOption } from '../components/SelectDropdown';
 import {
   CURRENCY_OPTIONS,
@@ -71,7 +72,6 @@ import {
   type HouseholdMemberSummary,
 } from '../household-collaboration';
 
-export type { ThemePreference } from '../components/NativeAppearance';
 export type HouseholdRole = 'Owner' | 'Member' | 'Admin' | 'Viewer';
 
 function toDisplayRole(role: ContextHouseholdRole): HouseholdRole {
@@ -82,8 +82,6 @@ function toDisplayRole(role: ContextHouseholdRole): HouseholdRole {
 
 type SupportDocumentKey = 'guides' | 'privacy' | 'terms';
 type SettingsPage = 'appearance' | 'household' | 'preferences' | 'notifications' | 'security' | 'support' | 'data';
-
-const THEME_OPTIONS: readonly ThemePreference[] = ['System', 'Dark', 'Light', 'Inspire'] as const;
 
 const COMMON_TIMEZONES: readonly { value: string; label: string; subtitle: string }[] = [
   { value: 'America/Los_Angeles', label: 'Pacific Time (US & Canada)', subtitle: 'America/Los_Angeles' },
@@ -186,35 +184,40 @@ function SettingSwitchRow({
       accessibilityLabel={title}
       disabled={disabled}
       onPress={onToggle}
-      style={[styles.switchRow, disabled && styles.disabled]}
+      style={[baseStyles.switchRow, disabled && baseStyles.disabled]}
     >
-      <View style={styles.flex1}>
-        <Text style={styles.rowTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.rowSub}>{subtitle}</Text> : null}
+      <View style={baseStyles.flex1}>
+        <Text style={[baseStyles.rowTitle, { color: palette.text }]}>{title}</Text>
+        {subtitle ? <Text style={[baseStyles.rowSub, { color: palette.muted }]}>{subtitle}</Text> : null}
       </View>
-      <View style={[styles.toggleTrack, { backgroundColor: checked ? ctaBg : palette.raised, borderColor: checked ? ctaBg : palette.border }]}>
-        <View style={[styles.toggleThumb, checked && styles.toggleThumbOn, { backgroundColor: checked ? ctaFg : palette.muted }]} />
+      <View style={[baseStyles.toggleTrack, { backgroundColor: checked ? ctaBg : palette.raised, borderColor: checked ? ctaBg : palette.border }]}>
+        <View style={[baseStyles.toggleThumb, checked && baseStyles.toggleThumbOn, { backgroundColor: checked ? ctaFg : palette.muted }]} />
       </View>
     </Pressable>
   );
 }
 
 function RoleBadge({ role }: { role: HouseholdRole }) {
-  const palette =
+  const { palette, isLight, isInspire, accentColor } = useNativeAppearance();
+  const badgeColors =
     role === 'Owner'
-      ? { bg: '#31534D', border: '#46786F', text: '#76DCB9' }
+      ? { bg: palette.tint, border: palette.brand, text: palette.brand }
       : role === 'Member' || role === 'Admin'
-        ? { bg: '#3A3324', border: '#6A5B37', text: '#F5C563' }
-        : { bg: '#2F3633', border: '#47524D', text: '#B5BDB7' };
+        ? {
+            bg: isLight ? '#FFF3CD' : '#3A3324',
+            border: isLight ? '#D5BD76' : '#6A5B37',
+            text: appearanceColor('#F5C563', isLight, accentColor, isInspire),
+          }
+        : { bg: palette.raised, border: palette.border, text: palette.muted };
 
   return (
     <View
       style={[
-        styles.roleBadge,
-        { backgroundColor: palette.bg, borderColor: palette.border },
+        baseStyles.roleBadge,
+        { backgroundColor: badgeColors.bg, borderColor: badgeColors.border },
       ]}
     >
-      <Text style={[styles.roleBadgeText, { color: palette.text }]}>{role}</Text>
+      <Text style={[baseStyles.roleBadgeText, { color: badgeColors.text }]}>{role}</Text>
     </View>
   );
 }
@@ -232,8 +235,6 @@ export type SettingsScreenProps = {
   currencyCode: string;
   currencySymbol: string;
   authBusy?: boolean;
-  themePreference?: ThemePreference;
-  onSelectTheme?: (theme: ThemePreference) => void;
   onClose: () => void;
   onUpdateOnboardingData: (next: UserOnboardingData) => void;
   onUpdateTransactions?: (next: LedgerTransaction[]) => void;
@@ -261,8 +262,6 @@ export function SettingsScreen({
   currencyCode,
   currencySymbol,
   authBusy = false,
-  themePreference: propThemePreference,
-  onSelectTheme,
   onClose,
   onUpdateOnboardingData,
   onUpdateTransactions,
@@ -280,9 +279,13 @@ export function SettingsScreen({
   const canEdit = session ? (verifiedContext ? canEditHousehold(verifiedContext) : false) : true;
 
   // Local device preferences (Appearance, Haptics, Dynamic Text)
-  const [localThemePreference, setLocalThemePreference] = useState<ThemePreference>(propThemePreference ?? 'Dark');
-  const themePreference = propThemePreference ?? localThemePreference;
-  const { textScaling: dynamicTextEnabled, setTextScaling, appearanceError, palette, isInspire, accentColor, setAccentColor, ctaBg, ctaFg } = useNativeAppearance();
+  const { textScaling: dynamicTextEnabled, setTextScaling, appearanceError, palette, isLight, isInspire, accentColor, setAccentColor, themeStyle, themeMode, setThemeStyle, setThemeMode, ctaBg, ctaFg } = useNativeAppearance();
+  const dangerColor = appearanceColor('#F08B78', isLight, accentColor, isInspire);
+  const warnColor = appearanceColor('#F5C563', isLight, accentColor, isInspire);
+  const styles = useMemo(
+    () => createSettingsStyles(palette, isLight, isInspire, accentColor, ctaBg, ctaFg),
+    [palette, isLight, isInspire, accentColor, ctaBg, ctaFg],
+  );
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [confirmPrompt, setConfirmPrompt] = useState<{
     title: string;
@@ -503,21 +506,14 @@ export function SettingsScreen({
   useEffect(() => {
     let active = true;
     void (async () => {
-      const [theme, haptics] = await Promise.all([
-        readLocalPref(userId, 'theme'),
-        readLocalPref(userId, 'haptics'),
-      ]);
+      const haptics = await readLocalPref(userId, 'haptics');
       if (!active) return;
-      if (theme === 'System' || theme === 'Dark' || theme === 'Light' || theme === 'Inspire') {
-        setLocalThemePreference(theme);
-        onSelectTheme?.(theme);
-      }
       if (haptics !== null) setHapticsEnabled(haptics !== 'false');
     })();
     return () => {
       active = false;
     };
-  }, [userId, onSelectTheme]);
+  }, [userId]);
 
   const triggerSubtleHaptic = useCallback(
     (force = false) => {
@@ -1003,12 +999,9 @@ export function SettingsScreen({
   };
 
   // Handlers: Section 2 (Appearance & Display)
-  const handleSelectTheme = (value: string) => {
-    if (value !== 'System' && value !== 'Dark' && value !== 'Light' && value !== 'Inspire') return;
-    setLocalThemePreference(value as ThemePreference);
-    onSelectTheme?.(value as ThemePreference);
+  const saveAppearance = (save: Promise<void>) => {
     triggerSubtleHaptic();
-    void writeLocalPref(userId, 'theme', value);
+    void save.catch(() => {});
   };
 
   const handleToggleDynamicText = () => {
@@ -1152,8 +1145,6 @@ export function SettingsScreen({
     data: 'Data & security',
   };
   const SETTING_ROW_ICONS: Record<string, AppIconName> = {
-    'Theme': 'theme',
-    'Accent color': 'palette',
     'Text size': 'textSize',
     'Notifications': 'bell',
     'Payoff preferences': 'flag',
@@ -1163,37 +1154,36 @@ export function SettingsScreen({
     'Backup & recovery': 'reset',
     'Help & support': 'info',
   };
-  const settingGroups: { title: string; rows: { label: string; detail?: string; page?: SettingsPage }[] }[] = [
-    { title: 'PREFERENCES', rows: [
-      { label: 'Theme', detail: themePreference, page: 'appearance' },
-      { label: 'Accent color', detail: accentColor, page: 'appearance' },
+  const settingGroups: { title: string; art: InspireArtKind; rows: { label: string; detail?: string; page?: SettingsPage }[] }[] = [
+    { title: 'PREFERENCES', art: 'corner-wave', rows: [
       { label: 'Text size', detail: `${fontScalePercent}%`, page: 'appearance' },
       { label: 'Notifications', detail: 'Payment & progress alerts', page: 'notifications' },
       { label: 'Payoff preferences', detail: 'Strategy and extra payment', page: 'preferences' },
     ] },
-    { title: 'HOUSEHOLD', rows: [
+    { title: 'HOUSEHOLD', art: 'corner-ridge', rows: [
       { label: 'Members', detail: `${displayedMemberCount} ${displayedMemberCount === 1 ? 'member' : 'members'}`, page: 'household' },
       { label: 'Currency & timezone', detail: currencyCode, page: 'household' },
     ] },
-    { title: 'DATA & SECURITY', rows: [
+    { title: 'DATA & SECURITY', art: 'corner-leaf', rows: [
       { label: 'Security', detail: 'Account and sign-in', page: 'security' },
       { label: 'Backup & recovery', detail: 'Export and review backups', page: 'data' },
     ] },
-    { title: 'HELP & INFORMATION', rows: [
+    { title: 'HELP & INFORMATION', art: 'corner-wave', rows: [
       { label: 'Help & support', detail: 'Guides, privacy and terms', page: 'support' },
     ] },
   ];
 
   return (
     <View style={styles.root}>
+      <InspireBackdrop />
       {/* Header */}
-      <View style={[styles.header, { backgroundColor: palette.surface, borderBottomColor: palette.border, zIndex: 10, elevation: 2 }]}>
+      <View style={[styles.header, { backgroundColor: 'transparent', borderBottomWidth: 0, zIndex: 10 }]}>
         {activeSettingsPage ? (
           <Pressable accessibilityRole="button" accessibilityLabel={editingHousehold ? 'Cancel household editing' : `Back to Settings from ${settingsPageTitle[activeSettingsPage]}`} disabled={savingPrefs} hitSlop={10} onPress={() => { if (editingHousehold) { setEditingHousehold(false); setPrefsError(''); } else setActiveSettingsPage(null); }} style={styles.backButton}>
             <AppIcon name="chevronLeft" size={20} color={palette.text} />
           </Pressable>
         ) : <View style={styles.headerRightSpacer} />}
-        <Text accessibilityRole="header" style={ui.title}>
+        <Text accessibilityRole="header" style={[ui.title, { fontSize: 19 }]}>
           {editingHousehold ? 'Edit household' : activeSettingsPage ? settingsPageTitle[activeSettingsPage] : 'Settings'}
         </Text>
         {!activeSettingsPage ? (
@@ -1222,13 +1212,56 @@ export function SettingsScreen({
 
         {activeSettingsPage === null ? (
           <View style={styles.settingsIndex}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Account and sign-in" onPress={() => setActiveSettingsPage('security')} style={[styles.profileRow, { backgroundColor: palette.tint, borderRadius: 14, padding: 13, marginBottom: 4 }]}><View style={[styles.avatarCircle, { backgroundColor: palette.hero, borderColor: palette.hero }]}><AppIcon name="user" size={22} color={palette.onHero} /></View><View style={styles.flex1}><Text style={ui.heading}>{displayName}</Text><Text style={ui.small}>{userEmail}</Text></View><AppIcon name="chevronRight" size={18} color={palette.brand} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Account and sign-in" onPress={() => setActiveSettingsPage('security')} style={[styles.profileRow, { backgroundColor: palette.tint, borderRadius: 14, padding: 13, marginBottom: 4, borderWidth: isInspire ? 1.5 : 1, borderColor: palette.cardBorder }]}><InspireCornerArt kind="hero-profile" /><View style={[styles.avatarCircle, { backgroundColor: palette.hero, borderColor: palette.hero }]}><AppIcon name="user" size={22} color={palette.onHero} /></View><View style={styles.flex1}><Text style={ui.heading}>{displayName}</Text><Text style={ui.small}>{userEmail}</Text></View><AppIcon name="chevronRight" size={18} color={palette.brand} /></Pressable>
             {settingGroups.map(group => (
               <View key={group.title}>
                 <Text style={[styles.sectionHeader, { color: palette.brand }]}>{group.title}</Text>
                 <Card style={styles.menuCard}>
+                  <InspireCornerArt kind={group.art} />
+                  {group.title === 'PREFERENCES' ? (
+                    <View style={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 10, gap: 10 }}>
+                      <View style={[ui.row, { gap: 8 }]}>
+                        <AppIcon name="theme" size={18} color={palette.muted} />
+                        <Text style={styles.menuRowTitle}>Theme Style</Text>
+                      </View>
+                      <Segments items={THEME_STYLES} selected={themeStyle} onSelect={value => {
+                        const style = THEME_STYLES.find(option => option === value);
+                        if (style) saveAppearance(setThemeStyle(style));
+                      }} />
+                      <Text style={styles.menuRowTitle}>Brightness</Text>
+                      <Segments items={THEME_MODES} selected={themeMode} onSelect={value => {
+                        const mode = THEME_MODES.find(option => option === value);
+                        if (mode) saveAppearance(setThemeMode(mode));
+                      }} />
+                      <View style={[ui.row, { gap: 8 }]}>
+                        <AppIcon name="palette" size={18} color={palette.muted} />
+                        <Text style={[styles.menuRowTitle, styles.flex1]}>{isInspire ? 'Horizon mood' : 'Accent color'}</Text>
+                        <Text style={[styles.menuRowDetail, { color: palette.accentInk }]}>{accentDetails(themeStyle, accentColor).label}</Text>
+                      </View>
+                      <View accessibilityRole="radiogroup" accessibilityLabel={isInspire ? 'Horizon mood' : 'Accent color'} style={{ gap: 6 }}>
+                        {[ACCENT_COLORS.slice(0, 5), ACCENT_COLORS.slice(5)].map(row => (
+                          <View key={row[0]} style={{ flexDirection: 'row', gap: 6 }}>
+                            {row.map(color => {
+                              const { label, swatch } = accentDetails(themeStyle, color);
+                              const checked = accentColor === color;
+                              return (
+                                <Pressable key={color} accessibilityRole="radio" accessibilityLabel={label} accessibilityState={{ checked }}
+                                  onPress={() => saveAppearance(setAccentColor(color))}
+                                  style={{ flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10,
+                                    borderWidth: checked ? 2 : 1, borderColor: checked ? palette.accentInk : palette.cardBorder,
+                                    backgroundColor: checked ? palette.selection : palette.surface }}>
+                                  <View style={{ width: 21, height: 21, borderRadius: 11, backgroundColor: swatch }} />
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                        ))}
+                      </View>
+                      {appearanceError ? <Text accessibilityRole="alert" style={{ color: palette.neg }}>{appearanceError}</Text> : null}
+                    </View>
+                  ) : null}
                   {group.rows.map((row, index) => (
-                    <Pressable key={row.label} accessibilityRole="button" accessibilityState={{ disabled: !row.page }} accessibilityLabel={`${row.label}${row.detail ? `, ${row.detail}` : ''}`} disabled={!row.page} onPress={() => row.page && setActiveSettingsPage(row.page)} style={[styles.menuRow, index > 0 && ui.divider, !row.page && styles.disabledMenuRow]}>
+                    <Pressable key={row.label} accessibilityRole="button" accessibilityState={{ disabled: !row.page }} accessibilityLabel={`${row.label}${row.detail ? `, ${row.detail}` : ''}`} disabled={!row.page} onPress={() => row.page && setActiveSettingsPage(row.page)} style={[styles.menuRow, (index > 0 || group.title === 'PREFERENCES') && ui.divider, !row.page && styles.disabledMenuRow]}>
                       <AppIcon name={SETTING_ROW_ICONS[row.label] ?? 'info'} size={18} color={palette.muted} />
                       <View style={[styles.flex1, { gap: 3 }]}><Text style={styles.menuRowTitle}>{row.label}</Text>{row.detail && row.detail.length > 16 ? <Text style={[styles.menuRowDetail, { fontSize: 12 }]}>{row.detail}</Text> : null}</View>
                       {row.detail && row.detail.length <= 16 ? <Text style={styles.menuRowDetail}>{row.detail}</Text> : null}
@@ -1300,7 +1333,7 @@ export function SettingsScreen({
               ]}
             >
               {signingOutCheck || authBusy ? (
-                <ActivityIndicator size="small" color="#F08B78" />
+                <ActivityIndicator size="small" color={dangerColor} />
               ) : (
                 <Text style={styles.signOutButtonText}>Sign Out</Text>
               )}
@@ -1315,31 +1348,6 @@ export function SettingsScreen({
         {/* ================================================================ */}
         <Text style={[styles.sectionHeader, { color: palette.brand }]}>APPEARANCE & DISPLAY</Text>
         <Card>
-          <View style={styles.fieldGroup}>
-            <Text style={styles.rowTitle}>Theme</Text>
-            <Text style={styles.rowSub}>
-              {isInspire ? 'Playful teal sky & encouraging notes' : 'Choose your theme'}
-            </Text>
-            <View style={{ marginTop: 8 }}>
-              <Segments
-                items={THEME_OPTIONS}
-                selected={themePreference}
-                onSelect={handleSelectTheme}
-              />
-            </View>
-          </View>
-
-          <View style={ui.divider}>
-            <Text style={styles.rowTitle}>Accent color</Text>
-            {isInspire ? (
-              <Text style={styles.rowSub}>Accent color applies to Dark and Light themes. Inspire uses its own coastal sky palette.</Text>
-            ) : null}
-            {appearanceError ? <Text accessibilityRole="alert" style={{ color: palette.text }}>{appearanceError}</Text> : null}
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, opacity: isInspire ? 0.5 : 1 }}>
-              {(['Indigo', 'Cobalt'] as const).map(color => <Pressable key={color} accessibilityRole="radio" accessibilityState={{ checked: accentColor === color, disabled: isInspire }} disabled={isInspire} onPress={() => { void setAccentColor(color).catch(() => Alert.alert('Unable to save accent color', 'Please try again.')); }} style={{ flex: 1, minHeight: 44, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderRadius: 9, borderColor: accentColor === color ? palette.brand : palette.border, backgroundColor: accentColor === color ? palette.tint : palette.surface }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: color === 'Indigo' ? '#5147A8' : '#0051FB' }} /><Text style={{ color: accentColor === color ? palette.brand : palette.text }}>{color}</Text></View></Pressable>)}
-            </View>
-          </View>
-
           <View style={ui.divider}>
             <View style={[ui.row, { justifyContent: 'space-between', marginBottom: 6 }]}>
               <Text style={styles.subLabel}>Accessibility Text Scaling</Text>
@@ -1499,7 +1507,7 @@ export function SettingsScreen({
                         onPress={() => handleTransferOwnership(member)}
                         style={[ui.button, collabBusy && styles.disabled]}
                       >
-                        <Text style={[ui.buttonText, { color: '#F5C563' }]}>Transfer ownership</Text>
+                        <Text style={[ui.buttonText, { color: warnColor }]}>Transfer ownership</Text>
                       </Pressable>
                       <Pressable
                         accessibilityRole="button"
@@ -1507,7 +1515,7 @@ export function SettingsScreen({
                         onPress={() => handleRemoveMember(member)}
                         style={[ui.button, collabBusy && styles.disabled]}
                       >
-                        <Text style={[ui.buttonText, { color: '#F08B78' }]}>Remove</Text>
+                        <Text style={[ui.buttonText, { color: dangerColor }]}>Remove</Text>
                       </Pressable>
                     </View>
                   ) : null}
@@ -1519,7 +1527,7 @@ export function SettingsScreen({
                         onPress={handleLeaveHousehold}
                         style={[ui.button, collabBusy && styles.disabled]}
                       >
-                        <Text style={[ui.buttonText, { color: '#F08B78' }]}>Leave household</Text>
+                        <Text style={[ui.buttonText, { color: dangerColor }]}>Leave household</Text>
                       </Pressable>
                     </View>
                   ) : null}
@@ -1542,7 +1550,7 @@ export function SettingsScreen({
                   onPress={handleLeaveHousehold}
                   style={[ui.button, collabBusy && styles.disabled]}
                 >
-                  <Text style={[ui.buttonText, { color: '#F08B78' }]}>Leave household</Text>
+                  <Text style={[ui.buttonText, { color: dangerColor }]}>Leave household</Text>
                 </Pressable>
               </View>
             ) : null}
@@ -1557,7 +1565,7 @@ export function SettingsScreen({
               <TextInput
                 accessibilityLabel="Invitee email address"
                 placeholder="partner@example.com"
-                placeholderTextColor="#6E7571"
+                placeholderTextColor={palette.muted}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -1643,7 +1651,7 @@ export function SettingsScreen({
                           onPress={() => handleRevokeInvite(inv.invitationId, inv.emailHint)}
                           style={[ui.button, collabBusy && styles.disabled]}
                         >
-                          <Text style={[ui.buttonText, { color: '#F08B78' }]}>Revoke</Text>
+                          <Text style={[ui.buttonText, { color: dangerColor }]}>Revoke</Text>
                         </Pressable>
                       </View>
                     </View>
@@ -1662,7 +1670,7 @@ export function SettingsScreen({
               <TextInput
                 accessibilityLabel="Invite link or invite code"
                 placeholder="Paste invite link or code"
-                placeholderTextColor="#6E7571"
+                placeholderTextColor={palette.muted}
                 autoCapitalize="none"
                 autoCorrect={false}
                 editable={!collabBusy}
@@ -1819,8 +1827,8 @@ export function SettingsScreen({
                       ),
                     }))
                   }
-                  placeholder="0.00"
-                  placeholderTextColor="#6E7571"
+                  placeholder={formatEditableMoney(0, currencyCode)}
+                  placeholderTextColor={palette.muted}
                   style={styles.moneyInput}
                 />
               </View>
@@ -1871,7 +1879,7 @@ export function SettingsScreen({
               disabled={savingPrefs || !canEdit}
               onToggle={() => void handleToggleNotification('milestonesAndProgress')}
             />
-            <Text style={[ui.small, { marginTop: 8, fontStyle: 'italic', color: '#8E9992' }]}>
+            <Text style={[ui.small, { marginTop: 8, fontStyle: 'italic', color: palette.muted }]}>
               Note: Notification switches record your saved preferences. Background scheduled push notifications are deferred pending platform scheduler integration.
             </Text>
           </View>
@@ -1912,13 +1920,13 @@ export function SettingsScreen({
         {activeSettingsPage === 'data' && <>
         {/* SECTION 6: DANGER ZONE                                           */}
         {/* ================================================================ */}
-        <Text style={[styles.sectionHeader, { color: '#F08B78' }]}>ACCOUNT DELETION</Text>
+        <Text style={[styles.sectionHeader, { color: dangerColor }]}>ACCOUNT DELETION</Text>
         <Card style={styles.dangerCard}>
           <Text style={ui.heading}>Delete account and data</Text>
           <Text style={ui.small}>Permanently remove your DebtFree sign-in and associated cloud financial data. Financial data reset and backup restore are not available in this release.</Text>
           {accountDeletionEnabled && session ? (
             <Pressable accessibilityRole="button" accessibilityLabel="Delete account and data" disabled={deletingAccount || authBusy} onPress={confirmDeleteAccount} style={[styles.dangerButton, (deletingAccount || authBusy) && styles.disabled]}>
-              {deletingAccount ? <ActivityIndicator size="small" color="#F08B78" /> : <AppIcon name="reset" size={16} color="#F08B78" />}
+              {deletingAccount ? <ActivityIndicator size="small" color={dangerColor} /> : <AppIcon name="reset" size={16} color={dangerColor} />}
               <Text style={styles.dangerButtonText}>{deletingAccount ? 'Deleting account…' : 'Delete account'}</Text>
             </Pressable>
           ) : <Text style={styles.rowSub}>Account deletion is not configured in this build yet.</Text>}
@@ -1956,7 +1964,7 @@ export function SettingsScreen({
           })}
           <Pressable accessibilityRole="button" disabled={backupBusy} onPress={refreshConfirmation} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Refresh confirmation</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={backupBusy} onPress={exportBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export backup JSON</Text></Pressable>
-          <TextInput accessibilityLabel="Native backup JSON" multiline value={backupText} onChangeText={value => { setBackupText(value); setBackupMessage(''); }} placeholder="Paste backup JSON to review" placeholderTextColor="#6E7571" style={styles.devJsonInput} />
+          <TextInput accessibilityLabel="Native backup JSON" multiline value={backupText} onChangeText={value => { setBackupText(value); setBackupMessage(''); }} placeholder="Paste backup JSON to review" placeholderTextColor={palette.muted} style={styles.devJsonInput} />
           <Pressable accessibilityRole="button" disabled={backupBusy || !backupText.trim()} onPress={preflightBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Validate and review</Text></Pressable>
           <Text style={ui.small}>{checkpoint ? `Checkpoint: ${checkpoint.status}; ${checkpoint.cursor} of ${checkpoint.plan.operations.length} operations. ${checkpoint.plan.conflicts} conflicts.` : 'No checkpoint found.'}</Text>
           {checkpoint ? <Pressable accessibilityRole="button" disabled={backupBusy} onPress={() => void runBackupAction(async () => { await Share.share({ title: 'DebtFree recovery checkpoint JSON', message: JSON.stringify(checkpoint, null, 2) }); })} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export checkpoint JSON</Text></Pressable> : null}
@@ -2036,145 +2044,9 @@ export function SettingsScreen({
   );
 }
 
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#1F201F',
-  },
+const baseStyles = StyleSheet.create({
   flex1: {
     flex: 1,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#121614', paddingHorizontal: 18, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#222A25',
-  },
-  backButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: '#1C2420', borderWidth: 1, borderColor: '#28372E',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerRightSpacer: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closeSettingsButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1C2420', borderWidth: 1, borderColor: '#28372E',
-  },
-  closeSettingsText: {
-    color: '#F9F9F6',
-    fontSize: 25,
-    fontWeight: '400',
-    lineHeight: 28,
-  },
-  settingsIndex: {
-    gap: 6,
-  },
-  menuCard: {
-    padding: 0,
-    gap: 0,
-    overflow: 'hidden',
-    borderRadius: 16,
-  },
-  menuRow: {
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-  },
-  disabledMenuRow: {
-    opacity: 0.55,
-  },
-  menuRowTitle: {
-    color: '#F9F9F6',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  menuRowDetail: {
-    color: '#AAB3AD',
-    fontSize: 13,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 18,
-    paddingBottom: 32,
-    gap: 10,
-  },
-  sectionHeader: {
-    color: '#76DCB9',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.9,
-    marginTop: 4,
-    paddingHorizontal: 16,
-  },
-  subLabel: {
-    color: '#AAB3AD',
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  profileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  avatarCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#314541',
-    borderWidth: 1,
-    borderColor: '#46786F',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  providerList: {
-    gap: 8,
-    marginTop: 4,
-  },
-  providerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
-  },
-  statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  statusBadgeActive: {
-    backgroundColor: '#243C37',
-    borderColor: '#46786F',
-  },
-  statusBadgeMuted: {
-    backgroundColor: '#252A27',
-    borderColor: '#3A423E',
-  },
-  statusBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  statusBadgeTextActive: {
-    color: '#76DCB9',
-  },
-  statusBadgeTextMuted: {
-    color: '#AAB3AD',
   },
   switchRow: {
     flexDirection: 'row',
@@ -2184,12 +2056,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   rowTitle: {
-    color: '#F9F9F6',
     fontSize: 15,
     fontWeight: '600',
   },
   rowSub: {
-    color: '#AAB3AD',
     fontSize: 13,
     lineHeight: 18,
     marginTop: 2,
@@ -2198,60 +2068,17 @@ const styles = StyleSheet.create({
     width: 46,
     height: 26,
     borderRadius: 13,
-    backgroundColor: '#3C443F',
+    borderWidth: 1,
     padding: 3,
     justifyContent: 'center',
-  },
-  toggleTrackOn: {
-    backgroundColor: '#76DCB9',
   },
   toggleThumb: {
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: '#D4DBD7',
   },
   toggleThumbOn: {
-    backgroundColor: '#FFFFFF',
     alignSelf: 'flex-end',
-  },
-  signOutButton: {
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor: 'rgba(240, 139, 120, 0.12)', borderWidth: 1, borderColor: '#5C382E',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  signOutButtonText: {
-    color: '#F08B78',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  fieldGroup: {
-    gap: 2,
-  },
-  rosterList: {
-    gap: 10,
-    marginTop: 6,
-  },
-  rosterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    backgroundColor: '#141816',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: 1,
-    borderColor: '#222A25',
-  },
-  roleLegendRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginTop: 10,
   },
   roleBadge: {
     paddingHorizontal: 8,
@@ -2263,281 +2090,543 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  lockedBadge: {
-    backgroundColor: '#3A3324',
-    borderWidth: 1,
-    borderColor: '#6A5B37',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  lockedBadgeText: {
-    color: '#F5C563',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  lockedCaption: {
-    color: '#AAB3AD',
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 6,
-  },
-  strategyOption: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#141816', borderWidth: 1, borderColor: '#222A25',
-    borderRadius: 11,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  strategyOptionSelected: {
-    backgroundColor: '#1C2721', borderColor: '#76DCB9',
-  },
-  strategyTitle: {
-    color: '#D5DDD8',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  strategyTitleSelected: {
-    color: '#F9F9F6',
-  },
-  strategySub: {
-    color: '#AAB3AD',
-    fontSize: 12,
-  },
-  currencyPrefix: {
-    color: '#76DCB9',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  moneyInput: {
-    flex: 1,
-    color: '#F9F9F6',
-    fontSize: 15,
-    paddingVertical: 8,
-  },
-  primaryInlineBtn: {
-    minHeight: 42,
-    paddingHorizontal: 18,
-    borderRadius: 10,
-    backgroundColor: '#76DCB9',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryInlineBtnText: {
-    color: '#0C0E0D',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  linkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    paddingVertical: 4,
-  },
-  dangerCard: {
-    backgroundColor: '#2A2220',
-    borderColor: '#5C382E',
-  },
-  dangerButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor: '#A34F34',
-    paddingHorizontal: 14,
-    marginTop: 4,
-  },
-  dangerButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  devCard: {
-    backgroundColor: '#252721',
-    borderColor: '#5A5332',
-  },
-  devBadge: {
-    backgroundColor: '#3A3324',
-    borderWidth: 1,
-    borderColor: '#F5C563',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  devBadgeText: {
-    color: '#F5C563',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  devButton: {
-    minHeight: 42,
-    borderRadius: 10,
-    backgroundColor: '#2E3B37',
-    borderWidth: 1,
-    borderColor: '#76DCB9',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  devButtonText: {
-    color: '#76DCB9',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  devSecondaryButton: {
-    minHeight: 40,
-    borderRadius: 10,
-    backgroundColor: '#2F332B',
-    borderWidth: 1,
-    borderColor: '#5A5332',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-  },
-  devSecondaryButtonText: {
-    color: '#F5C563',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  devSuccessText: {
-    color: '#76DCB9',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  errorBanner: {
-    backgroundColor: '#342320',
-    borderWidth: 1,
-    borderColor: '#8B4A39',
-    borderRadius: 10,
-    padding: 12,
-  },
-  errorBannerText: {
-    color: '#FF9367',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  noticeBanner: {
-    backgroundColor: '#223632',
-    borderWidth: 1,
-    borderColor: '#46786F',
-    borderRadius: 10,
-    padding: 12,
-  },
-  noticeBannerText: {
-    color: '#76DCB9',
-    fontSize: 13,
-    fontWeight: '600',
-  },
   disabled: {
     opacity: 0.5,
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.72)',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  modalSheet: {
-    backgroundColor: '#242926',
-    borderRadius: 18,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#3B453F',
-    gap: 8,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  closeIconBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#323935',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closeIconText: {
-    color: '#AAB3AD',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  modalTextInput: {
-    backgroundColor: '#1B1E1C',
-    borderWidth: 1,
-    borderColor: '#46504A',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: '#F9F9F6',
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-  },
-  biometricGateBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#2B2921',
-    borderWidth: 1,
-    borderColor: '#6A5B37',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-  },
-  biometricGateBtnVerified: {
-    backgroundColor: '#213530',
-    borderColor: '#46786F',
-  },
-  biometricGateText: {
-    color: '#F5C563',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  secondaryModalBtn: {
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor: '#323935',
-    borderWidth: 1,
-    borderColor: '#46504A',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  secondaryModalBtnText: {
-    color: '#D5DDD8',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  primaryModalBtn: {
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor: '#76DCB9',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryModalBtnText: {
-    color: '#0C0E0D',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  devJsonInput: {
-    backgroundColor: '#1B1E1C',
-    borderWidth: 1,
-    borderColor: '#46504A',
-    borderRadius: 10,
-    padding: 10,
-    color: '#D5DDD8',
-    fontSize: 12,
-    minHeight: 160,
-    maxHeight: 240,
-    textAlignVertical: 'top',
-  },
 });
+
+function createSettingsStyles(
+  palette: AppearancePalette,
+  isLight: boolean,
+  isInspire: boolean,
+  accentColor: AccentColor,
+  ctaBg: string,
+  ctaFg: string,
+) {
+  const dangerColor = appearanceColor('#F08B78', isLight, accentColor, isInspire);
+  const warnColor = appearanceColor('#F5C563', isLight, accentColor, isInspire);
+  const dangerBg = isLight ? '#FFECE7' : '#2A2220';
+  const dangerBorder = isLight ? '#E5B7A8' : '#5C382E';
+  const warnBg = isLight ? '#FFF3CD' : '#3A3324';
+  const warnSoftBg = isLight ? '#F6F5EC' : '#252721';
+  const warnBorder = isLight ? '#D5BD76' : '#6A5B37';
+
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+      backgroundColor: palette.canvas,
+    },
+    flex1: {
+      flex: 1,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: palette.surface,
+      paddingHorizontal: 18,
+      paddingVertical: 4,
+      borderBottomWidth: 1,
+      borderBottomColor: palette.border,
+    },
+    backButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      backgroundColor: palette.raised,
+      borderWidth: 1,
+      borderColor: palette.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    headerRightSpacer: {
+      width: 36,
+      height: 36,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    closeSettingsButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: palette.raised,
+      borderWidth: 1,
+      borderColor: palette.border,
+    },
+    closeSettingsText: {
+      color: palette.text,
+      fontSize: 25,
+      fontWeight: '400',
+      lineHeight: 28,
+    },
+    settingsIndex: {
+      gap: 6,
+    },
+    menuCard: {
+      padding: 0,
+      gap: 0,
+      overflow: 'hidden',
+      borderRadius: 16,
+    },
+    menuRow: {
+      minHeight: 48,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+    },
+    disabledMenuRow: {
+      opacity: 0.55,
+    },
+    menuRowTitle: {
+      color: palette.text,
+      fontSize: 15,
+      fontWeight: '600',
+    },
+    menuRowDetail: {
+      color: palette.muted,
+      fontSize: 13,
+    },
+    scrollContent: {
+      paddingHorizontal: 16,
+      paddingTop: 18,
+      paddingBottom: 32,
+      gap: 10,
+    },
+    sectionHeader: {
+      color: palette.brand,
+      fontSize: 12,
+      fontWeight: '800',
+      letterSpacing: 0.9,
+      marginTop: 4,
+      paddingHorizontal: 16,
+    },
+    subLabel: {
+      color: palette.muted,
+      fontSize: 12,
+      fontWeight: '700',
+      marginBottom: 4,
+    },
+    profileRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+    },
+    avatarCircle: {
+      width: 46,
+      height: 46,
+      borderRadius: 23,
+      backgroundColor: palette.tint,
+      borderWidth: 1,
+      borderColor: palette.brand,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    providerList: {
+      gap: 8,
+      marginTop: 4,
+    },
+    providerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 4,
+    },
+    statusBadge: {
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 8,
+      borderWidth: 1,
+    },
+    statusBadgeActive: {
+      backgroundColor: palette.tint,
+      borderColor: palette.brand,
+    },
+    statusBadgeMuted: {
+      backgroundColor: palette.raised,
+      borderColor: palette.border,
+    },
+    statusBadgeText: {
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    statusBadgeTextActive: {
+      color: palette.brand,
+    },
+    statusBadgeTextMuted: {
+      color: palette.muted,
+    },
+    switchRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 12,
+      paddingVertical: 6,
+    },
+    rowTitle: {
+      color: palette.text,
+      fontSize: 15,
+      fontWeight: '600',
+    },
+    rowSub: {
+      color: palette.muted,
+      fontSize: 13,
+      lineHeight: 18,
+      marginTop: 2,
+    },
+    toggleTrack: {
+      width: 46,
+      height: 26,
+      borderRadius: 13,
+      backgroundColor: palette.raised,
+      padding: 3,
+      justifyContent: 'center',
+    },
+    toggleTrackOn: {
+      backgroundColor: ctaBg,
+    },
+    toggleThumb: {
+      width: 20,
+      height: 20,
+      borderRadius: 10,
+      backgroundColor: palette.muted,
+    },
+    toggleThumbOn: {
+      backgroundColor: ctaFg,
+      alignSelf: 'flex-end',
+    },
+    signOutButton: {
+      minHeight: 44,
+      borderRadius: 10,
+      backgroundColor: dangerBg,
+      borderWidth: 1,
+      borderColor: dangerBorder,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    signOutButtonText: {
+      color: dangerColor,
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    fieldGroup: {
+      gap: 2,
+    },
+    rosterList: {
+      gap: 10,
+      marginTop: 6,
+    },
+    rosterRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      backgroundColor: palette.canvas,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderWidth: 1,
+      borderColor: palette.border,
+    },
+    roleLegendRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: 6,
+      marginTop: 10,
+    },
+    roleBadge: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+      borderWidth: 1,
+    },
+    roleBadgeText: {
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    lockedBadge: {
+      backgroundColor: warnBg,
+      borderWidth: 1,
+      borderColor: warnBorder,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+    },
+    lockedBadgeText: {
+      color: warnColor,
+      fontSize: 12,
+      fontWeight: '800',
+      letterSpacing: 0.5,
+    },
+    lockedCaption: {
+      color: palette.muted,
+      fontSize: 13,
+      lineHeight: 18,
+      marginTop: 6,
+    },
+    strategyOption: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: palette.canvas,
+      borderWidth: 1,
+      borderColor: palette.border,
+      borderRadius: 11,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+    },
+    strategyOptionSelected: {
+      backgroundColor: palette.tint,
+      borderColor: palette.brand,
+    },
+    strategyTitle: {
+      color: palette.text,
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    strategyTitleSelected: {
+      color: palette.text,
+    },
+    strategySub: {
+      color: palette.muted,
+      fontSize: 12,
+    },
+    currencyPrefix: {
+      color: palette.brand,
+      fontSize: 15,
+      fontWeight: '700',
+    },
+    moneyInput: {
+      flex: 1,
+      color: palette.text,
+      fontSize: 15,
+      paddingVertical: 8,
+    },
+    primaryInlineBtn: {
+      minHeight: 42,
+      paddingHorizontal: 18,
+      borderRadius: 10,
+      backgroundColor: ctaBg,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    primaryInlineBtnText: {
+      color: ctaFg,
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    linkRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      paddingVertical: 4,
+    },
+    dangerCard: {
+      backgroundColor: dangerBg,
+      borderColor: dangerBorder,
+    },
+    dangerButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      minHeight: 44,
+      borderRadius: 10,
+      backgroundColor: isLight ? '#C53B27' : '#A34F34',
+      paddingHorizontal: 14,
+      marginTop: 4,
+    },
+    dangerButtonText: {
+      color: '#FFFFFF',
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    devCard: {
+      backgroundColor: warnSoftBg,
+      borderColor: warnBorder,
+    },
+    devBadge: {
+      backgroundColor: warnBg,
+      borderWidth: 1,
+      borderColor: warnColor,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    devBadgeText: {
+      color: warnColor,
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    devButton: {
+      minHeight: 42,
+      borderRadius: 10,
+      backgroundColor: palette.tint,
+      borderWidth: 1,
+      borderColor: palette.brand,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    devButtonText: {
+      color: palette.brand,
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    devSecondaryButton: {
+      minHeight: 40,
+      borderRadius: 10,
+      backgroundColor: warnSoftBg,
+      borderWidth: 1,
+      borderColor: warnBorder,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 10,
+    },
+    devSecondaryButtonText: {
+      color: warnColor,
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    devSuccessText: {
+      color: palette.brand,
+      fontSize: 12,
+      fontWeight: '600',
+    },
+    errorBanner: {
+      backgroundColor: dangerBg,
+      borderWidth: 1,
+      borderColor: dangerBorder,
+      borderRadius: 10,
+      padding: 12,
+    },
+    errorBannerText: {
+      color: dangerColor,
+      fontSize: 13,
+      lineHeight: 18,
+    },
+    noticeBanner: {
+      backgroundColor: palette.tint,
+      borderWidth: 1,
+      borderColor: palette.brand,
+      borderRadius: 10,
+      padding: 12,
+    },
+    noticeBannerText: {
+      color: palette.brand,
+      fontSize: 13,
+      fontWeight: '600',
+    },
+    disabled: {
+      opacity: 0.5,
+    },
+    modalBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.72)',
+      justifyContent: 'center',
+      padding: 20,
+    },
+    modalSheet: {
+      backgroundColor: palette.surface,
+      borderRadius: 18,
+      padding: 20,
+      borderWidth: 1,
+      borderColor: palette.border,
+      gap: 8,
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 4,
+    },
+    closeIconBtn: {
+      width: 30,
+      height: 30,
+      borderRadius: 15,
+      backgroundColor: palette.raised,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    closeIconText: {
+      color: palette.muted,
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    modalTextInput: {
+      backgroundColor: palette.raised,
+      borderWidth: 1,
+      borderColor: palette.inputBorder,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      color: palette.text,
+      fontSize: 15,
+      fontWeight: '700',
+      letterSpacing: 1.2,
+    },
+    biometricGateBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: warnBg,
+      borderWidth: 1,
+      borderColor: warnBorder,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 11,
+    },
+    biometricGateBtnVerified: {
+      backgroundColor: palette.tint,
+      borderColor: palette.brand,
+    },
+    biometricGateText: {
+      color: warnColor,
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    secondaryModalBtn: {
+      minHeight: 44,
+      borderRadius: 10,
+      backgroundColor: palette.raised,
+      borderWidth: 1,
+      borderColor: palette.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    secondaryModalBtnText: {
+      color: palette.text,
+      fontSize: 14,
+      fontWeight: '600',
+    },
+    primaryModalBtn: {
+      minHeight: 44,
+      borderRadius: 10,
+      backgroundColor: ctaBg,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    primaryModalBtnText: {
+      color: ctaFg,
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    devJsonInput: {
+      backgroundColor: palette.raised,
+      borderWidth: 1,
+      borderColor: palette.inputBorder,
+      borderRadius: 10,
+      padding: 10,
+      color: palette.text,
+      fontSize: 12,
+      minHeight: 160,
+      maxHeight: 240,
+      textAlignVertical: 'top',
+    },
+  });
+}

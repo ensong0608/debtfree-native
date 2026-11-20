@@ -1,3 +1,4 @@
+import { appearanceStorageKeys } from './components/appearance-theme';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { PERSONAL_SETTINGS_FIELDS, SHARED_SETTINGS_FIELDS, reconcileConfirmedPersonalSettings } from './settings-contract';
 import type { Session } from '@supabase/supabase-js';
@@ -684,6 +685,91 @@ export async function saveUserOnboardingSettingsPatch(
   }
 }
 
+/**
+ * Explicitly archive a stored zero-balance account as paid without changing its
+ * debt row or transaction history. Remote households use a narrow RPC because
+ * ordinary settings saves intentionally cannot edit server-managed archive IDs.
+ */
+export async function markZeroBalanceDebtPaid(
+  current: UserOnboardingData,
+  debtId: string,
+): Promise<UserOnboardingData> {
+  const debt = current.debts.find(item => item.id === debtId);
+  if (!debt) throw new OnboardingDataUnavailableError('This account is no longer available. Reload and try again.');
+  if (debt.balance !== 0) throw new OnboardingDataUnavailableError('Only a zero-balance account can be marked paid.');
+  if ((current.archivedPaidOffDebtIds ?? []).includes(debtId)) return current;
+
+  const nextIds = [...new Set([...(current.archivedPaidOffDebtIds ?? []), debtId])];
+  if (isLocalAcceptanceOwner(current.userId)) {
+    const local = { ...current, archivedPaidOffDebtIds: nextIds };
+    validateStoredAmounts(local);
+    return saveLocalAcceptanceFixture(local);
+  }
+
+  const context = current.householdContext;
+  if (!context || context.userId !== current.userId || context.householdId !== current.householdId) {
+    throw new OnboardingDataUnavailableError('A verified household is required to mark this account paid.');
+  }
+  await assertAuthenticatedUser(current.userId);
+
+  const supabase = getSupabaseClient();
+  const decodeConfirmed = (value: unknown, status: 'saved' | 'ok') => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const payload = value as Record<string, unknown>;
+    const settings = payload.settings;
+    const rawIds = settings && typeof settings === 'object' && !Array.isArray(settings)
+      ? (settings as Record<string, unknown>).archivedPaidOffDebtIds
+      : undefined;
+    const revisionRaw = payload.revision;
+    const revision = typeof revisionRaw === 'number' ? revisionRaw
+      : typeof revisionRaw === 'string' && /^\d+$/.test(revisionRaw) ? Number(revisionRaw) : NaN;
+    if (payload.status !== status || payload.householdId !== context.householdId ||
+        payload.membershipVersion !== context.membershipVersion || !Number.isSafeInteger(revision) || revision < 0 ||
+        !Array.isArray(rawIds) || rawIds.some(id => typeof id !== 'string' || !id.trim()) ||
+        new Set(rawIds).size !== rawIds.length || !rawIds.includes(debtId)) return null;
+    return {
+      ...current,
+      archivedPaidOffDebtIds: rawIds as string[],
+      settingsRevision: revision,
+    };
+  };
+
+  const response = await supabase.rpc('debtfree_mark_household_debt_paid', {
+    p_household_id: context.householdId,
+    p_expected_membership_version: context.membershipVersion,
+    p_debt_id: debtId,
+  });
+  const confirmed = !response.error ? decodeConfirmed(response.data, 'saved') : null;
+  if (confirmed) {
+    try { await cacheHouseholdData(confirmed); } catch { /* Server confirmation wins over optional cache failure. */ }
+    return confirmed;
+  }
+
+  const error = response.error;
+  const incompatible = schemaCompatibilityError(error);
+  if (incompatible) throw incompatible;
+  if (error?.code === 'P0001' && /CONCURRENCY_CONFLICT/i.test(error.message ?? '')) {
+    throw new FinancialSettingsConflictError();
+  }
+  if (error && ['42501', '23514', 'P0002', '22023', '28000'].includes(error.code ?? '')) {
+    throw new OnboardingDataUnavailableError(error.message || 'The server could not mark this account paid.');
+  }
+
+  // The request may have committed even if its response was lost. Accept only
+  // an authoritative settings read that proves this exact account was archived.
+  const readback = await supabase.rpc('debtfree_get_household_settings', {
+    p_household_id: context.householdId,
+  });
+  const readbackConfirmed = !readback.error ? decodeConfirmed(readback.data, 'ok') : null;
+  if (readbackConfirmed) {
+    try { await cacheHouseholdData(readbackConfirmed); } catch { /* Server confirmation wins over optional cache failure. */ }
+    return readbackConfirmed;
+  }
+  const readbackIncompatible = schemaCompatibilityError(readback.error);
+  if (readbackIncompatible) throw readbackIncompatible;
+  throw new FinancialSettingsUncertainError();
+}
+
 /** A server rejection that was verified not to commit. */
 export class DebtWriteFailedError extends Error {
   constructor(message = 'The server rejected this debt update.') {
@@ -1124,7 +1210,7 @@ export async function resetUserOnboardingData(current: UserOnboardingData): Prom
 /** Purge user-scoped device data after the server confirms permanent account deletion. */
 export async function clearUserDeviceDataAfterAccountDeletion(userId: string, householdIds: string | readonly string[]): Promise<void> {
   const safeId = userId.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const accentId = Array.from(userId).map(c => c.codePointAt(0)!.toString(16)).join('-');
+  const appearanceKeys = Object.values(appearanceStorageKeys(userId));
   const ids = [...new Set(typeof householdIds === 'string' ? [householdIds] : householdIds)];
   const checkpointKeys = ids.map(householdId => 'finance-backup-checkpoint.' + [userId, householdId]
     .map(value => Array.from(value).map(c => c.codePointAt(0)!.toString(16)).join('-')).join('.'));
@@ -1136,10 +1222,9 @@ export async function clearUserDeviceDataAfterAccountDeletion(userId: string, ho
     chunkedStore.removeItem(legacyLocalStateKey(userId)),
     ...checkpointKeys.map(key => chunkedStore.removeItem(key)),
     ...[
-      `debtfree-pref-theme.${safeId}`,
+      ...appearanceKeys,
       `debtfree-pref-haptics.${safeId}`,
       `debtfree-pref-text-scaling.${safeId}`,
-      `debtfree-pref-accent.${accentId}`,
     ].map(key => SecureStore.deleteItemAsync(key)),
   ]);
   if (removals.some(result => result.status === 'rejected')) {

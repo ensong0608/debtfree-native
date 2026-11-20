@@ -5,7 +5,7 @@ import type { DebtPaymentSplitPlansByDebtId, BillPaymentSplitPlansByBillId } fro
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { CURRENCIES, getCurrency, type CurrencyScale } from './finance/currencies.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
-import { classifyMoneyEdit, parseMoney, parseApr, makeMoney, multiplyMoneyRatio, addMoney } from './finance/money.ts';
+import { classifyMoneyEdit, parseMoney, parseApr, makeMoney, moneyFromMajor, multiplyMoneyRatio, addMoney } from './finance/money.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { householdDate, monthlyPaymentDate, parseDateOnly, type DateOnly } from './finance/calendar.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
@@ -266,7 +266,7 @@ export function formatCurrency(amount: number, symbolOrCurrency = '$', decimals?
 /** Convert an income paycheck/period amount to its monthly equivalent. */
 export function normalizeMonthlyIncome(amount: number, frequency: PayFrequency, currencyCode = 'USD'): number {
   if (!Number.isFinite(amount) || amount <= 0) return 0;
-  const source = parseMoney(String(amount), currencyCode);
+  const source = moneyFromMajor(amount, currencyCode);
   const [numerator, denominator] = frequency === 'weekly' ? [52, 12] : frequency === 'biweekly' ? [26, 12] : frequency === 'twice_monthly' ? [2, 1] : [1, 1];
   return multiplyMoneyRatio(source, BigInt(numerator), BigInt(denominator)).minorUnits / 10 ** getCurrency(currencyCode).scale;
 }
@@ -278,7 +278,7 @@ export function calculateTotalMonthlyIncome(
   additionalIncomes: AdditionalIncomeSource[],
   currencyCode = 'USD',
 ): number {
-  const monthly = (amount: number, frequency: PayFrequency) => parseMoney(String(normalizeMonthlyIncome(amount, frequency, currencyCode)), currencyCode);
+  const monthly = (amount: number, frequency: PayFrequency) => moneyFromMajor(normalizeMonthlyIncome(amount, frequency, currencyCode), currencyCode);
   const total = additionalIncomes.reduce((sum, item) => addMoney(sum, monthly(item.amount, item.frequency)), monthly(primaryAmount, primaryFrequency));
   return total.minorUnits / 10 ** getCurrency(currencyCode).scale;
 }
@@ -297,8 +297,8 @@ export function calculateTotalGrossMonthlyIncome(
   ];
   if (activeSources.length === 0 || activeSources.some(source => source.amount == null || !Number.isFinite(source.amount) || source.amount <= 0)) return null;
   return activeSources.reduce((sum, source) => addMoney(sum,
-    parseMoney(String(normalizeMonthlyIncome(source.amount!, source.frequency, currencyCode)), currencyCode)),
-  parseMoney('0', currencyCode)).minorUnits / 10 ** getCurrency(currencyCode).scale;
+    moneyFromMajor(normalizeMonthlyIncome(source.amount!, source.frequency, currencyCode), currencyCode)),
+  makeMoney(currencyCode, 0)).minorUnits / 10 ** getCurrency(currencyCode).scale;
 }
 
 export function createDefaultOnboardingData(userId: string): UserOnboardingData {
@@ -601,30 +601,109 @@ export function defaultFirstPaymentDate(baseDate: Date = new Date(), householdTi
 export function formatDateOnlyMonthYear(date: DateOnly): string {
   return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(date.slice(5, 7)) - 1] + ' ' + date.slice(0, 4);
 }
+export type OneTimeCycleResolution = Readonly<{
+  period: number;
+  cycleDate: DateOnly;
+  cycleLabel: string;
+  clampedToFirstCycle: boolean;
+}>;
+/**
+ * Map a calendar date onto the monthly payoff engine's 1-based cycle index.
+ * Dates in or before the first projected payment month clamp to cycle 1; the
+ * engine accrues interest monthly, so intra-month day differences are not modeled.
+ */
+export function resolveOneTimePaymentPeriod(
+  oneTimeDate: DateOnly,
+  baseDate: Date = new Date(),
+  householdTimeZone = 'UTC',
+): OneTimeCycleResolution {
+  const validDate = parseDateOnly(oneTimeDate);
+  const firstPaymentDate = defaultFirstPaymentDate(baseDate, householdTimeZone);
+  const firstYear = Number(firstPaymentDate.slice(0, 4));
+  const firstMonth = Number(firstPaymentDate.slice(5, 7));
+  const selectedYear = Number(validDate.slice(0, 4));
+  const selectedMonth = Number(validDate.slice(5, 7));
+  const monthDiff = (selectedYear - firstYear) * 12 + (selectedMonth - firstMonth);
+  const clampedToFirstCycle = monthDiff < 0;
+  const period = Math.max(1, monthDiff + 1);
+  const cycleDate = monthlyPaymentDate(firstPaymentDate, 1, period - 1);
+  return {
+    period,
+    cycleDate,
+    cycleLabel: formatDateOnlyMonthYear(cycleDate),
+    clampedToFirstCycle,
+  };
+}
 /** Home shows the date alone; the estimate badge and subtitle already explain the forecast scope. */
 export function homeDebtFreeEstimateDate(label: string): string {
   return label.replace(/^Entered debts projected paid off:\s*/, '');
 }
-export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy, extraMonthlyPayment: number, baseDate: Date = new Date(), currencyCode = 'USD', householdTimeZone = 'UTC', archivedPaidOffDebtIds: readonly string[] = []): PayoffPlanResult {
+function runPayoffPlan(
+  debts: readonly DebtItem[],
+  strategy: PayoffStrategy,
+  extraMonthlyPayment: number,
+  baseDate: Date = new Date(),
+  currencyCode = 'USD',
+  householdTimeZone = 'UTC',
+  archivedPaidOffDebtIds: readonly string[] = [],
+  extraFirstMonthPayment = 0,
+  inclusionByDebtId?: Readonly<Record<string, PayoffAccountInput['inclusion']>>,
+  extraOneTimePayment = 0,
+  extraOneTimePeriod = 1,
+): { plan: PayoffPlanResult; raw: PayoffResult; inclusionById: Map<string, PayoffAccountInput['inclusion']> } {
   const scale = 10 ** getCurrency(currencyCode).scale;
   const archived = new Set(archivedPaidOffDebtIds);
   const activeDebtRecords = debts.filter(debt => !(archived.has(debt.id) && debt.balance === 0));
   const toMinor = (n: number) => Math.round(n * scale);
   const money = (n: number) => makeMoney(currencyCode, toMinor(n));
-  const ordered = sortDebtsByStrategy(activeDebtRecords, strategy, currencyCode);
+  const inclusionById = new Map<string, PayoffAccountInput['inclusion']>();
+  for (const d of activeDebtRecords) {
+    inclusionById.set(d.id, inclusionByDebtId?.[d.id] ?? (isActiveDebtItem(d) ? 'accelerated' : 'excluded'));
+  }
+  const baseOrdered = sortDebtsByStrategy(activeDebtRecords, strategy, currencyCode).filter(
+    d => inclusionById.get(d.id) !== 'excluded',
+  );
+  const ordered = inclusionByDebtId
+    ? [
+        ...baseOrdered.filter(d => inclusionById.get(d.id) === 'accelerated'),
+        ...baseOrdered.filter(d => inclusionById.get(d.id) === 'minimum-only'),
+      ]
+    : baseOrdered;
   const totalDebt = ordered.reduce((sum, d) => sum + toMinor(d.balance), 0) / scale;
-  const totalStartingDebt = activeDebts(activeDebtRecords).reduce((sum, d) => sum + toMinor(Math.max(0, d.balance, d.originalBalance ?? d.balance)), 0) / scale;
+  const allNonMortgageDebts = activeDebts(debts);
+  const totalStartingDebt = allNonMortgageDebts.reduce((sum, d) => sum + toMinor(Math.max(0, d.balance, d.originalBalance ?? d.balance)), 0) / scale;
   const hasOpenObligations = ordered.length > 0;
   const totalMinimums = ordered.reduce((sum, d) => sum + toMinor(d.minimumPayment), 0) / scale;
   const safeExtra = toMinor(extraMonthlyPayment) / scale;
   const context: DataContext = { householdId: 'local', source: { id: 'onboarding', kind: 'manual' }, asOf: null, coverage: { status: 'unknown' } };
   let result: PayoffResult;
   try {
-    const accounts: PayoffAccountInput[] = activeDebtRecords.map(d => ({ accountId: d.id, inclusion: isActiveDebtItem(d) ? 'accelerated' : 'excluded', balance: money(d.balance), aprThousandths: Math.round(d.apr * 1000), scheduledMinimum: money(d.minimumPayment) }));
-    result = calculatePayoff({ accounts: { status: 'available', data: accounts, context }, assumptions: { firstPaymentDate: defaultFirstPaymentDate(baseDate, householdTimeZone), requestedDay: 1, householdTimeZone }, strategy, currency: currencyCode, extraMonthlyPayment: money(extraMonthlyPayment) });
+    const accounts: PayoffAccountInput[] = activeDebtRecords.map(d => ({
+      accountId: d.id,
+      inclusion: inclusionById.get(d.id) ?? 'excluded',
+      balance: money(d.balance),
+      aprThousandths: Math.round(d.apr * 1000),
+      scheduledMinimum: money(d.minimumPayment),
+    }));
+    result = calculatePayoff({
+      accounts: { status: 'available', data: accounts, context },
+      assumptions: { firstPaymentDate: defaultFirstPaymentDate(baseDate, householdTimeZone), requestedDay: 1, householdTimeZone },
+      strategy,
+      currency: currencyCode,
+      extraMonthlyPayment: money(extraMonthlyPayment),
+      extraFirstMonthPayment: money(extraFirstMonthPayment),
+      extraOneTimePayment: money(extraOneTimePayment),
+      extraOneTimePeriod,
+    });
   } catch (error) { result = { status: 'invalidInput', reason: error instanceof Error ? error.message : 'Invalid input' }; }
   const common = 'schedule' in result ? result : null;
-  const labels: Record<Exclude<PayoffResult['status'], 'paidOff'>, string> = { paymentShortfall: 'Payment shortfall', notAmortizingUnderAssumptions: 'Not amortizing under current assumptions', horizonReached: 'Projection horizon reached', insufficientData: 'Insufficient data for projection', invalidInput: 'Invalid projection input' };
+  const labels: Record<Exclude<PayoffResult['status'], 'paidOff'>, string> = {
+    paymentShortfall: 'Payment shortfall',
+    notAmortizingUnderAssumptions: 'Not amortizing under current assumptions',
+    horizonReached: 'Projection horizon reached',
+    insufficientData: 'Insufficient data for projection',
+    invalidInput: 'Invalid projection input',
+  };
   const payoffOrder: DebtPayoffProjection[] = ordered.map(d => {
     const summary = common?.accounts.find(a => a.accountId === d.id);
     const monthlySchedule: PayoffScheduleRow[] = (common?.schedule ?? [])
@@ -638,10 +717,16 @@ export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy,
           balance: (row?.closingObligation.minorUnits ?? 0) / scale,
         };
       });
-    return { ...d, firstMonthPayment: monthlySchedule[0]?.payment ?? 0, monthsToPayoff: summary?.payoffMonth ?? null, projectedPayoffLabel: summary?.payoffDate ? formatDateOnlyMonthYear(summary.payoffDate) : 'Payoff date unavailable', monthlySchedule };
+    return {
+      ...d,
+      firstMonthPayment: monthlySchedule[0]?.payment ?? 0,
+      monthsToPayoff: summary?.payoffMonth ?? null,
+      projectedPayoffLabel: summary?.payoffDate ? formatDateOnlyMonthYear(summary.payoffDate) : 'Payoff date unavailable',
+      monthlySchedule,
+    };
   });
 
-  const excludedDebts = activeDebtRecords.filter(d => !isActiveDebtItem(d) && d.balance > 0);
+  const excludedDebts = activeDebtRecords.filter(d => inclusionById.get(d.id) === 'excluded' && d.balance > 0);
   const excludedProjections: DebtPayoffProjection[] = excludedDebts.map(d => {
     const summary = common?.accounts.find(a => a.accountId === d.id);
     const monthlySchedule: PayoffScheduleRow[] = (common?.schedule ?? [])
@@ -665,17 +750,350 @@ export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy,
   });
 
   const lastPeriod = common?.schedule[common.schedule.length - 1];
-  // A known-zero set of *entered* accounts does not establish complete household coverage.
-  const displayStatus = hasOpenObligations ? result.status : 'insufficientData';
-  const displayPayoffLabel = !hasOpenObligations
-    ? (activeDebts(activeDebtRecords).length ? 'No balance owed on entered accounts' : 'Add accounts to estimate payoff')
-    : result.status === 'paidOff'
-      ? (result.monthsToPayoff === 0 ? 'No outstanding tracked debt'
-        : result.coverageScope === 'verified-household'
-          ? `Projected payoff: ${formatDateOnlyMonthYear(result.payoffDate!)}`
-          : `Entered debts projected paid off: ${formatDateOnlyMonthYear(result.payoffDate!)}`)
-      : labels[result.status];
-  return { strategy, status: displayStatus, unusedBudget: result.status === 'paidOff' ? result.unusedBudget.minorUnits / scale : (lastPeriod?.unusedBudget.minorUnits ?? 0) / scale, totalDebt, totalStartingDebt, progressPercent: totalStartingDebt > 0 ? Math.max(0, Math.min(100, Math.round((totalStartingDebt - totalDebt) / totalStartingDebt * 100))) : 0, totalMinimums, extraMonthlyPayment: safeExtra, monthlyTotalPayment: !hasOpenObligations ? 0 : common ? common.monthlyCommitment.minorUnits / scale : totalMinimums + safeExtra, totalInterest: result.status === 'paidOff' ? result.totalInterest.minorUnits / scale : result.status === 'paymentShortfall' || result.status === 'notAmortizingUnderAssumptions' || result.status === 'horizonReached' ? result.partialInterest.minorUnits / scale : 0, monthsToPayoff: hasOpenObligations && result.status === 'paidOff' ? result.monthsToPayoff : null, debtFreeDateLabel: displayPayoffLabel, stalled: displayStatus !== 'paidOff', firstTarget: payoffOrder[0] ?? null, payoffOrder, allProjections: [...payoffOrder, ...excludedProjections] };
+  const hasEnteredDebts = debts.length > 0;
+  const allEnteredPaidOff =
+    hasEnteredDebts &&
+    !hasOpenObligations &&
+    (archived.size > 0 || totalStartingDebt > 0) &&
+    !debts.some(d => d.balance < 0);
+  const displayStatus: PayoffResult['status'] = allEnteredPaidOff
+    ? 'paidOff'
+    : hasOpenObligations
+      ? result.status
+      : 'insufficientData';
+  const displayPayoffLabel = allEnteredPaidOff
+    ? (allNonMortgageDebts.length ? 'Debt-free — $0 owed' : 'No non-mortgage debt owed')
+    : !hasOpenObligations
+      ? (activeDebts(activeDebtRecords).length ? 'No balance owed on entered accounts' : 'Add accounts to estimate payoff')
+      : result.status === 'paidOff'
+        ? (result.monthsToPayoff === 0 ? 'No outstanding tracked debt'
+          : result.coverageScope === 'verified-household'
+            ? `Projected payoff: ${formatDateOnlyMonthYear(result.payoffDate!)}`
+            : `Entered debts projected paid off: ${formatDateOnlyMonthYear(result.payoffDate!)}`)
+        : labels[result.status];
+  const progressPercent = allEnteredPaidOff && allNonMortgageDebts.length > 0
+    ? 100
+    : totalStartingDebt > 0
+      ? Math.max(0, Math.min(100, Math.round((totalStartingDebt - totalDebt) / totalStartingDebt * 100)))
+      : 0;
+  return {
+    raw: result,
+    inclusionById,
+    plan: {
+      strategy,
+      status: displayStatus,
+      unusedBudget: allEnteredPaidOff ? safeExtra : result.status === 'paidOff' ? result.unusedBudget.minorUnits / scale : (lastPeriod?.unusedBudget.minorUnits ?? 0) / scale,
+      totalDebt,
+      totalStartingDebt,
+      progressPercent,
+      totalMinimums,
+      extraMonthlyPayment: safeExtra,
+      monthlyTotalPayment: !hasOpenObligations ? 0 : common ? common.monthlyCommitment.minorUnits / scale : totalMinimums + safeExtra,
+      totalInterest: result.status === 'paidOff' ? result.totalInterest.minorUnits / scale : result.status === 'paymentShortfall' || result.status === 'notAmortizingUnderAssumptions' || result.status === 'horizonReached' ? result.partialInterest.minorUnits / scale : 0,
+      monthsToPayoff: allEnteredPaidOff ? 0 : (hasOpenObligations && result.status === 'paidOff' ? result.monthsToPayoff : null),
+      debtFreeDateLabel: displayPayoffLabel,
+      stalled: displayStatus !== 'paidOff',
+      firstTarget: payoffOrder[0] ?? null,
+      payoffOrder,
+      allProjections: [...payoffOrder, ...excludedProjections],
+    },
+  };
+}
+
+export function calculatePayoffPlan(debts: DebtItem[], strategy: PayoffStrategy, extraMonthlyPayment: number, baseDate: Date = new Date(), currencyCode = 'USD', householdTimeZone = 'UTC', archivedPaidOffDebtIds: readonly string[] = [], extraFirstMonthPayment = 0, extraOneTimePayment = 0, extraOneTimePeriod = 1): PayoffPlanResult {
+  return runPayoffPlan(debts, strategy, extraMonthlyPayment, baseDate, currencyCode, householdTimeZone, archivedPaidOffDebtIds, extraFirstMonthPayment, undefined, extraOneTimePayment, extraOneTimePeriod).plan;
+}
+
+export type ScenarioPaymentAccount = Readonly<{
+  accountId: string;
+  name: string;
+  category: DebtCategory;
+  inclusion: 'accelerated' | 'minimum-only';
+  openingBalance: number;
+  interestAccrued: number;
+  minimumPaid: number;
+  extraPaid: number;
+  scenarioExtraPaid: number;
+  minimumRolloverPaid: number;
+  totalPaid: number;
+  closingBalance: number;
+  paidOff: boolean;
+}>;
+
+export type ScenarioPeriodSummary = Readonly<{
+  period: number;
+  paymentDate: DateOnly;
+  monthLabel: string;
+  totalPaid: number;
+  totalMinimumPaid: number;
+  totalExtraPaid: number;
+  scenarioExtraPaid: number;
+  minimumRolloverPaid: number;
+  unusedBudget: number;
+  paidOffCount: number;
+  primaryTargetName: string | null;
+  allocations: readonly ScenarioPaymentAccount[];
+}>;
+
+export type ExtraPaymentScenarioResult = Readonly<{
+  mode: 'oneTime' | 'monthly';
+  scenarioAmount: number;
+  baselineExtraMonthlyPayment: number;
+  totalScenarioMonthlyExtra: number;
+  baseline: PayoffPlanResult;
+  projected: PayoffPlanResult;
+  firstPayment: ScenarioPeriodSummary | null;
+  nextPayment: ScenarioPeriodSummary | null;
+  monthsSaved: number | null;
+  interestSaved: number | null;
+  oneTimeExtraAmount?: number;
+  oneTimePeriod?: number;
+  oneTimeCycleDate?: DateOnly;
+  oneTimeCycleLabel?: string;
+  oneTimeClampedToFirstCycle?: boolean;
+  oneTimePayment?: ScenarioPeriodSummary | null;
+}>;
+
+export type StrategyScenarioInput = Readonly<{
+  debts: readonly DebtItem[];
+  strategy: PayoffStrategy;
+  baselineExtraMonthlyPayment: number;
+  monthlyExtraAmount: number;
+  oneTimeExtraAmount?: number;
+  oneTimeDate?: DateOnly;
+  baseDate?: Date;
+  currencyCode?: string;
+  householdTimeZone?: string;
+  archivedPaidOffDebtIds?: readonly string[];
+  inclusionByDebtId?: Readonly<Record<string, PayoffAccountInput['inclusion']>>;
+}>;
+
+function runScenarioComparison(params: {
+  debts: readonly DebtItem[];
+  strategy: PayoffStrategy;
+  baselineExtraMonthlyPayment: number;
+  monthlyExtraAmount: number;
+  oneTimeExtraAmount: number;
+  mode: 'oneTime' | 'monthly';
+  scenarioAmount: number;
+  oneTimeDate?: DateOnly;
+  baseDate: Date;
+  currencyCode: string;
+  householdTimeZone: string;
+  archivedPaidOffDebtIds: readonly string[];
+  inclusionByDebtId?: Readonly<Record<string, PayoffAccountInput['inclusion']>>;
+}): ExtraPaymentScenarioResult {
+  const {
+    debts,
+    strategy,
+    baselineExtraMonthlyPayment,
+    monthlyExtraAmount,
+    oneTimeExtraAmount,
+    mode,
+    scenarioAmount,
+    oneTimeDate,
+    baseDate,
+    currencyCode,
+    householdTimeZone,
+    archivedPaidOffDebtIds,
+    inclusionByDebtId,
+  } = params;
+  const scale = 10 ** getCurrency(currencyCode).scale;
+  const toMinor = (value: number) => Math.round(value * scale);
+  const roundCurrency = (value: number) => Math.round((value + Number.EPSILON) * scale) / scale;
+  const safeBaselineExtra = Math.max(0, roundCurrency(Number.isFinite(baselineExtraMonthlyPayment) ? baselineExtraMonthlyPayment : 0));
+  const safeScenarioAmount = Math.max(0, roundCurrency(Number.isFinite(scenarioAmount) ? scenarioAmount : 0));
+  const safeMonthlyExtra = Math.max(0, roundCurrency(Number.isFinite(monthlyExtraAmount) ? monthlyExtraAmount : 0));
+  const safeOneTimeExtra = Math.max(0, roundCurrency(Number.isFinite(oneTimeExtraAmount) ? oneTimeExtraAmount : 0));
+  const cycleInfo = oneTimeDate
+    ? resolveOneTimePaymentPeriod(oneTimeDate, baseDate, householdTimeZone)
+    : (() => {
+        const firstDate = defaultFirstPaymentDate(baseDate, householdTimeZone);
+        return {
+          period: 1,
+          cycleDate: firstDate,
+          cycleLabel: formatDateOnlyMonthYear(firstDate),
+          clampedToFirstCycle: false,
+        };
+      })();
+
+  const baselineRun = runPayoffPlan(
+    debts,
+    strategy,
+    safeBaselineExtra,
+    baseDate,
+    currencyCode,
+    householdTimeZone,
+    archivedPaidOffDebtIds,
+    0,
+    inclusionByDebtId,
+  );
+  const projectedRun = runPayoffPlan(
+    debts,
+    strategy,
+    safeMonthlyExtra,
+    baseDate,
+    currencyCode,
+    householdTimeZone,
+    archivedPaidOffDebtIds,
+    0,
+    inclusionByDebtId,
+    safeOneTimeExtra,
+    cycleInfo.period,
+  );
+
+  const debtById = new Map(debts.map(d => [d.id, d]));
+  const projectedSchedule = 'schedule' in projectedRun.raw ? projectedRun.raw.schedule : [];
+
+  const summarizePeriod = (periodIndex: number): ScenarioPeriodSummary | null => {
+    const period = projectedSchedule[periodIndex];
+    if (!period) return null;
+    const receiving = period.accounts.filter(acc => {
+      const inclusion = projectedRun.inclusionById.get(acc.accountId);
+      return (inclusion === 'accelerated' || inclusion === 'minimum-only') && acc.totalPaid.minorUnits > 0 && debtById.has(acc.accountId);
+    });
+    receiving.sort((a, b) => {
+      const aInc = projectedRun.inclusionById.get(a.accountId);
+      const bInc = projectedRun.inclusionById.get(b.accountId);
+      if (aInc !== bInc) return aInc === 'accelerated' ? -1 : 1;
+      const aDebt = debtById.get(a.accountId)!;
+      const bDebt = debtById.get(b.accountId)!;
+      const balDiff = a.openingObligation.minorUnits - b.openingObligation.minorUnits;
+      const aprDiff = Math.round(bDebt.apr * 1000) - Math.round(aDebt.apr * 1000);
+      return (strategy === 'snowball' ? (balDiff || aprDiff) : (aprDiff || balDiff)) || (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0);
+    });
+
+    const periodNumber = periodIndex + 1;
+    let remainingScenarioExtraMinor = toMinor(safeMonthlyExtra)
+      + (periodNumber === cycleInfo.period ? toMinor(safeOneTimeExtra) : 0);
+    let periodScenarioExtraMinor = 0;
+    let periodRolloverExtraMinor = 0;
+
+    const allocations: ScenarioPaymentAccount[] = receiving.map(acc => {
+      const debt = debtById.get(acc.accountId)!;
+      const inclusion = projectedRun.inclusionById.get(acc.accountId) === 'minimum-only' ? 'minimum-only' : 'accelerated';
+      const extraMinor = acc.extraPaid.minorUnits;
+      const scenarioExtraMinor = Math.min(extraMinor, remainingScenarioExtraMinor);
+      remainingScenarioExtraMinor -= scenarioExtraMinor;
+      const rolloverExtraMinor = extraMinor - scenarioExtraMinor;
+      periodScenarioExtraMinor += scenarioExtraMinor;
+      periodRolloverExtraMinor += rolloverExtraMinor;
+      return {
+        accountId: acc.accountId,
+        name: debt.name,
+        category: debt.category,
+        inclusion,
+        openingBalance: acc.openingObligation.minorUnits / scale,
+        interestAccrued: acc.interestAccrued.minorUnits / scale,
+        minimumPaid: acc.minimumPaid.minorUnits / scale,
+        extraPaid: extraMinor / scale,
+        scenarioExtraPaid: scenarioExtraMinor / scale,
+        minimumRolloverPaid: rolloverExtraMinor / scale,
+        totalPaid: acc.totalPaid.minorUnits / scale,
+        closingBalance: acc.closingObligation.minorUnits / scale,
+        paidOff: acc.openingObligation.minorUnits > 0 && acc.closingObligation.minorUnits === 0,
+      };
+    });
+
+    const firstExtraAcc = receiving.find(acc => acc.extraPaid.minorUnits > 0);
+    const primaryTargetName = (firstExtraAcc ? debtById.get(firstExtraAcc.accountId)?.name : null)
+      ?? allocations.find(a => a.inclusion === 'accelerated')?.name
+      ?? allocations[0]?.name
+      ?? null;
+
+    return {
+      period: period.period,
+      paymentDate: period.paymentDate,
+      monthLabel: formatDateOnlyMonthYear(period.paymentDate),
+      totalPaid: period.totalPaid.minorUnits / scale,
+      totalMinimumPaid: period.totalMinimumPaid.minorUnits / scale,
+      totalExtraPaid: period.totalExtraPaid.minorUnits / scale,
+      scenarioExtraPaid: periodScenarioExtraMinor / scale,
+      minimumRolloverPaid: periodRolloverExtraMinor / scale,
+      unusedBudget: period.unusedBudget.minorUnits / scale,
+      paidOffCount: allocations.filter(a => a.paidOff).length,
+      primaryTargetName,
+      allocations,
+    };
+  };
+
+  const bothPaidOff = baselineRun.plan.status === 'paidOff'
+    && projectedRun.plan.status === 'paidOff'
+    && baselineRun.plan.monthsToPayoff !== null
+    && projectedRun.plan.monthsToPayoff !== null;
+  const monthsSaved = bothPaidOff
+    ? baselineRun.plan.monthsToPayoff! - projectedRun.plan.monthsToPayoff!
+    : null;
+  const interestSaved = bothPaidOff
+    ? roundCurrency(baselineRun.plan.totalInterest - projectedRun.plan.totalInterest)
+    : null;
+
+  return {
+    mode,
+    scenarioAmount: safeScenarioAmount,
+    baselineExtraMonthlyPayment: safeBaselineExtra,
+    totalScenarioMonthlyExtra: safeMonthlyExtra,
+    baseline: baselineRun.plan,
+    projected: projectedRun.plan,
+    firstPayment: summarizePeriod(0),
+    nextPayment: summarizePeriod(1),
+    monthsSaved,
+    interestSaved,
+    oneTimeExtraAmount: safeOneTimeExtra,
+    oneTimePeriod: cycleInfo.period,
+    oneTimeCycleDate: cycleInfo.cycleDate,
+    oneTimeCycleLabel: cycleInfo.cycleLabel,
+    oneTimeClampedToFirstCycle: cycleInfo.clampedToFirstCycle,
+    oneTimePayment: safeOneTimeExtra > 0 ? summarizePeriod(cycleInfo.period - 1) : null,
+  };
+}
+
+export function calculateExtraPaymentScenario(
+  debts: readonly DebtItem[],
+  strategy: PayoffStrategy,
+  baselineExtraMonthlyPayment: number,
+  scenarioAmount: number,
+  mode: 'oneTime' | 'monthly',
+  baseDate: Date = new Date(),
+  currencyCode = 'USD',
+  householdTimeZone = 'UTC',
+  archivedPaidOffDebtIds: readonly string[] = [],
+  inclusionByDebtId?: Readonly<Record<string, PayoffAccountInput['inclusion']>>,
+): ExtraPaymentScenarioResult {
+  return runScenarioComparison({
+    debts,
+    strategy,
+    baselineExtraMonthlyPayment,
+    monthlyExtraAmount: mode === 'monthly' ? scenarioAmount : 0,
+    oneTimeExtraAmount: mode === 'oneTime' ? scenarioAmount : 0,
+    mode,
+    scenarioAmount,
+    baseDate,
+    currencyCode,
+    householdTimeZone,
+    archivedPaidOffDebtIds,
+    inclusionByDebtId,
+  });
+}
+
+export function calculateStrategyScenario(input: StrategyScenarioInput): ExtraPaymentScenarioResult {
+  const monthlyExtraAmount = input.monthlyExtraAmount;
+  const oneTimeExtraAmount = input.oneTimeExtraAmount ?? 0;
+  return runScenarioComparison({
+    debts: input.debts,
+    strategy: input.strategy,
+    baselineExtraMonthlyPayment: input.baselineExtraMonthlyPayment,
+    monthlyExtraAmount,
+    oneTimeExtraAmount,
+    mode: oneTimeExtraAmount > 0 && monthlyExtraAmount === input.baselineExtraMonthlyPayment ? 'oneTime' : 'monthly',
+    scenarioAmount: monthlyExtraAmount,
+    oneTimeDate: input.oneTimeDate,
+    baseDate: input.baseDate ?? new Date(),
+    currencyCode: input.currencyCode ?? 'USD',
+    householdTimeZone: input.householdTimeZone ?? 'UTC',
+    archivedPaidOffDebtIds: input.archivedPaidOffDebtIds ?? [],
+    inclusionByDebtId: input.inclusionByDebtId,
+  });
 }
 
 export type IndependentMortgageProjection = Readonly<{
@@ -702,4 +1120,202 @@ export function calculateIndependentMortgageProjections(
     const projection = plan.payoffOrder[0];
     return projection ? [{ debt, escrow, extraMonthlyPayment: extra, plan, projection }] : [];
   });
+}
+
+export type InterestBurnSummary = Readonly<{
+  activeBalance: number;
+  weightedAvgApr: number;
+  monthlyInterestBurn: number;
+  dailyInterestBurn: number;
+}>;
+
+/** Weighted average APR and monthly/daily interest burn across positive-balance debts. */
+export function summarizeInterestBurn(
+  debts: readonly DebtItem[],
+  options: { includeMortgages?: boolean; currencyCode?: string } = {},
+): InterestBurnSummary {
+  const currencyCode = options.currencyCode ?? 'USD';
+  const factor = 10 ** getCurrency(currencyCode).scale;
+  const roundToCurrency = (value: number) => Math.round((value + Number.EPSILON) * factor) / factor;
+  const eligible = debts.filter(
+    debt =>
+      Number.isFinite(debt.balance) &&
+      debt.balance > 0 &&
+      (options.includeMortgages ? true : isActiveDebtItem(debt)),
+  );
+  const activeBalance = roundToCurrency(eligible.reduce((sum, debt) => sum + debt.balance, 0));
+  if (activeBalance <= 0) {
+    return { activeBalance: 0, weightedAvgApr: 0, monthlyInterestBurn: 0, dailyInterestBurn: 0 };
+  }
+  let weightedAprNumerator = 0;
+  let monthlyBurn = 0;
+  let dailyBurn = 0;
+  for (const debt of eligible) {
+    const apr = Number.isFinite(debt.apr) && debt.apr > 0 ? debt.apr : 0;
+    weightedAprNumerator += debt.balance * apr;
+    monthlyBurn += (debt.balance * (apr / 100)) / 12;
+    dailyBurn += (debt.balance * (apr / 100)) / 365;
+  }
+  return {
+    activeBalance,
+    weightedAvgApr: Math.round(((weightedAprNumerator / activeBalance) + Number.EPSILON) * 100) / 100,
+    monthlyInterestBurn: roundToCurrency(monthlyBurn),
+    dailyInterestBurn: roundToCurrency(dailyBurn),
+  };
+}
+
+export type StrategyVariantSummary = Readonly<{
+  strategy: PayoffStrategy;
+  monthsToPayoff: number | null;
+  debtFreeDateLabel: string;
+  totalInterest: number;
+  monthlyTotalPayment: number;
+  firstTargetName: string | null;
+}>;
+
+export type StrategyComparisonSummary = Readonly<{
+  minimumsOnly: Readonly<{
+    monthsToPayoff: number | null;
+    debtFreeDateLabel: string;
+    totalInterest: number;
+    monthlyTotalPayment: number;
+    stalled: boolean;
+  }>;
+  activePlan: PayoffPlanResult;
+  monthsSavedVsMinimums: number | null;
+  interestSavedVsMinimums: number | null;
+  snowball: StrategyVariantSummary;
+  avalanche: StrategyVariantSummary;
+  avalancheInterestSavingsVsSnowball: number | null;
+  avalancheMonthsSavedVsSnowball: number | null;
+}>;
+
+function toVariantSummary(plan: PayoffPlanResult): StrategyVariantSummary {
+  return {
+    strategy: plan.strategy,
+    monthsToPayoff: plan.monthsToPayoff,
+    debtFreeDateLabel: plan.debtFreeDateLabel,
+    totalInterest: plan.totalInterest,
+    monthlyTotalPayment: plan.monthlyTotalPayment,
+    firstTargetName: plan.firstTarget?.name ?? null,
+  };
+}
+
+/** Compare active payoff plan against minimums-only baseline and Snowball vs. Avalanche. */
+export function comparePayoffStrategies(
+  debts: DebtItem[],
+  strategy: PayoffStrategy,
+  extraMonthlyPayment: number,
+  baseDate: Date = new Date(),
+  currencyCode = 'USD',
+  householdTimeZone = 'UTC',
+  archivedPaidOffDebtIds: readonly string[] = [],
+  extraOneTimePayment = 0,
+  extraOneTimePeriod = 1,
+): StrategyComparisonSummary {
+  const factor = 10 ** getCurrency(currencyCode).scale;
+  const roundToCurrency = (value: number) => Math.round((value + Number.EPSILON) * factor) / factor;
+  const minimumsPlan = calculatePayoffPlan(
+    debts,
+    strategy,
+    0,
+    baseDate,
+    currencyCode,
+    householdTimeZone,
+    archivedPaidOffDebtIds,
+  );
+  const snowballPlan = calculatePayoffPlan(
+    debts,
+    'snowball',
+    extraMonthlyPayment,
+    baseDate,
+    currencyCode,
+    householdTimeZone,
+    archivedPaidOffDebtIds,
+    0,
+    extraOneTimePayment,
+    extraOneTimePeriod,
+  );
+  const avalanchePlan = calculatePayoffPlan(
+    debts,
+    'avalanche',
+    extraMonthlyPayment,
+    baseDate,
+    currencyCode,
+    householdTimeZone,
+    archivedPaidOffDebtIds,
+    0,
+    extraOneTimePayment,
+    extraOneTimePeriod,
+  );
+  const activePlan = strategy === 'snowball' ? snowballPlan : avalanchePlan;
+  const bothActiveAndMinPaidOff =
+    minimumsPlan.status === 'paidOff' &&
+    activePlan.status === 'paidOff' &&
+    minimumsPlan.monthsToPayoff !== null &&
+    activePlan.monthsToPayoff !== null;
+  const monthsSavedVsMinimums = bothActiveAndMinPaidOff
+    ? Math.max(0, (minimumsPlan.monthsToPayoff ?? 0) - (activePlan.monthsToPayoff ?? 0))
+    : null;
+  const interestSavedVsMinimums = bothActiveAndMinPaidOff
+    ? roundToCurrency(Math.max(0, minimumsPlan.totalInterest - activePlan.totalInterest))
+    : null;
+  const bothMethodsPaidOff =
+    snowballPlan.status === 'paidOff' &&
+    avalanchePlan.status === 'paidOff' &&
+    snowballPlan.monthsToPayoff !== null &&
+    avalanchePlan.monthsToPayoff !== null;
+  const avalancheInterestSavingsVsSnowball = bothMethodsPaidOff
+    ? roundToCurrency(snowballPlan.totalInterest - avalanchePlan.totalInterest)
+    : null;
+  const avalancheMonthsSavedVsSnowball = bothMethodsPaidOff
+    ? (snowballPlan.monthsToPayoff ?? 0) - (avalanchePlan.monthsToPayoff ?? 0)
+    : null;
+
+  return {
+    minimumsOnly: {
+      monthsToPayoff: minimumsPlan.monthsToPayoff,
+      debtFreeDateLabel: minimumsPlan.debtFreeDateLabel,
+      totalInterest: minimumsPlan.totalInterest,
+      monthlyTotalPayment: minimumsPlan.monthlyTotalPayment,
+      stalled: minimumsPlan.stalled,
+    },
+    activePlan,
+    monthsSavedVsMinimums,
+    interestSavedVsMinimums,
+    snowball: toVariantSummary(snowballPlan),
+    avalanche: toVariantSummary(avalanchePlan),
+    avalancheInterestSavingsVsSnowball,
+    avalancheMonthsSavedVsSnowball,
+  };
+}
+
+export type LoanPaymentSplitSuggestion = Readonly<{
+  principal: number;
+  interest: number;
+  escrow: number;
+}>;
+
+/** Estimate an optional P/I/(Escrow) breakdown for explicit user prefill on Mortgage/Auto payments. */
+export function suggestLoanPaymentSplit(params: {
+  balance: number;
+  aprPercent: number;
+  paymentAmount: number;
+  escrowAmount?: number;
+  currencyCode?: string;
+}): LoanPaymentSplitSuggestion {
+  const currencyCode = params.currencyCode ?? 'USD';
+  const factor = 10 ** getCurrency(currencyCode).scale;
+  const roundToCurrency = (value: number) => Math.round((value + Number.EPSILON) * factor) / factor;
+  const safePayment = Number.isFinite(params.paymentAmount) && params.paymentAmount > 0 ? roundToCurrency(params.paymentAmount) : 0;
+  if (safePayment <= 0) return { principal: 0, interest: 0, escrow: 0 };
+  const safeEscrowRaw = Number.isFinite(params.escrowAmount) && (params.escrowAmount ?? 0) > 0 ? roundToCurrency(params.escrowAmount!) : 0;
+  const escrow = Math.min(safePayment, safeEscrowRaw);
+  const afterEscrow = Math.max(0, roundToCurrency(safePayment - escrow));
+  const safeBalance = Number.isFinite(params.balance) && params.balance > 0 ? params.balance : 0;
+  const safeApr = Number.isFinite(params.aprPercent) && params.aprPercent > 0 ? params.aprPercent : 0;
+  const monthlyInterest = roundToCurrency((safeBalance * (safeApr / 100)) / 12);
+  const interest = Math.min(afterEscrow, monthlyInterest);
+  const principal = Math.max(0, roundToCurrency(afterEscrow - interest));
+  return { principal, interest, escrow };
 }

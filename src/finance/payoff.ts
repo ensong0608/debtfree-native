@@ -9,7 +9,7 @@ import { getCurrency } from './currencies.ts';
 
 export type PayoffStrategy = 'snowball' | 'avalanche';
 export type PayoffAccountInput = Readonly<{ accountId: AccountId; inclusion: 'accelerated' | 'minimum-only' | 'excluded'; balance: Money; aprThousandths: number | null; scheduledMinimum: Money | null }>;
-export type PayoffInput = Readonly<{ accounts: Availability<readonly PayoffAccountInput[]>; assumptions: ProjectionAssumptions; strategy: PayoffStrategy; currency: string; extraMonthlyPayment: Money; fixedMonthlyCommitment?: Money; maxHorizonMonths?: number }>;
+export type PayoffInput = Readonly<{ accounts: Availability<readonly PayoffAccountInput[]>; assumptions: ProjectionAssumptions; strategy: PayoffStrategy; currency: string; extraMonthlyPayment: Money; extraFirstMonthPayment?: Money; extraOneTimePayment?: Money; extraOneTimePeriod?: number; fixedMonthlyCommitment?: Money; maxHorizonMonths?: number }>;
 export type RankableAccount = Readonly<{ accountId: AccountId; openingObligation: Money; aprThousandths: number }>;
 export function rankAcceleratedAccounts<T extends RankableAccount>(accounts: readonly T[], strategy: PayoffStrategy): T[] {
   return [...accounts].sort((a, b) => {
@@ -26,7 +26,7 @@ export type PayoffResult =
   | Readonly<{ status: 'invalidInput' | 'insufficientData'; reason: string }>
   | (Common & Readonly<{ status: 'paidOff'; monthsToPayoff: number; payoffDate: DateOnly | null; totalInterest: Money; totalPayments: Money; unusedBudget: Money }>)
   | (Common & Readonly<{ status: 'paymentShortfall'; period: number; paymentDate: DateOnly; requiredMinimums: Money; availableCommitment: Money; shortfallAmount: Money; accountRequirements: readonly { accountId: AccountId; requiredMinimum: Money }[]; partialInterest: Money; partialPayments: Money }>)
-  | (Common & Readonly<{ status: 'notAmortizingUnderAssumptions'; period: number; remainingDebt: Money; partialInterest: Money; partialPayments: Money }>)
+  | (Common & Readonly<{ status: 'notAmortizingUnderAssumptions'; period: number; remainingDebt: Money; partialInterest: Money; partialPayments: Money; nonAmortizingAccountIds?: readonly AccountId[] }>)
   | (Common & Readonly<{ status: 'horizonReached'; periodsSimulated: number; remainingDebt: Money; partialInterest: Money; partialPayments: Money }>);
 
 /** A bounded forecast under constant monthly terms; no historical payments are inferred. */
@@ -43,7 +43,13 @@ export function calculatePayoff(input: PayoffInput): PayoffResult {
     };
     const sum = (values: readonly number[]) => values.reduce((a, b) => addMoney(money(a), money(b)).minorUnits, 0);
     validateMoney(input.extraMonthlyPayment, 'extraMonthlyPayment', true);
+    if (input.extraFirstMonthPayment !== undefined) validateMoney(input.extraFirstMonthPayment, 'extraFirstMonthPayment', true);
+    if (input.extraOneTimePayment !== undefined) validateMoney(input.extraOneTimePayment, 'extraOneTimePayment', true);
+    if (input.extraOneTimePeriod !== undefined && (!Number.isSafeInteger(input.extraOneTimePeriod) || input.extraOneTimePeriod < 1)) throw new RangeError('Invalid extraOneTimePeriod');
     if (input.fixedMonthlyCommitment !== undefined) validateMoney(input.fixedMonthlyCommitment, 'fixedMonthlyCommitment', true);
+    const firstMonthExtra = input.extraFirstMonthPayment?.minorUnits ?? 0;
+    const oneTimeExtra = input.extraOneTimePayment?.minorUnits ?? 0;
+    const oneTimePeriod = input.extraOneTimePeriod ?? 1;
     if (input.strategy !== 'snowball' && input.strategy !== 'avalanche') throw new TypeError('Invalid strategy');
     const horizon = input.maxHorizonMonths === undefined ? 600 : input.maxHorizonMonths;
     if (!Number.isSafeInteger(horizon) || horizon <= 0) throw new RangeError('Invalid maxHorizonMonths');
@@ -86,7 +92,7 @@ export function calculatePayoff(input: PayoffInput): PayoffResult {
     const common = () => ({ monthlyCommitment, accounts: summaries(), schedule: [...schedule], inventoryStatus: inventory.status, coverageStatus: inventory.context.coverage.status, coverageScope });
     let interestTotal = 0, paymentsTotal = 0;
     if (initial === 0 && coverageScope !== 'verified-household') return { status: 'insufficientData', reason: `No tracked obligation; ${inventory.status} inventory with ${inventory.context.coverage.status} household coverage cannot verify debt freedom` };
-    if (initial === 0) return { status: 'paidOff', ...common(), monthsToPayoff: 0, payoffDate: null, totalInterest: money(0), totalPayments: money(0), unusedBudget: money(input.extraMonthlyPayment.minorUnits) };
+    if (initial === 0) return { status: 'paidOff', ...common(), monthsToPayoff: 0, payoffDate: null, totalInterest: money(0), totalPayments: money(0), unusedBudget: money(sum([input.extraMonthlyPayment.minorUnits, firstMonthExtra, oneTimePeriod === 1 ? oneTimeExtra : 0])) };
     for (let period = 1; period <= horizon; period++) {
       const paymentDate = monthlyPaymentDate(input.assumptions.firstPaymentDate, input.assumptions.requestedDay, period - 1);
       const rows = states.map(s => {
@@ -97,8 +103,9 @@ export function calculatePayoff(input: PayoffInput): PayoffResult {
         return { s, opening, interest, post, minimum, extra: 0 };
       });
       const required = sum(rows.map(r => r.minimum));
-      if (required > commitment) return { status: 'paymentShortfall', ...common(), period, paymentDate, requiredMinimums: money(required), availableCommitment: monthlyCommitment, shortfallAmount: money(required - commitment), accountRequirements: rows.filter(r => r.opening > 0).map(r => ({ accountId: r.s.account.accountId, requiredMinimum: money(r.minimum) })), partialInterest: money(interestTotal), partialPayments: money(paymentsTotal) };
-      let budget = commitment - required;
+      const periodCommitment = sum([commitment, period === 1 ? firstMonthExtra : 0, period === oneTimePeriod ? oneTimeExtra : 0]);
+      if (required > periodCommitment) return { status: 'paymentShortfall', ...common(), period, paymentDate, requiredMinimums: money(required), availableCommitment: money(periodCommitment), shortfallAmount: money(required - periodCommitment), accountRequirements: rows.filter(r => r.opening > 0).map(r => ({ accountId: r.s.account.accountId, requiredMinimum: money(r.minimum) })), partialInterest: money(interestTotal), partialPayments: money(paymentsTotal) };
+      let budget = periodCommitment - required;
       const ranked = rankAcceleratedAccounts(rows.filter(r => r.s.account.inclusion === 'accelerated' && r.post > r.minimum).map(r => ({ ...r, accountId: r.s.account.accountId, openingObligation: money(r.opening), aprThousandths: r.s.account.aprThousandths! })), input.strategy);
       for (const r of ranked) { const extra = Math.min(r.post - r.minimum, budget); rows.find(row => row.s === r.s)!.extra = extra; budget -= extra; }
       const accountRows = rows.map(r => {
@@ -110,17 +117,24 @@ export function calculatePayoff(input: PayoffInput): PayoffResult {
       interestTotal = sum([interestTotal, interest]); paymentsTotal = sum([paymentsTotal, paid]);
       schedule.push({ period, paymentDate, accounts: accountRows, totalInterest: money(interest), totalMinimumPaid: money(required), totalExtraPaid: money(extra), totalPaid: money(paid), unusedBudget: money(budget), closingObligation: money(remaining) });
       if (remaining === 0) return { status: 'paidOff', ...common(), monthsToPayoff: period, payoffDate: paymentDate, totalInterest: money(interestTotal), totalPayments: money(paymentsTotal), unusedBudget: money(budget) };
-      // Aggregate growth in one period is NOT proof of permanent nonamortization:
-      // a high-rate debt may shrink while a low-rate debt grows temporarily.
-      // Two sufficient conditions under this deterministic fixed-terms model are:
-      // (1) a fixed point (each debt closes at exactly its opening amount), or
-      // (2) the sole remaining obligation does not shrink; no other debt can
-      //     subsequently free commitment for it. Both preserve exact minor units.
+      // If NO active debt shrinks this period (every active debt closes >= opening),
+      // no debt can ever pay off to free commitment for others under fixed terms.
+      // When a one-time payment is scheduled later within the horizon, wait until it applies.
+      const pendingOneTimeInHorizon = oneTimeExtra > 0 && oneTimePeriod <= horizon && period < oneTimePeriod;
       const activeRows = rows.filter(r => r.opening > 0);
       const fixedPoint = rows.every(r => r.s.remaining === r.opening);
-      const soleNonShrinkingDebt = activeRows.length === 1 &&
-        activeRows[0].s.remaining >= activeRows[0].opening;
-      if (fixedPoint || soleNonShrinkingDebt) return { status: 'notAmortizingUnderAssumptions', ...common(), period, remainingDebt: money(remaining), partialInterest: money(interestTotal), partialPayments: money(paymentsTotal) };
+      const noDebtShrinking = activeRows.length > 0 && activeRows.every(r => r.s.remaining >= r.opening);
+      if (!pendingOneTimeInHorizon && (fixedPoint || noDebtShrinking)) {
+        return {
+          status: 'notAmortizingUnderAssumptions',
+          ...common(),
+          period,
+          remainingDebt: money(remaining),
+          partialInterest: money(interestTotal),
+          partialPayments: money(paymentsTotal),
+          nonAmortizingAccountIds: activeRows.filter(r => r.s.remaining >= r.opening).map(r => r.s.account.accountId),
+        };
+      }
       if (period === horizon) return { status: 'horizonReached', ...common(), periodsSimulated: period, remainingDebt: money(remaining), partialInterest: money(interestTotal), partialPayments: money(paymentsTotal) };
     }
     throw new Error('Unreachable projection state');

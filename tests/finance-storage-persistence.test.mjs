@@ -275,13 +275,16 @@ test('loaded bill edit uses original revision in durable expectedVersions and gu
   const restore = storageModule.__configureFinanceStorageForTests({ storage: store, getClient: () => client });
   try {
     const prior = decodeRecurringBillRow(priorRow, 'USD');
-    const changed = { ...prior, name: 'Updated utilities', amount: makeMoney('USD', 1750) };
+    assert.equal(prior.dueDay, 20);
+    const changed = { ...prior, dueDay: 6, name: 'Updated utilities', amount: makeMoney('USD', 1750) };
     const adapter = { persist: params => storageModule.persistRecurringBill({ ...params, householdContext: ctx, currentBills: params.currentBills }), remove: params => storageModule.deleteRecurringBill({ ...params, householdContext: ctx, currentBills: params.currentBills }) };
     const result = await executeRecurringBillSave({ session, userId: 'user-a', bill: changed, currentBills: [prior], storage: adapter });
     assert.equal(result.syncResult.outcome, 'confirmed');
     assert.equal(rpcArgs.p_expected_updated_at, prior.updatedAt);
+    assert.equal(rpcArgs.p_idempotency_key, changed.id);
     assert.equal(rpcArgs.p_household_id, ctx.householdId);
     assert.equal(durableExpectedRevision, prior.updatedAt);
+    assert.equal(rows[0].due_day, 6);
     assert.ok(Date.parse(rows[0].updated_at) > Date.parse(prior.updatedAt));
     assert.equal(result.bills[0].updatedAt, rows[0].updated_at);
     assert.equal((await storageModule.getPendingFinanceSummary(ctx)).total, 0);

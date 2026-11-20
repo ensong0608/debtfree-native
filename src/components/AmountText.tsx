@@ -14,9 +14,20 @@ export function AmountText({ value, style, decimalScale = 0.65 }: AmountTextProp
   const pattern = separator === '.' ? /(\.\d+)(?=\D*$)/ : /(,\d{1,2})(?=\D*$)/;
   const match = value.match(pattern);
   const index = match?.index;
+  const currency = /\p{Sc}+(?=\s*\d)/u.exec(value);
+  const currencyEnd = currency ? currency.index + currency[0].length : 0;
+  const numericEnd = index ?? value.length;
   return (
     <Text accessibilityLabel={value} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={[{ fontSize, minWidth: 0, flexShrink: 1, fontVariant: ['tabular-nums'] }, style]}>
-      {!match || index === undefined ? value : <>{value.slice(0, index)}<Text style={{ fontSize: fontSize * decimalScale }}>{match[0]}</Text>{value.slice(index + match[0].length)}</>}
+      {currency ? <>
+        {value.slice(0, currency.index)}
+        <Text style={{ fontSize: fontSize * 0.72 }}>{currency[0]}</Text>
+        {'\u00a0'}{value.slice(currencyEnd, numericEnd).trimStart()}
+      </> : value.slice(0, numericEnd)}
+      {match && index !== undefined ? <>
+        <Text style={{ fontSize: fontSize * decimalScale }}>{match[0]}</Text>
+        {value.slice(index + match[0].length)}
+      </> : null}
     </Text>
   );
 }

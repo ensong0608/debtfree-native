@@ -171,6 +171,22 @@ export function resolveRecurringBillDate(monthStr: string, dueDay: number): Date
 }
 
 /** Build a stable transaction for a bill payment the user has confirmed. */
+export const creditRecurringBillCategory = (billCategory: RecurringBillCategory): TransactionCategory =>
+  billCategory === 'subscription'
+    ? 'subscription'
+    : billCategory === 'utilities'
+      ? 'utilities'
+      : 'purchase';
+
+const recurringBillCategoryNote = (billCategory: RecurringBillCategory): string =>
+  billCategory === 'housing'
+    ? ' (Housing)'
+    : billCategory === 'insurance'
+      ? ' (Insurance)'
+      : billCategory === 'other_bill'
+        ? ' (Other bill)'
+        : '';
+
 export function createConfirmedRecurringBillTransaction(params: {
   bill: RecurringBill;
   dueCycle: DateOnly;
@@ -193,7 +209,7 @@ export function createConfirmedRecurringBillTransaction(params: {
   }
   const category: TransactionCategory = isDebit
     ? 'debit_bill'
-    : (bill.category === 'subscription' ? 'subscription' : 'utilities');
+    : creditRecurringBillCategory(bill.category);
   const tx: LedgerTransaction = {
     id: transactionId ?? `bill:${bill.id}:${dueCycle}`,
     accountId: isDebit ? null : bill.creditAccountId!,
@@ -202,7 +218,7 @@ export function createConfirmedRecurringBillTransaction(params: {
     amount: effectiveAmount,
     category,
     payee: bill.name,
-    memo: `Recurring bill payment confirmed for due cycle ${dueCycle}`,
+    memo: `Recurring bill payment confirmed for due cycle ${dueCycle}${isDebit ? '' : recurringBillCategoryNote(bill.category)}`,
     source: 'recurring_bill',
     reconciled: false,
     createdAt: now.toISOString(),
@@ -253,8 +269,7 @@ export function generateRecurringBillTransaction(params: {
   // Idempotent deterministic ID: guarantees a bill can NEVER be posted twice in the same month
   const txId = `bill:${bill.id}:${targetMonth}`;
 
-  const category: TransactionCategory =
-    bill.category === 'subscription' ? 'subscription' : 'utilities';
+  const category: TransactionCategory = creditRecurringBillCategory(bill.category);
 
   const tx: LedgerTransaction = {
     id: txId,
@@ -264,7 +279,7 @@ export function generateRecurringBillTransaction(params: {
     amount: cycleAmount,
     category,
     payee: bill.name,
-    memo: `Auto-recorded recurring bill (Charged to credit card)`,
+    memo: `Auto-recorded recurring bill (Charged to credit card)${recurringBillCategoryNote(bill.category)}`,
     source: 'recurring_bill',
     reconciled: false,
     createdAt: now.toISOString(),

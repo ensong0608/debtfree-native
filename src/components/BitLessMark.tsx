@@ -1,11 +1,18 @@
-import Svg, { Path, Rect } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
+import { useNativeAppearance } from './NativeAppearance';
 
 export function BitLessMark() {
-  return <Svg width={24} height={24} viewBox="0 0 24 24" accessible={false}>
-    <Rect width="24" height="24" rx="7" fill="#0051FB" />
-    <Rect x="5" y="9" width="4" height="11" rx="2" fill="#ABDFFD" />
-    <Rect x="10" y="12" width="4" height="8" rx="2" fill="#27EEE9" />
-    <Rect x="15" y="15" width="4" height="5" rx="2" fill="#98EDC1" />
-    <Path d="M15 10C15 6 16 3 19 3c0 4-1 6-4 7ZM18 11c1-2 2-3 4-3 0 2-2 3-4 3Z" fill="white" />
-  </Svg>;
+  const { palette } = useNativeAppearance();
+  return (
+    <Svg width={19} height={24} viewBox="100 12 156 208" accessible={false}>
+      <Path
+        d="M 212 99 C 196 87, 160 87, 160 105 C 160 123, 196 123, 214 113 C 242 125, 246 164, 218 182 C 192 198, 148 192, 130 166 C 112 140, 114 82, 136 56 C 156 32, 200 34, 218 56 C 230 71, 226 89, 212 99 Z"
+        fill="none"
+        stroke={palette.brand}
+        strokeWidth={20}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
 }

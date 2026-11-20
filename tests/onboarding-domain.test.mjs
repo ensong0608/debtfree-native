@@ -1,16 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  ACCENT_COLORS, THEME_MODES, THEME_STYLES, accentDetails, appearanceStorageKeys,
+  getAppearancePalette, isLightMode, resolveAppearancePreferences,
+} from '../src/components/appearance-theme.ts';
+import {
   AI_REFERRAL_SOURCE,
+  calculateExtraPaymentScenario,
   calculatePayoffPlan,
+  calculateStrategyScenario,
   calculateTotalMonthlyIncome,
+  comparePayoffStrategies,
   createDefaultOnboardingData,
   formatCurrency,
   normalizeMonthlyIncome,
   parseMoneyInput,
   parsePercentInput,
   resolveAuthenticatedStage,
+  resolveOneTimePaymentPeriod,
   sortDebtsByStrategy,
+  suggestLoanPaymentSplit,
+  summarizeInterestBurn,
   validateDebtDraft,
   validateDebtsStep,
   validateExtraPaymentInput,
@@ -19,6 +29,27 @@ import {
   validateSignUpStep3,
   validateSignUpStep4,
 } from '../src/onboarding-domain.ts';
+
+test('Strategy models one entered amount without stacking it on the saved monthly extra', () => {
+  const debts = [{
+    id: 'card', name: 'Card', category: 'Credit card', balance: 20000, originalBalance: 20000,
+    minimumPayment: 500, apr: 18, creditLimit: null, dueDay: 1,
+  }];
+  const date = new Date('2026-11-01T12:00:00Z');
+  const monthly = calculateExtraPaymentScenario(debts, 'avalanche', 2000, 5000, 'monthly', date);
+  const oneTime = calculateExtraPaymentScenario(debts, 'avalanche', 2000, 5000, 'oneTime', date);
+  const lower = calculateExtraPaymentScenario(debts, 'avalanche', 2000, 1000, 'monthly', date);
+
+  assert.equal(monthly.baseline.extraMonthlyPayment, 2000);
+  assert.equal(monthly.totalScenarioMonthlyExtra, 5000);
+  assert.equal(monthly.firstPayment.totalPaid, 5500);
+  assert.equal(monthly.nextPayment.scenarioExtraPaid, 5000);
+  assert.equal(oneTime.firstPayment.totalPaid, 5500);
+  assert.equal(oneTime.nextPayment.totalPaid, 500);
+  assert.equal(oneTime.nextPayment.scenarioExtraPaid, 0);
+  assert.ok(lower.monthsSaved < 0);
+  assert.ok(lower.interestSaved < 0);
+});
 
 test('Sign-Up Step 2–4 validations enforce required selections and conditional AI follow-up', () => {
   assert.equal(validateSignUpStep2([]), 'Select at least one goal to continue.');
@@ -194,4 +225,265 @@ test('resolveAuthenticatedStage resumes incomplete onboarding and goes straight 
   assert.equal(parseMoneyInput('$1,250.75'), 1250.75);
   assert.equal(parsePercentInput('18.5%'), 18.5);
   assert.equal(formatCurrency(5200, '$'), '$5,200.00');
+});
+
+test('T-299: normalizeMonthlyIncome handles high-precision floats and calculatePayoffPlan marks all-$0 debts as paidOff 100%', () => {
+  assert.equal(normalizeMonthlyIncome(1234.56789, 'monthly'), 1234.57);
+  const paidOffPlan = calculatePayoffPlan(
+    [
+      {
+        id: 'card-paid',
+        name: 'Paid Card',
+        category: 'Credit card',
+        balance: 0,
+        originalBalance: 2500,
+        apr: 19.99,
+        minimumPayment: 50,
+        dueDay: 15,
+        creditLimit: 5000,
+        createdAt: '2026-10-01T00:00:00Z',
+        updatedAt: '2026-11-01T00:00:00Z',
+      },
+    ],
+    'snowball',
+    100,
+    new Date('2026-11-18T00:00:00Z'),
+    'USD',
+    'America/Los_Angeles',
+    ['card-paid'],
+  );
+  assert.equal(paidOffPlan.status, 'paidOff');
+  assert.equal(paidOffPlan.monthsToPayoff, 0);
+  assert.equal(paidOffPlan.progressPercent, 100);
+  assert.equal(paidOffPlan.totalStartingDebt, 2500);
+  assert.equal(paidOffPlan.stalled, false);
+});
+
+test('T-301: summarizeInterestBurn computes weighted APR and monthly/daily burn across positive balances', () => {
+  const debts = [
+    {
+      id: 'card-high',
+      name: 'High Card',
+      category: 'Credit card',
+      balance: 3000,
+      originalBalance: 3000,
+      apr: 24,
+      minimumPayment: 90,
+      dueDay: 10,
+      creditLimit: 5000,
+      createdAt: '2026-10-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+    {
+      id: 'card-low',
+      name: 'Low Card',
+      category: 'Credit card',
+      balance: 1000,
+      originalBalance: 1000,
+      apr: 12,
+      minimumPayment: 35,
+      dueDay: 15,
+      creditLimit: 2000,
+      createdAt: '2026-10-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+    {
+      id: 'home-1',
+      name: 'Mortgage',
+      category: 'Mortgage',
+      balance: 200000,
+      originalBalance: 220000,
+      apr: 6,
+      minimumPayment: 1400,
+      dueDay: 1,
+      creditLimit: null,
+      createdAt: '2026-10-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+  ];
+  const nonMortgage = summarizeInterestBurn(debts);
+  assert.equal(nonMortgage.activeBalance, 4000);
+  assert.equal(nonMortgage.weightedAvgApr, 21); // (3000*24 + 1000*12) / 4000 = 21%
+  assert.equal(nonMortgage.monthlyInterestBurn, 70); // (3000*0.24 + 1000*0.12) / 12 = 70
+  assert.equal(nonMortgage.dailyInterestBurn, 2.3); // (720 + 120) / 365 = 2.3013 -> 2.3
+
+  const withMortgages = summarizeInterestBurn(debts, { includeMortgages: true });
+  assert.equal(withMortgages.activeBalance, 204000);
+  assert.equal(withMortgages.monthlyInterestBurn, 1070);
+});
+
+test('T-301: comparePayoffStrategies compares active plan vs minimums and Snowball vs Avalanche', () => {
+  const debts = [
+    {
+      id: 'small-low-apr',
+      name: 'Store Card',
+      category: 'Credit card',
+      balance: 1500,
+      originalBalance: 1500,
+      apr: 10,
+      minimumPayment: 50,
+      dueDay: 5,
+      creditLimit: 2500,
+      createdAt: '2026-10-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+    {
+      id: 'large-high-apr',
+      name: 'Rewards Card',
+      category: 'Credit card',
+      balance: 4000,
+      originalBalance: 4000,
+      apr: 26,
+      minimumPayment: 120,
+      dueDay: 20,
+      creditLimit: 6000,
+      createdAt: '2026-10-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    },
+  ];
+  const comparison = comparePayoffStrategies(
+    debts,
+    'snowball',
+    200,
+    new Date('2026-11-18T00:00:00Z'),
+    'USD',
+    'UTC',
+  );
+  assert.ok((comparison.monthsSavedVsMinimums ?? 0) > 0);
+  assert.ok((comparison.interestSavedVsMinimums ?? 0) > 0);
+  assert.ok((comparison.avalancheInterestSavingsVsSnowball ?? 0) > 0);
+  assert.equal(comparison.snowball.firstTargetName, 'Store Card');
+  assert.equal(comparison.avalanche.firstTargetName, 'Rewards Card');
+});
+
+test('T-301: suggestLoanPaymentSplit computes escrow-first and monthly interest allocation', () => {
+  const mortgageSplit = suggestLoanPaymentSplit({
+    balance: 240000,
+    aprPercent: 6,
+    paymentAmount: 2000,
+    escrowAmount: 450,
+    currencyCode: 'USD',
+  });
+  assert.deepEqual(mortgageSplit, {
+    escrow: 450,
+    interest: 1200, // 240000 * 0.06 / 12
+    principal: 350, // 2000 - 450 - 1200
+  });
+
+  const autoSplit = suggestLoanPaymentSplit({
+    balance: 12000,
+    aprPercent: 6,
+    paymentAmount: 400,
+    currencyCode: 'USD',
+  });
+  assert.deepEqual(autoSplit, {
+    escrow: 0,
+    interest: 60, // 12000 * 0.06 / 12
+    principal: 340,
+  });
+});
+
+test('appearance preferences migrate and retain all three independently saved choices', () => {
+  assert.deepEqual(resolveAppearancePreferences(null, 'Inspire', 'Indigo'), { style: 'Inspire', mode: 'Light', accent: 'indigo' });
+  assert.deepEqual(resolveAppearancePreferences(null, 'Dark', 'Cobalt'), { style: 'Fresh', mode: 'Dark', accent: 'cobalt' });
+  assert.deepEqual(resolveAppearancePreferences('{bad', 'System', null), { style: 'Fresh', mode: 'System', accent: 'green' });
+  for (const style of THEME_STYLES) {
+    for (const mode of THEME_MODES) {
+      for (const accent of ACCENT_COLORS) {
+        const saved = { style, mode, accent };
+        assert.deepEqual(resolveAppearancePreferences(JSON.stringify(saved), 'Inspire', 'Cobalt'), saved);
+      }
+    }
+  }
+  assert.notEqual(appearanceStorageKeys('owner').preferences, appearanceStorageKeys('member').preferences);
+  assert.equal(appearanceStorageKeys('user-1').legacyTheme, 'debtfree-pref-theme.user-1');
+  assert.equal(appearanceStorageKeys('user-1').legacyAccent, 'debtfree-pref-accent.75-73-65-72-2d-31');
+  assert.equal(isLightMode('System', 'light'), true);
+  assert.equal(isLightMode('System', 'dark'), false);
+  assert.equal(isLightMode('Light', 'dark'), true);
+  assert.equal(isLightMode('Dark', 'light'), false);
+});
+
+test('both appearance styles have ten complete day and night palettes with readable button fills', () => {
+  const expected = {
+    Fresh: [
+      ['#49CC68', '#84FB7F'], ['#2563EB', '#60A5FA'], ['#D97706', '#FBBF24'], ['#00B386', '#22F3BA'],
+      ['#00A8C6', '#22D3EE'], ['#4F46E5', '#818CF8'], ['#7C3AED', '#A78BFA'], ['#DB2777', '#F472B6'],
+      ['#EA580C', '#FB923C'], ['#1E293B', '#E2E8F0'],
+    ],
+    Inspire: [
+      ['#15803D', '#4ADE80'], ['#2563EB', '#60A5FA'], ['#C27803', '#FBBF24'], ['#0D9488', '#34D399'],
+      ['#0A85A5', '#2DD4BF'], ['#4F46E5', '#818CF8'], ['#6D5BD0', '#A78BFA'], ['#DB2777', '#F472B6'],
+      ['#EA580C', '#FB923C'], ['#334155', '#CBD5E1'],
+    ],
+  };
+  const luminance = hex => {
+    const [r, g, b] = hex.slice(1).match(/../g).map(part => parseInt(part, 16) / 255)
+      .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  for (const style of THEME_STYLES) {
+    assert.equal(new Set(ACCENT_COLORS.map(color => accentDetails(style, color).label)).size, 10);
+    for (const [index, color] of ACCENT_COLORS.entries()) {
+      const light = getAppearancePalette(style, color, true);
+      const dark = getAppearancePalette(style, color, false);
+      assert.deepEqual([light.brand, dark.brand], expected[style][index]);
+      assert.notEqual(light.canvas, dark.canvas);
+      assert.notEqual(light.sky1, dark.sky1);
+      for (const palette of [light, dark]) {
+        assert.ok(Object.values(palette).every(value => typeof value === 'string' && value.length > 0));
+        const bg = luminance(palette.brand);
+        const fg = luminance(palette.onBrand);
+        assert.ok((Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05) >= 4.5, `${style} / ${color}`);
+        assert.notEqual(palette.posInk, palette.neg);
+      }
+    }
+  }
+});
+
+test('T-313: resolveOneTimePaymentPeriod and calculateStrategyScenario model combined monthly and dated one-time previews', () => {
+  const baseDate = new Date('2026-11-19T18:00:00Z');
+  const currentMonth = resolveOneTimePaymentPeriod('2026-11-25', baseDate, 'UTC');
+  assert.equal(currentMonth.period, 1);
+  assert.equal(currentMonth.cycleLabel, 'Dec 2026');
+  assert.equal(currentMonth.clampedToFirstCycle, true);
+
+  const febCycle = resolveOneTimePaymentPeriod('2027-02-14', baseDate, 'UTC');
+  assert.equal(febCycle.period, 3);
+  assert.equal(febCycle.cycleLabel, 'Feb 2027');
+  assert.equal(febCycle.clampedToFirstCycle, false);
+
+  const debts = [{
+    id: 'card', name: 'Card', category: 'Credit card', balance: 6000, originalBalance: 6000,
+    minimumPayment: 200, apr: 24, creditLimit: null, dueDay: 1,
+  }];
+  const decPreview = calculateStrategyScenario({
+    debts,
+    strategy: 'avalanche',
+    baselineExtraMonthlyPayment: 300,
+    monthlyExtraAmount: 300,
+    oneTimeExtraAmount: 1000,
+    oneTimeDate: '2026-12-10',
+    baseDate,
+    householdTimeZone: 'UTC',
+  });
+  const febPreview = calculateStrategyScenario({
+    debts,
+    strategy: 'avalanche',
+    baselineExtraMonthlyPayment: 300,
+    monthlyExtraAmount: 300,
+    oneTimeExtraAmount: 1000,
+    oneTimeDate: '2027-02-10',
+    baseDate,
+    householdTimeZone: 'UTC',
+  });
+
+  assert.equal(decPreview.firstPayment.totalPaid, 1500);
+  assert.equal(decPreview.firstPayment.scenarioExtraPaid, 1300);
+  assert.equal(febPreview.firstPayment.totalPaid, 500);
+  assert.equal(febPreview.firstPayment.scenarioExtraPaid, 300);
+  assert.equal(febPreview.oneTimePeriod, 3);
+  assert.equal(febPreview.oneTimePayment.totalPaid, 1500);
+  assert.equal(febPreview.oneTimePayment.scenarioExtraPaid, 1300);
+  assert.ok(decPreview.projected.totalInterest < febPreview.projected.totalInterest);
 });

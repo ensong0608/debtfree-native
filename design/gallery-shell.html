@@ -1,64 +1,807 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BitLess Design Library</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BitLess Design Library</title>
 <style>
-:root{--gallery-ink:#142242;--gallery-muted:#66758c;--gallery-blue:#0051fb;--gallery-line:#e0e7f1;--background:#fff;--foreground:#17233b;--card:#fff;--border:#dde5f0;--muted-foreground:#66758c;font-family:Arial,sans-serif}
-html,body{margin:0;background:transparent}*{box-sizing:border-box}
-#design-library{color:var(--gallery-ink);font:14px/1.5 Arial,sans-serif}
-#design-library button,#design-library input,#design-library select{font:inherit}
-#design-library .library-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin:0 0 22px}
-#design-library .eyebrow{font-size:11px;letter-spacing:2px;color:var(--gallery-blue);font-weight:700;margin-bottom:5px}
-#design-library h1{font-size:28px;line-height:1.15;letter-spacing:-1px;margin:0;font-weight:600}
-#design-library .subtitle{margin:9px 0 0;color:var(--gallery-muted);font-size:13px;max-width:500px}
-#design-library .counter{color:var(--gallery-muted);white-space:nowrap;font-size:12px;padding-top:6px}
-#design-library .layout{display:grid;grid-template-columns:205px minmax(0,1fr);gap:24px;align-items:start}
-#design-library .catalog{background:#f4f7fc;border:1px solid var(--gallery-line);border-radius:16px;padding:12px}
-#design-library input,#design-library select{width:100%;min-width:0;border:1px solid #d9e2ef;border-radius:9px;background:#fff;color:#263859;padding:9px 10px;font-size:12px}
-#design-library select{margin:8px 0 12px}
-#design-library .catalog-list{max-height:720px;overflow:auto;scrollbar-width:thin}
-#design-library details{margin:0 0 10px}
-#design-library summary{font-size:11px;color:#61728e;font-weight:600;cursor:pointer;padding:6px 0;line-height:1.4}
-#design-library .entry{width:100%;text-align:left;border:1px solid transparent;background:transparent;color:#273958;border-radius:9px;padding:8px;margin:2px 0;cursor:pointer;line-height:1.3}
-#design-library .entry:hover{background:#e8eef8}
-#design-library .entry[aria-pressed=true]{background:#fff;border-color:#d1dffa;box-shadow:inset 3px 0 #0051fb}
-#design-library .entry strong{display:block;font-size:12px;font-weight:500}
-#design-library .entry small{font-size:11px;color:#76859a;display:block;margin-top:3px}
-#design-library .empty{font-size:12px;color:#66758c;padding:10px 0}
-#design-library .preview-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
-#design-library .current-group{font-size:11px;color:#75839a;margin-bottom:3px}
-#design-library h2{font-size:19px;line-height:1.3;letter-spacing:-.4px;margin:0;font-weight:600}
-#design-library .open-study{display:inline-flex;flex-shrink:0;align-items:center;border:1px solid #dbe3f0;color:#0051fb;background:#fff;text-decoration:none;border-radius:9px;padding:7px 9px;font-size:11px;white-space:nowrap}
-#design-library .viewer-wrap{max-width:460px;margin:auto}
-#design-library iframe{display:block;width:100%;height:1000px;border:0;background:transparent;border-radius:14px}
-#design-library .study-note{font-size:12px;color:#6b7a90;margin:12px 0 0;padding-top:12px;border-top:1px solid #e3e9f2}
-#design-library .library-footer{margin-top:20px;color:#7b889a;font-size:11px;border-top:1px solid #e3e9f2;padding-top:12px}
-@media(max-width:640px){#design-library .layout{grid-template-columns:1fr;gap:18px}#design-library .catalog-list{max-height:220px}#design-library .library-header{margin-bottom:16px}#design-library h1{font-size:25px}#design-library .counter{white-space:normal;text-align:right}#design-library .catalog{padding:10px}#design-library .preview-head{gap:8px}#design-library .open-study{font-size:10px;padding:6px}}
-</style></head><body>
+:root{
+  --g-bg:#f6f8fb;
+  --g-surface:#ffffff;
+  --g-surface-2:#eef2f8;
+  --g-ink:#0f172a;
+  --g-muted:#5b677d;
+  --g-line:#dfe6f0;
+  --g-accent:#0051fb;
+  --g-accent-soft:#eaf0ff;
+  --g-new:#00a8c6;
+  --g-new-soft:#e0f7fb;
+  --radius:14px;
+  font-family:Inter,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--g-bg);color:var(--g-ink);font:14px/1.45 Inter,Arial,sans-serif}
+button,input,select{font:inherit}
+button{cursor:pointer}
+[hidden]{display:none!important}
+
+#design-library{
+  max-width:1360px;
+  margin:0 auto;
+  padding:20px 22px 32px;
+}
+
+/* Header */
+.library-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  gap:16px;
+  margin-bottom:18px;
+  padding-bottom:16px;
+  border-bottom:1px solid var(--g-line);
+}
+.eyebrow{
+  font-size:11px;
+  letter-spacing:1.8px;
+  font-weight:700;
+  color:var(--g-accent);
+  text-transform:uppercase;
+  margin-bottom:4px;
+}
+.library-header h1{
+  margin:0;
+  font-size:26px;
+  line-height:1.15;
+  letter-spacing:-.6px;
+  font-weight:700;
+}
+.subtitle{
+  margin:6px 0 0;
+  color:var(--g-muted);
+  font-size:13px;
+  max-width:640px;
+}
+.header-meta{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-shrink:0;
+}
+.counter-pill{
+  background:var(--g-surface);
+  border:1px solid var(--g-line);
+  border-radius:999px;
+  padding:6px 12px;
+  font-size:12px;
+  font-weight:600;
+  color:var(--g-muted);
+  white-space:nowrap;
+}
+
+/* Main Layout */
+.workspace{
+  display:grid;
+  grid-template-columns:280px minmax(0,1fr);
+  gap:20px;
+  align-items:start;
+}
+
+/* Left Study Selector */
+.study-rail{
+  background:var(--g-surface);
+  border:1px solid var(--g-line);
+  border-radius:16px;
+  padding:12px;
+  position:sticky;
+  top:14px;
+}
+.rail-label{
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.9px;
+  text-transform:uppercase;
+  color:var(--g-muted);
+  padding:2px 4px 10px;
+}
+.study-list{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.study-card{
+  width:100%;
+  text-align:left;
+  background:var(--g-bg);
+  border:1.5px solid transparent;
+  border-radius:12px;
+  padding:11px 12px;
+  transition:border-color .14s ease,background .14s ease,box-shadow .14s ease;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.study-card:hover{
+  background:var(--g-surface-2);
+}
+.study-card[aria-pressed=true]{
+  background:var(--g-surface);
+  border-color:var(--g-accent);
+  box-shadow:0 6px 18px rgba(0,81,251,.10);
+}
+.study-top{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+}
+.study-badge{
+  display:inline-flex;
+  align-items:center;
+  font-size:10.5px;
+  font-weight:700;
+  padding:2px 8px;
+  border-radius:999px;
+  background:var(--g-surface-2);
+  color:var(--g-muted);
+}
+.study-badge.is-new{
+  background:var(--g-new-soft);
+  color:#007287;
+}
+.swatches{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+}
+.swatches i{
+  width:10px;
+  height:10px;
+  border-radius:50%;
+  display:block;
+  border:1px solid rgba(15,23,42,.15);
+}
+.study-title{
+  font-size:13.5px;
+  font-weight:700;
+  color:var(--g-ink);
+  line-height:1.25;
+}
+.study-meta{
+  font-size:11.5px;
+  color:var(--g-muted);
+}
+.rail-tip{
+  margin-top:12px;
+  padding:10px;
+  border-radius:10px;
+  background:var(--g-surface-2);
+  font-size:11.5px;
+  color:var(--g-muted);
+  line-height:1.4;
+}
+.rail-tip kbd{
+  background:var(--g-surface);
+  border:1px solid var(--g-line);
+  border-radius:5px;
+  padding:1px 5px;
+  font-size:10.5px;
+  font-family:inherit;
+  color:var(--g-ink);
+}
+
+/* Right Stage Column */
+.stage-panel{
+  min-width:0;
+}
+
+/* Sticky Toolbar */
+.toolbar{
+  background:var(--g-surface);
+  border:1px solid var(--g-line);
+  border-radius:16px;
+  padding:12px 14px;
+  margin-bottom:16px;
+  display:flex;
+  flex-direction:column;
+  gap:11px;
+}
+.toolbar-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:10px;
+}
+.title-block{
+  min-width:0;
+}
+.current-meta{
+  font-size:11px;
+  font-weight:700;
+  color:var(--g-muted);
+  text-transform:uppercase;
+  letter-spacing:.7px;
+}
+.title-block h2{
+  margin:2px 0 0;
+  font-size:17px;
+  font-weight:700;
+  letter-spacing:-.3px;
+}
+.toolbar-actions{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.pill-group{
+  display:inline-flex;
+  align-items:center;
+  background:var(--g-surface-2);
+  border:1px solid var(--g-line);
+  border-radius:999px;
+  padding:3px;
+  gap:2px;
+}
+.pill-btn{
+  border:0;
+  background:transparent;
+  color:var(--g-muted);
+  font-size:12px;
+  font-weight:600;
+  padding:6px 12px;
+  border-radius:999px;
+  transition:all .14s ease;
+  white-space:nowrap;
+}
+.pill-btn[aria-pressed=true]{
+  background:var(--g-surface);
+  color:var(--g-ink);
+  box-shadow:0 1px 4px rgba(15,23,42,.10);
+}
+.compare-select{
+  border:1px solid var(--g-line);
+  background:var(--g-surface);
+  color:var(--g-ink);
+  border-radius:999px;
+  padding:6px 11px;
+  font-size:12px;
+  font-weight:600;
+}
+.open-study{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  border:1px solid var(--g-accent);
+  background:var(--g-accent);
+  color:#fff;
+  text-decoration:none;
+  border-radius:999px;
+  padding:7px 13px;
+  font-size:12px;
+  font-weight:600;
+  white-space:nowrap;
+}
+.open-study:hover{filter:brightness(1.06)}
+
+/* Screen Selector Row */
+.screen-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding-top:10px;
+  border-top:1px solid var(--g-line);
+}
+.step-btn{
+  border:1px solid var(--g-line);
+  background:var(--g-surface);
+  color:var(--g-ink);
+  border-radius:9px;
+  padding:6px 10px;
+  font-size:12px;
+  font-weight:600;
+  white-space:nowrap;
+  flex-shrink:0;
+}
+.step-btn:hover{background:var(--g-surface-2)}
+.screen-pills{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap:wrap;
+  flex:1;
+}
+.screen-pill{
+  border:1px solid var(--g-line);
+  background:var(--g-bg);
+  color:var(--g-muted);
+  border-radius:9px;
+  padding:5px 10px;
+  font-size:12px;
+  font-weight:600;
+  transition:all .12s ease;
+  white-space:nowrap;
+}
+.screen-pill:hover{
+  background:var(--g-surface-2);
+  color:var(--g-ink);
+}
+.screen-pill[aria-pressed=true]{
+  background:var(--g-ink);
+  border-color:var(--g-ink);
+  color:#fff;
+}
+
+/* Preview Canvas */
+.stage-grid{
+  display:grid;
+  grid-template-columns:minmax(0,460px);
+  justify-content:center;
+  gap:18px;
+}
+.stage-grid.dual{
+  grid-template-columns:repeat(2,minmax(0,450px));
+}
+.frame-box{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+}
+.frame-label{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-size:11.5px;
+  font-weight:700;
+  color:var(--g-muted);
+  margin-bottom:8px;
+  background:var(--g-surface);
+  border:1px solid var(--g-line);
+  border-radius:999px;
+  padding:4px 12px;
+}
+.frame-box iframe{
+  display:block;
+  width:100%;
+  max-width:450px;
+  height:960px;
+  border:0;
+  background:transparent;
+  border-radius:16px;
+}
+
+/* Study Note & Footer */
+.study-note{
+  margin:16px 0 0;
+  padding:12px 14px;
+  background:var(--g-surface);
+  border:1px solid var(--g-line);
+  border-radius:12px;
+  font-size:12.5px;
+  color:var(--g-muted);
+  line-height:1.5;
+}
+.library-footer{
+  margin-top:20px;
+  padding-top:12px;
+  border-top:1px solid var(--g-line);
+  color:var(--g-muted);
+  font-size:11.5px;
+  display:flex;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:8px;
+}
+
+@media(max-width:980px){
+  .workspace{grid-template-columns:1fr}
+  .study-rail{position:static}
+  .study-list{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  }
+  .rail-tip{display:none}
+}
+@media(max-width:820px){
+  .stage-grid.dual{grid-template-columns:minmax(0,450px)}
+}
+@media(max-width:600px){
+  #design-library{padding:14px 12px 24px}
+  .library-header{flex-direction:column;align-items:flex-start;gap:10px}
+  .library-header h1{font-size:22px}
+  .study-list{display:flex;flex-direction:row;overflow-x:auto;padding-bottom:4px}
+  .study-card{min-width:210px;flex-shrink:0}
+  .screen-bar{flex-wrap:wrap}
+}
+</style>
+</head>
+<body>
 <main id="design-library">
- <header class="library-header"><div><div class="eyebrow">BITLESS / DESIGN LIBRARY</div><h1>Every direction. One place.</h1><p class="subtitle">Browse the latest review, revisit earlier ideas, and keep the design history together.</p></div><div class="counter" id="library-count"></div></header>
- <div class="layout"><aside class="catalog" aria-label="Design catalog"><input id="library-search" type="search" placeholder="Search designs…" aria-label="Search designs"><select id="library-filter" aria-label="Filter designs"><option value="all">All designs</option><option value="latest">Latest review</option><option value="Home">Home</option><option value="Accounts">Accounts</option><option value="Strategy">Strategy</option><option value="archive">Earlier boards & references</option></select><div class="catalog-list" id="library-list"></div></aside>
- <section aria-label="Selected design"><div class="preview-head"><div><div class="current-group" id="current-group"></div><h2 id="current-title"></h2></div><a id="open-study" class="open-study" target="_blank" rel="noopener">Open full study ↗</a></div><div class="viewer-wrap"><iframe id="study-viewer" title="Selected BitLess design" sandbox="allow-scripts allow-popups allow-modals"></iframe></div><p class="study-note" id="study-note"></p></section></div>
- <footer class="library-footer">Design history · Original studies remain intact · Sample financial values · A proposal is not implementation approval</footer>
+  <header class="library-header">
+    <div>
+      <div class="eyebrow">BitLess / Design Library</div>
+      <h1>Curated Full-App Studies</h1>
+      <p class="subtitle">Browse from Fresh Light &amp; After Dark (Nov 17, 2026) through the newest Uphold-inspired design sets. Switch themes, jump to any screen, or compare side-by-side without scrolling a wall of links.</p>
+    </div>
+    <div class="header-meta">
+      <div class="counter-pill" id="library-count"></div>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="study-rail" aria-label="Design studies">
+      <div class="rail-label">Design Sets</div>
+      <div class="study-list" id="study-list"></div>
+      <div class="rail-tip">
+        Quick keys: <kbd>←</kbd> <kbd>→</kbd> cycle screens · <kbd>[</kbd> <kbd>]</kbd> switch design sets · <kbd>T</kbd> toggle Light/Dark.
+      </div>
+    </aside>
+
+    <section class="stage-panel" aria-label="Design preview stage">
+      <div class="toolbar">
+        <div class="toolbar-row">
+          <div class="title-block">
+            <div class="current-meta" id="current-meta"></div>
+            <h2 id="current-title"></h2>
+          </div>
+          <a id="open-study" class="open-study" target="_blank" rel="noopener">Open full study ↗</a>
+        </div>
+
+        <div class="toolbar-row">
+          <div class="toolbar-actions">
+            <div class="pill-group" id="variant-pills" role="group" aria-label="Theme variant"></div>
+            <div class="pill-group" id="mode-pills" role="group" aria-label="Preview layout">
+              <button class="pill-btn" data-mode="single" aria-pressed="true">Single</button>
+              <button class="pill-btn" data-mode="lightdark" aria-pressed="false">Light + Dark</button>
+            </div>
+            <select id="compare-select" class="compare-select" aria-label="Compare against another set">
+              <option value="">Compare with…</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="screen-bar">
+          <button class="step-btn" id="prev-screen" type="button" title="Previous screen (Left arrow)">‹ Prev</button>
+          <div class="screen-pills" id="screen-pills" role="tablist" aria-label="App screens"></div>
+          <button class="step-btn" id="next-screen" type="button" title="Next screen (Right arrow)">Next ›</button>
+        </div>
+      </div>
+
+      <div class="stage-grid" id="stage-grid">
+        <div class="frame-box" id="primary-box">
+          <div class="frame-label" id="primary-label" hidden></div>
+          <iframe id="study-viewer" title="Selected BitLess design" sandbox="allow-scripts allow-popups allow-modals"></iframe>
+        </div>
+        <div class="frame-box" id="secondary-box" hidden>
+          <div class="frame-label" id="secondary-label"></div>
+          <iframe id="compare-viewer" title="Comparison BitLess design" sandbox="allow-scripts allow-popups allow-modals"></iframe>
+        </div>
+      </div>
+
+      <p class="study-note" id="study-note"></p>
+    </section>
+  </div>
+
+  <footer class="library-footer">
+    <span>BitLess Design Library · Filtered from 2026-11-17 onward</span>
+    <span>Earlier historical files remain preserved in design/ · Sample financial values</span>
+  </footer>
 </main>
+
 <script id="gallery-data" type="application/json">__GALLERY_DATA__</script>
 <script>
-(()=>{
- const data=JSON.parse(document.getElementById('gallery-data').textContent);const list=document.getElementById('library-list');const search=document.getElementById('library-search');const filter=document.getElementById('library-filter');const viewer=document.getElementById('study-viewer');let selected=data.entries[0];let fullUrl;
- document.getElementById('library-count').textContent=Object.keys(data.documents).length+' studies · '+data.entries.length+' views';
- const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- function hydrated(file){return data.documents[file].replace(/gallery-asset-[a-f0-9]{18}/g,key=>data.assets[key]||key)}
- const baseStyle='<style>:root{--background:#fff;--foreground:#182032;--card:#fff;--card-foreground:#182032;--secondary:#f1f5fa;--muted:#edf1f7;--muted-foreground:#68758a;--border:#dde5ef;--primary:#0051fb;--primary-foreground:#fff;--accent:#e5f2ff;--accent-foreground:#0051fb;--radius:14px;--font-sans:Arial,sans-serif;--font-size-base:14px}body{margin:0;padding:8px;font:14px/1.5 Arial,sans-serif;background:transparent;color:#182032}button,input,select{font-family:inherit}button{cursor:pointer}button:focus-visible,a:focus-visible{outline:2px solid #0051fb;outline-offset:3px}[hidden]{display:none!important}</style>';
- function prepare(entry,preview){
-  let doc=hydrated(entry.file);if(!/<body[\s>]/i.test(doc))doc='<!doctype html><html><head></head><body>'+doc+'</body></html>';doc=doc.replace(/<head[^>]*>/i,m=>m+baseStyle);
-  let activation='';if(entry.selector)activation+='document.querySelector('+JSON.stringify('['+entry.selector+'="'+entry.variant+'"]')+')?.click();';
-  if(entry.pageSelector)activation+='document.querySelector('+JSON.stringify('['+entry.pageSelector+'="'+entry.page.toLowerCase()+'"]')+')?.click();';
-  const hide=preview&&!entry.archive?'<style>.design-picker,.screen-picker,.study-controls,.choices,.controls-bar,.preview-note,.palette-caption{display:none!important}</style>':'';
-  const notify=preview?'const report=()=>parent.postMessage({type:"bitless-gallery-size",height:document.body.scrollHeight},"*");new ResizeObserver(report).observe(document.body);report();':'';
-  const script='<script>'+activation+notify+'<\/script>';
-  return doc.replace(/<\/body>/i,hide+script+'</body>');
- }
- function renderList(){const q=search.value.trim().toLowerCase();const mode=filter.value;const matches=data.entries.filter(e=>(mode==='all'||mode==='latest'&&e.latest||mode==='archive'&&e.archive||mode===e.page)&&[e.title,e.page,e.group,e.file].join(' ').toLowerCase().includes(q));const groups=new Map();matches.forEach(e=>{if(!groups.has(e.group))groups.set(e.group,[]);groups.get(e.group).push(e)});list.innerHTML='';for(const [group,items]of groups){const section=document.createElement('details');section.open=q.length>0||mode!=='all'||items.some(e=>e.id===selected.id)||group.startsWith('Latest');section.innerHTML='<summary>'+escape(group)+' <span>('+items.length+')</span></summary>';for(const e of items){const b=document.createElement('button');b.className='entry';b.setAttribute('aria-pressed',String(e.id===selected.id));b.innerHTML='<strong>'+escape(e.title)+'</strong><small>'+escape(e.page)+'</small>';b.addEventListener('click',()=>select(e));section.appendChild(b)}list.appendChild(section)}if(!matches.length)list.innerHTML='<div class="empty">No matching studies.</div>'}
- function select(entry,updateHash=true){selected=entry;document.getElementById('current-group').textContent=entry.group;document.getElementById('current-title').textContent=entry.title+' / '+entry.page;document.getElementById('study-note').textContent=entry.note;viewer.title=entry.title+' '+entry.page+' design';viewer.style.height='1000px';viewer.srcdoc=prepare(entry,true);if(fullUrl)URL.revokeObjectURL(fullUrl);fullUrl=URL.createObjectURL(new Blob([prepare(entry,false)],{type:'text/html;charset=utf-8'}));document.getElementById('open-study').href=fullUrl;if(updateHash)try{history.replaceState(null,'','#'+entry.id)}catch{}renderList()}
- window.addEventListener('message',event=>{if(event.source!==viewer.contentWindow||event.data?.type!=='bitless-gallery-size')return;const height=Number(event.data.height);if(Number.isFinite(height))viewer.style.height=Math.max(360,Math.min(selected.archive?1800:1250,height+8))+'px'});
- search.addEventListener('input',renderList);filter.addEventListener('change',renderList);window.addEventListener('hashchange',()=>{const e=data.entries.find(e=>e.id===location.hash.slice(1));if(e)select(e,false)});
- const bookmarked=data.entries.find(e=>e.id===location.hash.slice(1));select(bookmarked||selected,false);
+(() => {
+  const data = JSON.parse(document.getElementById('gallery-data').textContent);
+  const collections = data.collections || [];
+  if (!collections.length) return;
+
+  const studyList = document.getElementById('study-list');
+  const variantPills = document.getElementById('variant-pills');
+  const screenPills = document.getElementById('screen-pills');
+  const compareSelect = document.getElementById('compare-select');
+  const stageGrid = document.getElementById('stage-grid');
+  const primaryLabel = document.getElementById('primary-label');
+  const secondaryBox = document.getElementById('secondary-box');
+  const secondaryLabel = document.getElementById('secondary-label');
+  const viewerPrimary = document.getElementById('study-viewer');
+  const viewerCompare = document.getElementById('compare-viewer');
+  const openStudy = document.getElementById('open-study');
+
+  document.getElementById('library-count').textContent =
+    collections.length + ' studies · ' + data.entries.length + ' views';
+
+  const esc = v => String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const hydrated = file => data.documents[file].replace(/gallery-asset-[a-f0-9]{18}/g, k => data.assets[k] || k);
+
+  const baseStyle = '<style>:root{--background:#fff;--foreground:#182032;--card:#fff;--card-foreground:#182032;--secondary:#f1f5fa;--muted:#edf1f7;--muted-foreground:#68758a;--border:#dde5ef;--primary:#0051fb;--primary-foreground:#fff;--accent:#e5f2ff;--accent-foreground:#0051fb;--radius:14px;--font-sans:Arial,sans-serif;--font-size-base:14px}body{margin:0;padding:8px;font:14px/1.5 Arial,sans-serif;background:transparent;color:#182032}button,input,select{font-family:inherit}button{cursor:pointer}button:focus-visible,a:focus-visible{outline:2px solid #0051fb;outline-offset:3px}[hidden]{display:none!important}</style>';
+
+  let state = {
+    colId: collections[0].id,
+    variantIdx: 0,
+    page: collections[0].pages[0],
+    mode: 'single', // 'single' | 'lightdark' | 'compare'
+    compareColId: collections.length > 1 ? collections[1].id : ''
+  };
+
+  let fullUrl = null;
+
+  function getCol(id) {
+    return collections.find(c => c.id === id) || collections[0];
+  }
+
+  function resolvePage(col, preferredPage) {
+    if (col.pages.includes(preferredPage)) return preferredPage;
+    return col.pages[0];
+  }
+
+  function prepare(col, variantObj, page, preview, frameTag) {
+    let doc = hydrated(col.file);
+    if (!/<body[\s>]/i.test(doc)) doc = '<!doctype html><html><head></head><body>' + doc + '</body></html>';
+    doc = doc.replace(/<head[^>]*>/i, m => m + baseStyle);
+
+    let activation = '';
+    if (col.selector && variantObj && variantObj.value) {
+      activation += 'document.querySelector(' + JSON.stringify('[' + col.selector + '="' + variantObj.value + '"]') + ')?.click();';
+    }
+    if (col.pageSelector && page) {
+      activation += 'document.querySelector(' + JSON.stringify('[' + col.pageSelector + '="' + page.toLowerCase() + '"]') + ')?.click();';
+    }
+
+    const hide = preview && !col.archive
+      ? '<style>.design-picker,.screen-picker,.study-controls,.choices,.controls-bar,.preview-note,.palette-caption{display:none!important}</style>'
+      : '';
+    const notify = preview
+      ? 'const report=()=>parent.postMessage({type:"bitless-gallery-size",frame:' + JSON.stringify(frameTag) + ',height:document.body.scrollHeight},"*");new ResizeObserver(report).observe(document.body);setTimeout(report,60);report();'
+      : '';
+    const script = '<script>' + activation + notify + '<\/script>';
+    return doc.replace(/<\/body>/i, hide + script + '</body>');
+  }
+
+  function renderStudies() {
+    studyList.innerHTML = '';
+    for (const col of collections) {
+      const btn = document.createElement('button');
+      btn.className = 'study-card';
+      btn.setAttribute('aria-pressed', String(col.id === state.colId));
+      const swatches = (col.palette || []).map(hex => '<i style="background:' + esc(hex) + '"></i>').join('');
+      const badgeCls = col.latest ? 'study-badge is-new' : 'study-badge';
+      btn.innerHTML =
+        '<div class="study-top">' +
+          '<span class="' + badgeCls + '">' + esc(col.badge || col.date || 'Study') + '</span>' +
+          '<span class="swatches">' + swatches + '</span>' +
+        '</div>' +
+        '<div class="study-title">' + esc(col.shortTitle) + '</div>' +
+        '<div class="study-meta">' + col.pages.length + ' screens · ' + col.variants.length + ' themes</div>';
+      btn.addEventListener('click', () => {
+        state.colId = col.id;
+        state.variantIdx = Math.min(state.variantIdx, col.variants.length - 1);
+        state.page = resolvePage(col, state.page);
+        if (state.compareColId === state.colId) {
+          const other = collections.find(c => c.id !== state.colId);
+          state.compareColId = other ? other.id : '';
+        }
+        render(true);
+      });
+      studyList.appendChild(btn);
+    }
+  }
+
+  function renderControls(col) {
+    // Theme variant pills
+    variantPills.innerHTML = '';
+    col.variants.forEach((v, idx) => {
+      const b = document.createElement('button');
+      b.className = 'pill-btn';
+      b.textContent = v.name;
+      b.setAttribute('aria-pressed', String(idx === state.variantIdx));
+      b.addEventListener('click', () => {
+        state.variantIdx = idx;
+        if (state.mode === 'lightdark') state.mode = 'single';
+        render(true);
+      });
+      variantPills.appendChild(b);
+    });
+
+    // Mode pills
+    document.querySelectorAll('#mode-pills .pill-btn').forEach(b => {
+      b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode));
+    });
+
+    // Compare dropdown
+    compareSelect.innerHTML = '<option value="">Compare with…</option>';
+    collections.filter(c => c.id !== col.id).forEach(other => {
+      const opt = document.createElement('option');
+      opt.value = other.id;
+      opt.textContent = 'vs ' + other.shortTitle;
+      if (state.mode === 'compare' && state.compareColId === other.id) opt.selected = true;
+      compareSelect.appendChild(opt);
+    });
+
+    // Screen pills
+    screenPills.innerHTML = '';
+    col.pages.forEach(p => {
+      const b = document.createElement('button');
+      b.className = 'screen-pill';
+      b.textContent = p;
+      b.setAttribute('aria-pressed', String(p === state.page));
+      b.addEventListener('click', () => {
+        state.page = p;
+        render(true);
+      });
+      screenPills.appendChild(b);
+    });
+  }
+
+  function render(updateHash = true) {
+    const col = getCol(state.colId);
+    state.page = resolvePage(col, state.page);
+    const variantObj = col.variants[state.variantIdx] || col.variants[0];
+
+    renderStudies();
+    renderControls(col);
+
+    document.getElementById('current-meta').textContent =
+      (col.badge ? col.badge + ' · ' : '') + col.file;
+    document.getElementById('current-title').textContent =
+      col.shortTitle + ' — ' + variantObj.name + ' / ' + state.page;
+    document.getElementById('study-note').textContent = col.note || '';
+
+    const isDual = (state.mode === 'lightdark' && col.variants.length > 1) ||
+                   (state.mode === 'compare' && state.compareColId);
+
+    stageGrid.classList.toggle('dual', Boolean(isDual));
+
+    if (state.mode === 'lightdark' && col.variants.length > 1) {
+      const lightV = col.variants[0];
+      const darkV = col.variants[1];
+      primaryLabel.hidden = false;
+      primaryLabel.textContent = col.shortTitle + ' · ' + lightV.name;
+      secondaryBox.hidden = false;
+      secondaryLabel.textContent = col.shortTitle + ' · ' + darkV.name;
+
+      viewerPrimary.style.height = '960px';
+      viewerCompare.style.height = '960px';
+      viewerPrimary.srcdoc = prepare(col, lightV, state.page, true, 'primary');
+      viewerCompare.srcdoc = prepare(col, darkV, state.page, true, 'compare');
+    } else if (state.mode === 'compare' && state.compareColId) {
+      const otherCol = getCol(state.compareColId);
+      const otherVariant = otherCol.variants[Math.min(state.variantIdx, otherCol.variants.length - 1)] || otherCol.variants[0];
+      const otherPage = resolvePage(otherCol, state.page);
+
+      primaryLabel.hidden = false;
+      primaryLabel.textContent = col.shortTitle + ' · ' + variantObj.name;
+      secondaryBox.hidden = false;
+      secondaryLabel.textContent = otherCol.shortTitle + ' · ' + otherVariant.name + (otherPage !== state.page ? ' (' + otherPage + ')' : '');
+
+      viewerPrimary.style.height = '960px';
+      viewerCompare.style.height = '960px';
+      viewerPrimary.srcdoc = prepare(col, variantObj, state.page, true, 'primary');
+      viewerCompare.srcdoc = prepare(otherCol, otherVariant, otherPage, true, 'compare');
+    } else {
+      primaryLabel.hidden = true;
+      secondaryBox.hidden = true;
+      viewerPrimary.style.height = '960px';
+      viewerPrimary.srcdoc = prepare(col, variantObj, state.page, true, 'primary');
+    }
+
+    if (fullUrl) URL.revokeObjectURL(fullUrl);
+    fullUrl = URL.createObjectURL(new Blob([prepare(col, variantObj, state.page, false, 'full')], {type:'text/html;charset=utf-8'}));
+    openStudy.href = fullUrl;
+
+    if (updateHash) {
+      try {
+        const params = new URLSearchParams();
+        params.set('study', col.id);
+        params.set('theme', variantObj.value);
+        params.set('screen', state.page);
+        if (state.mode !== 'single') params.set('mode', state.mode);
+        if (state.mode === 'compare' && state.compareColId) params.set('vs', state.compareColId);
+        history.replaceState(null, '', '#' + params.toString());
+      } catch {}
+    }
+  }
+
+  function applyHash() {
+    const raw = location.hash.slice(1);
+    if (!raw) return false;
+    // Support legacy #view-... entry IDs
+    const legacy = data.entries.find(e => e.id === raw);
+    if (legacy) {
+      const col = getCol(legacy.collectionId);
+      state.colId = col.id;
+      const vi = col.variants.findIndex(v => v.value === legacy.variant);
+      state.variantIdx = vi >= 0 ? vi : 0;
+      state.page = resolvePage(col, legacy.page);
+      state.mode = 'single';
+      return true;
+    }
+    const params = new URLSearchParams(raw);
+    const sid = params.get('study');
+    if (sid && collections.some(c => c.id === sid)) {
+      const col = getCol(sid);
+      state.colId = col.id;
+      const th = params.get('theme');
+      const vi = col.variants.findIndex(v => v.value === th);
+      state.variantIdx = vi >= 0 ? vi : 0;
+      state.page = resolvePage(col, params.get('screen') || col.pages[0]);
+      const mode = params.get('mode');
+      state.mode = (mode === 'lightdark' || mode === 'compare') ? mode : 'single';
+      const vs = params.get('vs');
+      if (vs && collections.some(c => c.id === vs && c.id !== col.id)) state.compareColId = vs;
+      return true;
+    }
+    return false;
+  }
+
+  document.querySelectorAll('#mode-pills .pill-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      state.mode = b.dataset.mode;
+      render(true);
+    });
+  });
+
+  compareSelect.addEventListener('change', () => {
+    if (compareSelect.value) {
+      state.compareColId = compareSelect.value;
+      state.mode = 'compare';
+    } else {
+      state.mode = 'single';
+    }
+    render(true);
+  });
+
+  function stepScreen(delta) {
+    const col = getCol(state.colId);
+    const idx = col.pages.indexOf(state.page);
+    const nextIdx = (idx + delta + col.pages.length) % col.pages.length;
+    state.page = col.pages[nextIdx];
+    render(true);
+  }
+
+  function stepStudy(delta) {
+    const idx = collections.findIndex(c => c.id === state.colId);
+    const nextCol = collections[(idx + delta + collections.length) % collections.length];
+    state.colId = nextCol.id;
+    state.variantIdx = Math.min(state.variantIdx, nextCol.variants.length - 1);
+    state.page = resolvePage(nextCol, state.page);
+    render(true);
+  }
+
+  document.getElementById('prev-screen').addEventListener('click', () => stepScreen(-1));
+  document.getElementById('next-screen').addEventListener('click', () => stepScreen(1));
+
+  window.addEventListener('keydown', e => {
+    if (e.target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); stepScreen(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); stepScreen(1); }
+    else if (e.key === '[') { e.preventDefault(); stepStudy(-1); }
+    else if (e.key === ']') { e.preventDefault(); stepStudy(1); }
+    else if (e.key === 't' || e.key === 'T') {
+      const col = getCol(state.colId);
+      if (col.variants.length > 1) {
+        state.variantIdx = (state.variantIdx + 1) % col.variants.length;
+        render(true);
+      }
+    }
+  });
+
+  window.addEventListener('message', event => {
+    if (event.data?.type !== 'bitless-gallery-size') return;
+    const h = Number(event.data.height);
+    if (!Number.isFinite(h)) return;
+    const clamped = Math.max(460, Math.min(1150, h + 10)) + 'px';
+    if (event.source === viewerPrimary.contentWindow) viewerPrimary.style.height = clamped;
+    else if (event.source === viewerCompare.contentWindow) viewerCompare.style.height = clamped;
+  });
+
+  window.addEventListener('hashchange', () => {
+    if (applyHash()) render(false);
+  });
+
+  applyHash();
+  render(false);
 })();
-</script></body></html>
+</script>
+</body>
+</html>

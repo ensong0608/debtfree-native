@@ -1,9 +1,10 @@
 import { Modal, Platform, TouchableWithoutFeedback, View } from 'react-native';
 import { AppIcon, type AppIconName } from './AppIcon';
+import { AdaptiveModal } from './ModalOverlay';
 import { Pressable, Text, useNativeAppearance } from './NativeAppearance';
 import { ui } from './FinancialScreen';
 
-const AdaptiveModal =
+const StandaloneModal =
   Platform.OS === 'web'
     ? ({ visible, children }: { visible: boolean; children: React.ReactNode }) =>
         visible ? <View style={{ position: 'fixed' as any, top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999 }}>{children}</View> : null
@@ -18,6 +19,7 @@ export function ConfirmModal({
   destructive = true,
   icon = 'warning',
   busy = false,
+  insideSheet = false,
   onConfirm,
   onCancel,
 }: {
@@ -29,6 +31,7 @@ export function ConfirmModal({
   destructive?: boolean;
   icon?: AppIconName;
   busy?: boolean;
+  insideSheet?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -42,9 +45,10 @@ export function ConfirmModal({
   const iconColor = destructive ? '#F08B78' : palette.brand;
   const confirmBg = destructive ? '#DC2626' : ctaBg;
   const confirmFg = destructive ? '#FFFFFF' : ctaFg;
+  const ConfirmationOverlay = insideSheet ? AdaptiveModal : StandaloneModal;
 
   return (
-    <AdaptiveModal visible={visible} transparent animationType="fade" onRequestClose={() => { if (!busy) onCancel(); }}>
+    <ConfirmationOverlay visible={visible} transparent animationType="fade" onRequestClose={() => { if (!busy) onCancel(); }}>
       <TouchableWithoutFeedback onPress={() => { if (!busy) onCancel(); }}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           <TouchableWithoutFeedback>
@@ -86,6 +90,6 @@ export function ConfirmModal({
           </TouchableWithoutFeedback>
         </View>
       </TouchableWithoutFeedback>
-    </AdaptiveModal>
+    </ConfirmationOverlay>
   );
 }

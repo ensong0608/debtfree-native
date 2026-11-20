@@ -29,7 +29,7 @@ export function useInformationSheet(): { showInformation: (title: string, detail
   return { isOpen: content !== null, showInformation: (title, detail) => setContent({ title, detail }), informationSheet: <InformationSheet visible={content !== null} onClose={() => setContent(null)} title={content?.title ?? ''} detail={content?.detail ?? ''} /> };
 }
 
-export function InformationButton({ label, detail, color, onVisibilityChange }: { label: string; detail: string; color?: string; onVisibilityChange?: (visible: boolean) => void }) {
+export function InformationButton({ label, detail, color, size = 16, onVisibilityChange }: { label: string; detail: string; color?: string; size?: number; onVisibilityChange?: (visible: boolean) => void }) {
   const { palette } = useNativeAppearance();
   const { showInformation, informationSheet, isOpen } = useInformationSheet();
   const reportedOpen = useRef(false);
@@ -41,5 +41,6 @@ export function InformationButton({ label, detail, color, onVisibilityChange }: 
     return () => clearTimeout(timer);
   }, [isOpen, onVisibilityChange]);
   useEffect(() => () => { if (reportedOpen.current) onVisibilityChange?.(false); }, [onVisibilityChange]);
-  return <><Pressable accessibilityRole="button" accessibilityLabel={label} onPress={() => showInformation(label, detail)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><AppIcon name="info" size={18} color={color ?? palette.muted} /></Pressable>{informationSheet}</>;
+  const boxSize = Math.max(size + 2, 16);
+  return <><Pressable accessibilityRole="button" accessibilityLabel={label} onPress={() => showInformation(label, detail)} hitSlop={12} style={{ width: boxSize, height: boxSize, alignItems: 'center', justifyContent: 'center' }}><AppIcon name="info" size={size} color={color ?? palette.muted} /></Pressable>{informationSheet}</>;
 }

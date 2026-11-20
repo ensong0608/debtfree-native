@@ -4,7 +4,6 @@ import React, { useState, useRef, useEffect, useCallback, useMemo, type ReactNod
 import {
   AppState,
   Keyboard,
-  RefreshControl,
   ScrollView as NativeScrollView,
   Platform,
   StyleSheet,
@@ -12,10 +11,14 @@ import {
 } from 'react-native';
 import { Pressable, ScrollView, Text, TextInput, View, useNativeAppearance } from '../components/NativeAppearance';
 import Svg, { Path } from 'react-native-svg';
-import * as SecureStore from 'expo-secure-store';
 import * as ExpoCrypto from 'expo-crypto';
 import type { Session } from '@supabase/supabase-js';
 import { AppIcon } from '../components/AppIcon';
+import { AccountMark } from '../components/AccountMark';
+import { AmountText } from '../components/AmountText';
+import { HeroGradient } from '../components/HeroGradient';
+import { payActionColors } from '../components/appearance-theme';
+import { PullToRefreshScrollView } from '../components/PullToRefreshScrollView';
 import { type DropdownOption } from '../components/SelectDropdown';
 import {
   Card,
@@ -31,10 +34,11 @@ import { SettingsScreen } from './SettingsScreen';
 import { WelcomeSheet } from '../components/WelcomeSheet';
 import { ObligationPaySheet, type PayNowTarget } from '../components/ObligationPaySheet';
 import { SheetFormHeader, SheetModal } from '../components/SheetModal';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { AdaptiveModal } from '../components/ModalOverlay';
 import { CalendarDatePickerModal, DueDayPickerModal, formatShortDate } from '../components/DatePickerModal';
 import { InformationButton } from '../components/InformationSheet';
-import { InspireHorizonBackground, InspireQuote } from '../components/InspireArt';
+import { InspireCornerArt, InspireHorizonBackground, InspireQuote } from '../components/InspireArt';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { bottomInsetPadding } from '../components/bottom-inset';
 import {
@@ -60,6 +64,7 @@ import {
   deleteUserDebt,
   upsertUserDebt,
   saveUserOnboardingSettingsPatch,
+  markZeroBalanceDebtPaid,
   loadUserOnboardingData,
 } from '../onboarding-storage';
 import { type LedgerTransaction, type ReconciliationAnchor, classifyCategoryDirection, isPaidOffAccountArchived } from '../finance/ledger';
@@ -79,6 +84,7 @@ import { moneyToMajor, parseMoney, type Money } from '../finance/money';
 import { getCurrency } from '../finance/currencies';
 import { addCalendarDays, type DateOnly, currentHouseholdDate, parseDateOnly } from '../finance/calendar';
 import {
+  chooseObligationDueDateEdit,
   confirmObligationPaidToday,
   obligationFirstDueDate,
   prepareObligationEditorSchedule,
@@ -129,30 +135,6 @@ function formatShortActivityDate(isoDate: string): string {
   const parsed = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0));
   if (Number.isNaN(parsed.getTime())) return isoDate;
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(parsed);
-}
-
-function getCategoryBadge(category?: string, isPayment?: boolean) {
-  if (isPayment) {
-    return { icon: 'creditCard' as const, bg: 'rgba(118, 220, 185, 0.14)', color: '#76DCB9' };
-  }
-  switch (category) {
-    case 'utilities':
-      return { icon: 'bolt' as const, bg: 'rgba(245, 197, 99, 0.14)', color: '#F5C563' };
-    case 'housing':
-    case 'Mortgage':
-      return { icon: 'homeLoan' as const, bg: 'rgba(45, 212, 191, 0.14)', color: '#2DD4BF' };
-    case 'insurance':
-      return { icon: 'shield' as const, bg: 'rgba(236, 72, 153, 0.14)', color: '#EC4899' };
-    case 'auto':
-    case 'Auto loan':
-      return { icon: 'auto' as const, bg: 'rgba(96, 165, 250, 0.14)', color: '#60A5FA' };
-    case 'subscription':
-      return { icon: 'grid' as const, bg: 'rgba(167, 139, 250, 0.14)', color: '#A78BFA' };
-    case 'Credit card':
-      return { icon: 'creditCard' as const, bg: 'rgba(96, 165, 250, 0.14)', color: '#60A5FA' };
-    default:
-      return { icon: 'calendar' as const, bg: 'rgba(96, 165, 250, 0.14)', color: '#60A5FA' };
-  }
 }
 
 export type HomeScreenProps = {
@@ -244,12 +226,16 @@ export function HomeScreen({
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const refreshOwnerKey = `${session?.user.id ?? 'offline'}:${onboardingData.userId}:${onboardingData.householdId}:${currencyCode}`;
   const refreshOwnerRef = useRef(refreshOwnerKey);
-  if (refreshOwnerRef.current !== refreshOwnerKey) {
-    refreshOwnerRef.current = refreshOwnerKey;
-    refreshPromiseRef.current = null;
-  }
-  reloadRef.current = onReload;
-  reloadingRef.current = reloading;
+  useEffect(() => {
+    if (refreshOwnerRef.current !== refreshOwnerKey) {
+      refreshOwnerRef.current = refreshOwnerKey;
+      refreshPromiseRef.current = null;
+    }
+  }, [refreshOwnerKey]);
+  useEffect(() => {
+    reloadRef.current = onReload;
+    reloadingRef.current = reloading;
+  }, [onReload, reloading]);
   const refreshAccountData = useCallback((): Promise<void> => {
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
     if (reloadingRef.current) return Promise.resolve();
@@ -294,30 +280,17 @@ export function HomeScreen({
   }, []);
   const savingRef = useRef(false);
   const latestOnboardingRef = useRef(onboardingData);
-  latestOnboardingRef.current = onboardingData;
-  const [pairingBusy, setPairingBusy] = useState(false);
-
-  const [themePreference, setThemePreference] = useState<'System' | 'Dark' | 'Light' | 'Inspire'>('Dark');
-
   useEffect(() => {
-    let active = true;
-    const userId = session?.user?.id ?? onboardingData.userId;
-    SecureStore.getItemAsync(`debtfree-pref-theme.${userId.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
-      .then(savedTheme => {
-        if (!active || !savedTheme) return;
-        if (savedTheme === 'System' || savedTheme === 'Dark' || savedTheme === 'Light' || savedTheme === 'Inspire') {
-          setThemePreference(savedTheme as 'System' | 'Dark' | 'Light' | 'Inspire');
-        }
-      })
-      .catch(() => {});
-    return () => { active = false; };
-  }, [session, onboardingData.userId]);
+    latestOnboardingRef.current = onboardingData;
+  }, [onboardingData]);
+  const [pairingBusy, setPairingBusy] = useState(false);
 
   // Add/Edit Debt form state
   const [editingDebtId, setEditingDebtId] = useState<string | null>(null);
   const draftDebtIdRef = useRef<string | null>(null);
   const draftDebtPaidTodayRef = useRef<Record<string, boolean>>({});
   const [showDebtForm, setShowDebtForm] = useState(false);
+  const [confirmLoanDeletion, setConfirmLoanDeletion] = useState(false);
   const [debtCategory, setDebtCategory] = useState<DebtCategory>('Credit card');
   const [debtName, setDebtName] = useState('');
   const [debtBalance, setDebtBalance] = useState('');
@@ -335,6 +308,11 @@ export function HomeScreen({
   const [showDebtRenewalPicker, setShowDebtRenewalPicker] = useState(false);
   const [showDebtCategoryPicker, setShowDebtCategoryPicker] = useState(false);
 
+  const householdTimeZone =
+    onboardingData?.householdTimeZone ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    'UTC';
+
   const plan: PayoffPlanResult = useMemo(
     () =>
       calculatePayoffPlan(
@@ -343,16 +321,11 @@ export function HomeScreen({
         onboardingData.extraMonthlyPayment,
         new Date(),
         currencyCode,
-        'UTC',
+        householdTimeZone,
         onboardingData.archivedPaidOffDebtIds,
       ),
-    [onboardingData.debts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, onboardingData.archivedPaidOffDebtIds],
+    [onboardingData.debts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, householdTimeZone, onboardingData.archivedPaidOffDebtIds],
   );
-
-  const householdTimeZone =
-    onboardingData?.householdTimeZone ||
-    Intl.DateTimeFormat().resolvedOptions().timeZone ||
-    'UTC';
 
   const todayKey = currentHouseholdDate(householdTimeZone);
   const loanRuntime = useMemo(() => unifiedLoanRuntime({ debts: onboardingData.debts, bills: recurringBills, pairings: onboardingData.loanBillPairingByDebtId, archived: onboardingData.archivedPaidOffDebtIds, currency: currencyCode }), [onboardingData.debts, recurringBills, onboardingData.loanBillPairingByDebtId, onboardingData.archivedPaidOffDebtIds, currencyCode]);
@@ -617,6 +590,7 @@ export function HomeScreen({
   const closeDebtEditor = () => {
     clearErrors();
     setShowDebtForm(false);
+    setConfirmLoanDeletion(false);
     setEditingDebtId(null);
     setShowDebtDuePicker(false);
     setShowDebtRenewalPicker(false);
@@ -679,24 +653,22 @@ export function HomeScreen({
     if (draft.originalBalance.trim() && (origNum === null || origNum <= 0)) {
       throw new Error('Please enter a valid original balance greater than zero.');
     }
-    const limitNum = draft.creditLimit.trim() ? parseMoneyInput(draft.creditLimit, currencyCode) : null;
-    if (draft.creditLimit.trim() && (limitNum === null || limitNum <= 0)) {
+    const isCreditCard = draft.category === 'Credit card';
+    const limitNum = isCreditCard && draft.creditLimit.trim() ? parseMoneyInput(draft.creditLimit, currencyCode) : null;
+    if (isCreditCard && draft.creditLimit.trim() && (limitNum === null || limitNum <= 0)) {
       throw new Error('Please enter a valid credit limit greater than zero.');
     }
-    const annualFeeNum = draft.annualFeeAmount.trim() ? parseMoneyInput(draft.annualFeeAmount, currencyCode) : null;
+    const annualFeeNum = isCreditCard && draft.annualFeeAmount.trim() ? parseMoneyInput(draft.annualFeeAmount, currencyCode) : null;
     let annualFeeDate: DateOnly | null = null;
-    if (draft.annualFeeAmount.trim() && (annualFeeNum === null || annualFeeNum <= 0)) {
+    if (isCreditCard && draft.annualFeeAmount.trim() && (annualFeeNum === null || annualFeeNum <= 0)) {
       throw new Error('Enter a valid annual fee amount greater than zero.');
     }
-    if ((annualFeeNum == null) !== !draft.annualFeeNextDate.trim()) {
+    if (isCreditCard && (annualFeeNum == null) !== !draft.annualFeeNextDate.trim()) {
       throw new Error('Enter both the annual fee amount and next renewal date, or clear both.');
     }
-    if (draft.annualFeeNextDate.trim()) {
+    if (isCreditCard && draft.annualFeeNextDate.trim()) {
       try { annualFeeDate = parseDateOnly(draft.annualFeeNextDate.trim()); }
       catch { throw new Error('Enter the next annual-fee date as YYYY-MM-DD.'); }
-    }
-    if (annualFeeNum != null && draft.category !== 'Credit card') {
-      throw new Error('Remove the annual-fee details before changing this account from a credit card.');
     }
 
     const debtId = existingDebt?.id ?? (isDraftFlow ? (draftDebtIdRef.current ??= ExpoCrypto.randomUUID()) : targetDebtId!);
@@ -717,6 +689,9 @@ export function HomeScreen({
         paidToday = answer;
         if (isDraftFlow) draftDebtPaidTodayRef.current[debtId] = answer;
       }
+      const dateEdit = existingDebt && dueDayNum !== null ? await chooseObligationDueDateEdit({
+        current: currentData, today, dueDay: dueDayNum, currencyCode, transactions, recurringBills, debt: existingDebt,
+      }) : undefined;
       const debtInput = {
         id: debtId,
         name: draft.name.trim(),
@@ -743,6 +718,7 @@ export function HomeScreen({
         today,
         currency: currencyCode,
         paidToday,
+        dateEdit,
         escrow: escrowNum,
       }) : undefined;
       const legacyBill = recurringBills.find(bill => bill.id === currentData.loanBillPairingByDebtId?.[debtId]?.billId);
@@ -760,7 +736,7 @@ export function HomeScreen({
             ? parseMoney(String(existingDebt.minimumPayment), currencyCode)
             : undefined,
           createdAt: existingDebt?.createdAt ?? settingsData.debts.find(d => d.id === debtId)?.createdAt ?? new Date().toISOString(),
-          isNew: isDraftDebt, paidToday, existing: priorSchedule,
+          isNew: isDraftDebt, paidToday, existing: priorSchedule, ...dateEdit,
         });
         const savedSettings = await saveObligationEditorSchedule({ current: settingsData, key, schedule, session });
         settingsData = savedSettings;
@@ -988,6 +964,35 @@ export function HomeScreen({
     } finally { savingRef.current = false; setSaving(false); }
   };
 
+  const handleMarkDebtPaid = async (debtId: string) => {
+    if (!canEdit) throw new Error('You need household edit access to archive an account.');
+    requireConfirmedSettings();
+    if (savingRef.current) throw new Error('Another change is still saving. Try again shortly.');
+    const prior = latestOnboardingRef.current;
+    const debt = prior.debts.find(item => item.id === debtId);
+    if (!debt || debt.balance !== 0) throw new Error('Only a saved zero-balance account can be marked paid.');
+    if ((prior.archivedPaidOffDebtIds ?? []).includes(debtId)) return;
+
+    savingRef.current = true;
+    setSaving(true);
+    clearErrors();
+    try {
+      const updated = await markZeroBalanceDebtPaid(prior, debtId);
+      latestOnboardingRef.current = updated;
+      onUpdateOnboardingData(updated);
+    } catch (error) {
+      const outcome = settingsFailureSnapshot(error, prior);
+      if (outcome.uncertain) markSettingsUncertain();
+      latestOnboardingRef.current = outcome.data;
+      onUpdateOnboardingData(outcome.data);
+      setLocalError(error instanceof Error ? error.message : 'Unable to archive this paid-off account.');
+      throw error;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
   const handleSaveBudgetIncome = async (patch: Pick<UserOnboardingData, 'primaryIncomeName' | 'primaryIncomeAmount' | 'primaryGrossIncomeAmount' | 'primaryPayFrequency' | 'primaryMonthlyIncome' | 'additionalIncomes'>) => {
     await saveBudgetSettings(patch);
   };
@@ -1042,6 +1047,10 @@ export function HomeScreen({
     : 0;
   const parsedDebtDueDay = debtDueDay.trim() ? Number(debtDueDay.trim()) : null;
   const isCreditCardDebt = debtCategory === 'Credit card' || onboardingData.debts.find(item => item.id === editingDebtId)?.category === 'Credit card';
+  const editingLoan = onboardingData.debts.find(item => item.id === editingDebtId && (item.category === 'Mortgage' || item.category === 'Auto loan'));
+  const deletingLoanBill = confirmLoanDeletion && editingLoan
+    ? recurringBills.find(bill => bill.id === identityLoanBillPairs[editingLoan.id])
+    : undefined;
 
   const debtEditor: ReactNode = showDebtForm ? (
     <HomeAppearance>{({ isLight, palette, ctaBg, ctaFg }) => {
@@ -1168,6 +1177,21 @@ export function HomeScreen({
                   </View>
                 </View>
                 <View style={[rowStyle, rowBorderStyle]}>
+                  <Text style={[ui.text, { color: palette.muted }]}>Original balance</Text>
+                  <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                    <TextInput
+                      accessibilityLabel="Original balance"
+                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                      keyboardType="decimal-pad"
+                      value={debtOriginalBalance}
+                      onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                      placeholder="Optional"
+                      placeholderTextColor={palette.muted}
+                    />
+                  </View>
+                </View>
+                <View style={[rowStyle, rowBorderStyle]}>
                   <Text style={[ui.text, { color: palette.muted }]}>APR *</Text>
                   <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
                     <TextInput
@@ -1284,88 +1308,86 @@ export function HomeScreen({
                 ) : null}
               </View>
 
-              <View style={{ gap: 8 }}>
+              {isCreditCardDebt ? (
+                <View style={{ gap: 8 }}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: showDebtMoreDetails }}
+                    onPress={() => setShowDebtMoreDetails(prev => !prev)}
+                    style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}
+                  >
+                    <Text style={{ color: palette.brand, fontSize: 14, fontWeight: '600' }}>More details</Text>
+                    <AppIcon name={showDebtMoreDetails ? 'chevronDown' : 'chevronRight'} size={15} color={palette.brand} />
+                  </Pressable>
+
+                  {showDebtMoreDetails ? (
+                    <View style={groupedCardStyle}>
+                      <View style={[rowStyle, rowBorderStyle]}>
+                        <Text style={[ui.text, { color: palette.muted }]}>Credit limit</Text>
+                        <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+                          <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                          <TextInput
+                            accessibilityLabel="Credit limit"
+                            style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                            keyboardType="decimal-pad"
+                            value={debtCreditLimit}
+                            onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                            placeholder="Optional"
+                            placeholderTextColor={palette.muted}
+                          />
+                        </View>
+                      </View>
+                      <View style={[rowStyle, rowBorderStyle]}>
+                        <Text style={[ui.text, { color: palette.muted }]}>Annual fee</Text>
+                        <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+                          <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                          <TextInput
+                            accessibilityLabel="Annual credit-card fee"
+                            style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                            keyboardType="decimal-pad"
+                            value={debtAnnualFeeAmount}
+                            onChangeText={text => setDebtAnnualFeeAmount(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                            placeholder="Optional"
+                            placeholderTextColor={palette.muted}
+                          />
+                        </View>
+                      </View>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={debtAnnualFeeNextDate ? `Next renewal: ${formatShortDate(debtAnnualFeeNextDate)}` : 'Next renewal: Choose date'}
+                        onPress={() => {
+                          Keyboard.dismiss();
+                          setShowDebtRenewalPicker(true);
+                        }}
+                        style={rowStyle}
+                      >
+                        <Text style={[ui.text, { color: palette.muted }]}>Next renewal</Text>
+                        <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+                          <Text style={[ui.text, { color: debtAnnualFeeNextDate ? palette.text : palette.brand, fontWeight: '600' }]}>
+                            {debtAnnualFeeNextDate ? formatShortDate(debtAnnualFeeNextDate) : 'Choose date'}
+                          </Text>
+                          <AppIcon name="calendar" size={16} color={palette.brand} />
+                        </View>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+
+              {canEdit && editingLoan ? (
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityState={{ expanded: showDebtMoreDetails }}
-                  onPress={() => setShowDebtMoreDetails(prev => !prev)}
-                  style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}
+                  accessibilityLabel={`Delete ${editingLoan.name}`}
+                  disabled={saving}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setConfirmLoanDeletion(true);
+                  }}
+                  style={{ minHeight: 44, alignItems: 'center', justifyContent: 'center' }}
                 >
-                  <Text style={{ color: palette.brand, fontSize: 14, fontWeight: '600' }}>More details</Text>
-                  <AppIcon name={showDebtMoreDetails ? 'chevronDown' : 'chevronRight'} size={15} color={palette.brand} />
+                  <Text style={{ color: '#F08B78', fontSize: 15, fontWeight: '600' }}>Delete account</Text>
                 </Pressable>
-
-                {showDebtMoreDetails ? (
-                  <View style={groupedCardStyle}>
-                    <View style={[rowStyle, rowBorderStyle]}>
-                      <Text style={[ui.text, { color: palette.muted }]}>Original balance</Text>
-                      <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                        <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                        <TextInput
-                          accessibilityLabel="Original balance"
-                          style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                          keyboardType="decimal-pad"
-                          value={debtOriginalBalance}
-                          onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                          placeholder="Optional"
-                          placeholderTextColor={palette.muted}
-                        />
-                      </View>
-                    </View>
-                    <View style={[rowStyle, isCreditCardDebt ? rowBorderStyle : undefined]}>
-                      <Text style={[ui.text, { color: palette.muted }]}>Credit limit</Text>
-                      <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                        <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                        <TextInput
-                          accessibilityLabel="Credit limit"
-                          style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                          keyboardType="decimal-pad"
-                          value={debtCreditLimit}
-                          onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                          placeholder="Optional"
-                          placeholderTextColor={palette.muted}
-                        />
-                      </View>
-                    </View>
-                    {isCreditCardDebt ? (
-                      <>
-                        <View style={[rowStyle, rowBorderStyle]}>
-                          <Text style={[ui.text, { color: palette.muted }]}>Annual fee</Text>
-                          <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                            <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                            <TextInput
-                              accessibilityLabel="Annual credit-card fee"
-                              style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                              keyboardType="decimal-pad"
-                              value={debtAnnualFeeAmount}
-                              onChangeText={text => setDebtAnnualFeeAmount(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                              placeholder="Optional"
-                              placeholderTextColor={palette.muted}
-                            />
-                          </View>
-                        </View>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={debtAnnualFeeNextDate ? `Next renewal: ${formatShortDate(debtAnnualFeeNextDate)}` : 'Next renewal: Choose date'}
-                          onPress={() => {
-                            Keyboard.dismiss();
-                            setShowDebtRenewalPicker(true);
-                          }}
-                          style={rowStyle}
-                        >
-                          <Text style={[ui.text, { color: palette.muted }]}>Next renewal</Text>
-                          <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
-                            <Text style={[ui.text, { color: debtAnnualFeeNextDate ? palette.text : palette.brand, fontWeight: '600' }]}>
-                              {debtAnnualFeeNextDate ? formatShortDate(debtAnnualFeeNextDate) : 'Choose date'}
-                            </Text>
-                            <AppIcon name="calendar" size={16} color={palette.brand} />
-                          </View>
-                        </Pressable>
-                      </>
-                    ) : null}
-                  </View>
-                ) : null}
-              </View>
+              ) : null}
 
               <AdaptiveModal visible={showDebtCategoryPicker} transparent animationType="fade" onRequestClose={() => setShowDebtCategoryPicker(false)}>
                 <TouchableWithoutFeedback onPress={() => setShowDebtCategoryPicker(false)}>
@@ -1388,6 +1410,12 @@ export function HomeScreen({
                                 accessibilityState={{ selected }}
                                 onPress={() => {
                                   setDebtCategory(option.value);
+                                  if (option.value !== 'Credit card') {
+                                    setDebtCreditLimit('');
+                                    setDebtAnnualFeeAmount('');
+                                    setDebtAnnualFeeNextDate('');
+                                    setShowDebtMoreDetails(false);
+                                  }
                                   setShowDebtCategoryPicker(false);
                                 }}
                                 style={{
@@ -1441,6 +1469,20 @@ export function HomeScreen({
                 onSelect={date => setDebtAnnualFeeNextDate(date)}
                 onClose={() => setShowDebtRenewalPicker(false)}
               />
+              {canEdit && editingLoan ? (
+                <ConfirmModal
+                  insideSheet
+                  visible={confirmLoanDeletion}
+                  title="Delete account and history?"
+                  message={`Once deleted, ${editingLoan.name} and its recorded transaction and reconciliation history can never be retrieved.${deletingLoanBill ? ` The linked recurring item “${deletingLoanBill.name}” and its recorded history will also be permanently deleted.` : ''}`}
+                  confirmLabel="Delete account & history"
+                  busy={saving}
+                  onConfirm={() => {
+                    void handleDeleteDebt(editingLoan.id).finally(() => setConfirmLoanDeletion(false));
+                  }}
+                  onCancel={() => setConfirmLoanDeletion(false)}
+                />
+              ) : null}
             </View>
           </SheetModal>
         </>
@@ -1452,7 +1494,6 @@ export function HomeScreen({
     <FiveTabShell
       userId={session?.user.id ?? onboardingData.userId}
       key={session?.user.id ?? onboardingData.userId}
-      themePreference={themePreference}
       onRefresh={refreshAccountData}
       refreshing={reloading}
       refreshFeedback={reloadFeedback}
@@ -1474,8 +1515,6 @@ export function HomeScreen({
           reconciliationAnchors={reconciliationAnchors}
           currencyCode={currencyCode}
           currencySymbol={currencySymbol}
-          themePreference={themePreference}
-          onSelectTheme={setThemePreference}
           authBusy={authBusy}
           onClose={close}
           onUpdateOnboardingData={onUpdateOnboardingData}
@@ -1489,9 +1528,9 @@ export function HomeScreen({
           accountDeletionEnabled={accountDeletionEnabled}
         />
       )}
-      debt={(targetDebtId: string | null, clearTarget: () => void, section: string, resetKey: number) => (
+      debt={(targetDebtId: string | null, clearTarget: () => void, section: string, resetKey: number, navigate: (tab: any, section?: string) => void) => (
         <DebtScreen
-          key={resetKey}
+          key={refreshOwnerKey}
           debts={onboardingData.debts}
           archivedPaidOffDebtIds={onboardingData.archivedPaidOffDebtIds}
           initialSelectedId={targetDebtId}
@@ -1509,6 +1548,7 @@ export function HomeScreen({
           onAdd={() => openNewDebtEditor('Credit card')}
           onEdit={openEditDebtEditor}
           onSaveDebtDetails={handleSaveDebtDetails}
+          onMarkPaid={handleMarkDebtPaid}
           onRemove={item => { void handleDeleteDebt(item.id); }}
           onReconcile={onReconcileDebt}
           onSettings={openSettings}
@@ -1526,15 +1566,17 @@ export function HomeScreen({
           householdTimeZone={householdTimeZone}
           onAddTransaction={onAddTransaction}
           onRecordBillPayment={onRecordBillPayment}
+          onSelectTransaction={tx => navigate('transactions', tx.id)}
         />
       )}
       transactions={(targetTransactionId: string | null, clearTarget: () => void, section: string) => (
         <TransactionsScreen
-          key={`${section}:${targetTransactionId ?? 'none'}`}
           initialTransactionId={targetTransactionId}
           initialSection={section}
           onEditDismiss={clearTarget}
           debts={onboardingData.debts}
+          archivedPaidOffDebtIds={onboardingData.archivedPaidOffDebtIds}
+          mortgageEscrowByDebtId={onboardingData.mortgageEscrowByDebtId}
           transactions={transactions}
           recurringBills={recurringBills}
           obligationSchedules={onboardingData.obligationSchedules}
@@ -1560,14 +1602,16 @@ export function HomeScreen({
           onSettings={openSettings}
         />
       )}
-      budget={(navigate: (tab: any, section?: string) => void) => (
+      budget={navigate => (
         <BudgetScreen
+          key={refreshOwnerKey}
           data={onboardingData}
           currencySymbol={currencySymbol}
           currencyCode={currencyCode}
           householdTimeZone={householdTimeZone}
           transactions={transactions}
           recurringBills={recurringBills}
+          historicalBillIdsByDebtId={historicalLoanBillIds}
           canEdit={canEdit}
           onAddRecurringBill={onAddRecurringBill}
           onDeleteRecurringBill={onDeleteRecurringBill}
@@ -1576,6 +1620,7 @@ export function HomeScreen({
           onEditDebt={debtId => navigate('debt', debtId)}
           onAddLoan={(category, prefill) => openNewDebtEditor(category, prefill)}
           onEditLoan={openEditDebtEditor}
+          onOpenPurchase={transactionId => navigate('transactions', transactionId)}
           onSaveIncome={handleSaveBudgetIncome}
           onSaveLoanBillPairings={handleSaveLoanBillPairings}
           onSaveRecurringBillCategoryLabels={handleSaveRecurringBillCategoryLabels}
@@ -1583,24 +1628,40 @@ export function HomeScreen({
           error={localError}
         />
       )}
-      progress={(navigate: (tab: any, section?: string) => void) => (
-        <ProgressScreen
-          debts={onboardingData.debts}
-          archivedPaidOffDebtIds={onboardingData.archivedPaidOffDebtIds}
-          transactions={transactions}
-          currencySymbol={currencySymbol}
-          currencyCode={currencyCode}
-          strategy={plan.strategy}
-          plannedMonthlyPayment={plan.monthlyTotalPayment}
-          householdTimeZone={householdTimeZone}
-          onSettings={openSettings}
-          onSelectDebt={debtId => navigate('debt', debtId)}
-          onOpenStrategy={() => navigate('debt', 'Strategy')}
-        />
-      )}
+      progress={(navigate: (tab: any, section?: string) => void) => {
+        const progressDebts = onboardingData.debts.filter(
+          item => (item.category === 'Credit card' || item.category === 'Personal loan') && !isPaidOffAccountArchived(item, onboardingData.archivedPaidOffDebtIds),
+        );
+        const progressPayoffPlan = calculatePayoffPlan(
+          progressDebts,
+          onboardingData.strategy,
+          onboardingData.extraMonthlyPayment,
+          new Date(),
+          currencyCode,
+          householdTimeZone,
+          onboardingData.archivedPaidOffDebtIds ?? [],
+        );
+        return (
+          <ProgressScreen
+            debts={onboardingData.debts}
+            archivedPaidOffDebtIds={onboardingData.archivedPaidOffDebtIds}
+            transactions={transactions}
+            currencySymbol={currencySymbol}
+            currencyCode={currencyCode}
+            strategy={plan.strategy}
+            plannedMonthlyPayment={progressPayoffPlan.monthlyTotalPayment}
+            householdTimeZone={householdTimeZone}
+            onSettings={openSettings}
+            onSelectDebt={debtId => navigate('debt', debtId)}
+            onOpenStrategy={() => navigate('debt', 'Strategy')}
+          />
+        );
+      }}
       home={(navigate: (tab: any, section?: string) => void) => (
-        <HomeAppearance>{({ palette, isLight, isInspire, ctaBg, ctaFg }) => {
-          const activeAccountDebts = activeDebts(onboardingData.debts).filter(
+        <HomeAppearance>{({ palette, isLight, isInspire }) => {
+          const payColors = payActionColors(palette, isLight);
+          const nonMortgageDebts = activeDebts(onboardingData.debts);
+          const activeAccountDebts = nonMortgageDebts.filter(
             item => !isPaidOffAccountArchived(item, onboardingData.archivedPaidOffDebtIds),
           );
           const hasAutoDebt = activeAccountDebts.some(d => d.category === 'Auto loan');
@@ -1608,16 +1669,32 @@ export function HomeScreen({
           const displayEstimateDate = /^[A-Za-z]{3}\s+\d{4}$/.test(rawEstimateDate)
             ? rawEstimateDate.toUpperCase()
             : rawEstimateDate;
-          const activeBalanceStats = calculateBalanceSnapshot(activeAccountDebts);
-          const freedomPercent = Math.max(0, Math.min(100, activeBalanceStats.percent));
-          const debtNameById = Object.fromEntries(onboardingData.debts.map(d => [d.id, d.name]));
-          const recentTxs = transactions.filter(t => t.deletedAt === null).slice(0, 3);
+          const activeBalanceStats = calculateBalanceSnapshot(nonMortgageDebts);
+          const freedomPercent =
+            nonMortgageDebts.length > 0 && activeBalanceStats.balance === 0
+              ? 100
+              : Math.max(0, Math.min(100, activeBalanceStats.percent));
+          const debtById = new Map(onboardingData.debts.map(d => [d.id, d]));
+          const recentTxs = [...transactions]
+            .filter(t => t.deletedAt === null)
+            .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
+            .slice(0, 3);
           const inspireBarColors = ['#14B8A6', '#06B6D4', '#38BDF8', '#60A5FA', '#A78BFA', '#F472B6', '#FBBF24'];
-          const inspireStrategyTints = ['#FFF8E5', '#F3EEFF', '#E8F8FC'];
-          const criticalColor = isLight ? '#D94436' : '#F08B78';
+          const inspireStrategyRows = isLight
+            ? [
+                { bg: '#FFF8E5', border: '#F3E0B2' },
+                { bg: '#F3EEFF', border: '#DFD3FA' },
+                { bg: '#E8F8FC', border: '#CBE6EC' },
+              ]
+            : [
+                { bg: '#21231B', border: '#3B3822' },
+                { bg: '#1C1B2F', border: '#302C4D' },
+                { bg: '#123240', border: '#224658' },
+              ];
+          const criticalColor = palette.neg;
           const criticalBg = isLight ? 'rgba(217, 68, 54, 0.10)' : 'rgba(240, 139, 120, 0.14)';
           return (
-        <View style={[styles.root, { backgroundColor: palette.canvas }]}>
+        <View style={[styles.root, { backgroundColor: isInspire ? 'transparent' : palette.canvas }]}>
           <WelcomeSheet
             visible={welcomePending && homeVisible && appActive && !showSettings && !showDebtForm && !homeInformationOpen && payUpcomingTarget === null}
             onClose={() => setWelcomePending(false)}
@@ -1654,36 +1731,37 @@ export function HomeScreen({
             onUpdateTransaction={onUpdateTransaction}
             readOnly={!canEdit}
           />
-          <View style={[styles.homeHeader, { backgroundColor: palette.canvas, borderBottomColor: palette.border, paddingVertical: 10 }]}>
+          <View style={[styles.homeHeader, { backgroundColor: 'transparent', borderBottomWidth: 0, paddingVertical: 4 }]}>
             <View style={styles.logoBrand} accessible accessibilityRole="header" accessibilityLabel="BitLess">
               <BitLessMark />
-              <Text style={[styles.logoText, { fontSize: 22 }]}>BitLess</Text>
+              <Text style={[styles.logoText, { color: palette.text, fontSize: 16, fontWeight: '700' }]}>BitLess</Text>
             </View>
             <View style={styles.homeHeaderActions}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Open settings"
-                style={[ui.iconButton, { backgroundColor: palette.surface, borderColor: palette.border, width: 40, height: 40, borderRadius: 20 }]}
+                hitSlop={6}
+                style={[ui.iconButton, { backgroundColor: palette.surface, borderColor: palette.cardBorder, borderWidth: isInspire ? 1.5 : 1, width: 32, height: 32, borderRadius: 16 }]}
                 onPress={openSettings}
               >
-                <AppIcon name="settings" size={20} color={palette.brand} />
+                <AppIcon name="settings" size={18} color={isInspire ? palette.accentInk : palette.muted} />
               </Pressable>
             </View>
           </View>
 
-          <ScrollView ref={homeScrollRef} contentContainerStyle={styles.homeContent} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={reloading} onRefresh={refreshAccountData} />}>
+          <PullToRefreshScrollView scrollViewRef={homeScrollRef} contentContainerStyle={styles.homeContent} showsVerticalScrollIndicator={false} refreshing={reloading} onRefresh={refreshAccountData}>
             <View style={{ marginBottom: 2 }}>
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
-                <Text style={[ui.title, { fontSize: 24, letterSpacing: -0.5, fontWeight: '700' }]}>
+                <Text style={[ui.title, { fontSize: 18, letterSpacing: -0.3, fontWeight: '700', color: palette.text }]}>
                   {`Hi, ${greetingName}`}
                 </Text>
                 {!canEdit ? (
-                  <View style={[ui.badge, { backgroundColor: palette.surface, borderColor: palette.border, borderWidth: 1 }]}>
+                  <View style={[ui.badge, { backgroundColor: palette.surface, borderColor: palette.cardBorder, borderWidth: 1 }]}>
                     <Text style={[ui.badgeText, { color: palette.muted }]}>View-only</Text>
                   </View>
                 ) : null}
               </View>
-              <InspireQuote slot="greeting" color="#0B89A8" style={{ marginTop: 2 }} />
+              <InspireQuote slot="greeting" color={palette.quoteInk} style={{ marginTop: 2 }} />
             </View>
             {localError ? (
               <View accessibilityRole="alert" style={{ marginTop: 4, padding: 12, borderRadius: 12, backgroundColor: 'rgba(240, 139, 120, 0.12)' }}>
@@ -1700,38 +1778,63 @@ export function HomeScreen({
                 </Text>
               </View>
             ) : null}
-            <Card style={{ padding: 18, gap: 14, borderRadius: 18, overflow: 'hidden', ...(isInspire ? { backgroundColor: '#DDF6F6', borderColor: '#BBE6EE' } : null) }}>
-              {isInspire ? <InspireHorizonBackground borderRadius={18} /> : null}
+            <Card style={{ padding: 16, gap: 7, borderRadius: 20, overflow: 'hidden', backgroundColor: palette.hero, borderWidth: isInspire ? 1.5 : 1, borderColor: palette.homeBorder }}>
+              {isInspire ? (
+                <InspireHorizonBackground borderRadius={20} />
+              ) : (
+                <>
+                  <HeroGradient home borderRadius={20} />
+                  <View pointerEvents="none" accessible={false} style={{ position: 'absolute', right: -78, top: -90, width: 220, height: 220, borderRadius: 110, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.28)' }} />
+                  <View pointerEvents="none" accessible={false} style={{ position: 'absolute', right: -98, top: -110, width: 260, height: 260, borderRadius: 130, borderWidth: 16, borderColor: 'rgba(255,255,255,0.06)' }} />
+                </>
+              )}
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'flex-start' }]}>
                 <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
                   <View style={[ui.row, { gap: 4, alignItems: 'center' }]}>
-                    <Text accessibilityRole="header" style={[ui.heading, { fontSize: 19 }]}>Debt-Free Date</Text>
-                    <InformationButton onVisibilityChange={setHomeInformationOpen} label="Debt-Free Estimate" detail="Your estimated debt-free date based on your current balances, APRs, and repayment strategy." />
+                    <Text accessibilityRole="header" style={[ui.heading, { fontSize: 18, color: palette.homeInk }]}>Debt-Free Date</Text>
+                    <InformationButton color={palette.homeInk} onVisibilityChange={setHomeInformationOpen} label="Debt-Free Estimate" detail="Your estimated debt-free date based on your current balances, APRs, and repayment strategy." />
                   </View>
-                  <Text style={[ui.small, { color: palette.muted }]}>
+                  <Text style={[ui.small, { color: palette.homeSecondary, fontWeight: '600' }]}>
                     {hasAutoDebt ? 'Cards / Loans & Auto' : 'Cards & Loans'}
                   </Text>
                 </View>
                 <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                  <View style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, backgroundColor: isInspire ? 'rgba(255,255,255,0.85)' : isLight ? '#F1F5F9' : palette.raised, borderWidth: 1, borderColor: palette.border }}>
-                    <Text style={{ color: palette.muted, fontSize: 12, fontWeight: '700', letterSpacing: 0.6 }}>ESTIMATE</Text>
+                  <View style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                    borderRadius: 999,
+                    backgroundColor: palette.homePillBg,
+                    borderWidth: isInspire ? 1.5 : 1,
+                    borderColor: isInspire ? palette.brand : palette.homeBorder,
+                  }}>
+                    <Text style={{ color: palette.homeInk, fontSize: 11, fontWeight: '700', letterSpacing: 0.6 }}>ESTIMATE</Text>
                   </View>
-                  <InspireQuote slot="heroCorner" tiltDeg={-3} color="#0E6F88" style={{ textAlign: 'right', fontSize: 11.5, lineHeight: 14 }} />
+                  <InspireQuote slot="heroCorner" tiltDeg={-2.2} color={palette.homeQuote} style={{ textAlign: 'right', fontSize: 11.5, lineHeight: 14 }} />
                 </View>
               </View>
 
-              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 0 }]}>
-                <View style={{ flex: 1, minWidth: 0, paddingRight: 14 }}>
-                  <Text style={{ color: palette.text, fontSize: 30, fontWeight: '800', letterSpacing: -0.7 }} numberOfLines={2}>
+              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 12 }]}>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={{ color: palette.homeInk, fontSize: 31, fontWeight: '800', letterSpacing: -0.7 }} numberOfLines={2}>
                     {displayEstimateDate}
                   </Text>
                 </View>
-                <View style={{ width: 1, alignSelf: 'stretch', backgroundColor: isInspire ? '#8CCAD6' : palette.border }} />
-                <View style={{ paddingLeft: 18, minWidth: 92, alignItems: 'flex-start' }}>
-                  <Text style={{ color: palette.text, fontSize: 28, fontWeight: '800', lineHeight: 32 }}>
+                <View style={{
+                  minWidth: 88,
+                  paddingHorizontal: 12,
+                  paddingVertical: 6,
+                  borderRadius: 12,
+                  backgroundColor: isInspire ? (isLight ? 'rgba(255,255,255,0.72)' : 'rgba(7,19,26,0.48)') : 'rgba(255,255,255,0.20)',
+                  borderWidth: isInspire ? 1.5 : 1,
+                  borderColor: palette.homeBorder,
+                  borderLeftWidth: isInspire ? 3 : 1,
+                  borderLeftColor: isInspire ? palette.brand : palette.homeBorder,
+                  alignItems: 'flex-start',
+                }}>
+                  <Text style={{ color: palette.homeInk, fontSize: 23, fontWeight: '800', lineHeight: 25 }}>
                     {plan.monthsToPayoff ?? '—'}
                   </Text>
-                  <Text style={{ color: palette.muted, fontSize: 12, fontWeight: '600', letterSpacing: 0.5, lineHeight: 16 }}>
+                  <Text style={{ color: palette.homeSecondary, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.5, lineHeight: 13, marginTop: 2 }}>
                     {'MONTHS\nTO GO'}
                   </Text>
                 </View>
@@ -1740,20 +1843,22 @@ export function HomeScreen({
               <View style={{ flexDirection: 'row', gap: 6 }}>
                 {[0, 1, 2, 3, 4, 5, 6].map(segmentIdx => {
                   const segFill = Math.max(0, Math.min(1, (freedomPercent / 100) * 7 - segmentIdx));
-                  const segColor = isInspire ? inspireBarColors[segmentIdx % inspireBarColors.length] : ctaBg;
+                  const segColor = isInspire ? inspireBarColors[segmentIdx % inspireBarColors.length] : palette.homeFill;
                   return (
                     <View
                       key={segmentIdx}
                       style={{
                         flex: 1,
-                        height: 10,
-                        borderRadius: 5,
-                        backgroundColor: isInspire ? 'rgba(255,255,255,0.72)' : isLight ? '#CBD5E1' : palette.raised,
+                        height: 9,
+                        borderRadius: 999,
+                        backgroundColor: palette.homeTrack,
+                        borderWidth: isInspire ? 1.2 : 0,
+                        borderColor: palette.graphOutline,
                         overflow: 'hidden',
                       }}
                     >
                       {segFill > 0 ? (
-                        <View style={{ width: `${segFill * 100}%`, height: '100%', backgroundColor: segColor, borderRadius: 5 }} />
+                        <View style={{ width: `${segFill * 100}%`, height: '100%', backgroundColor: segColor, borderRadius: 999 }} />
                       ) : null}
                     </View>
                   );
@@ -1762,25 +1867,23 @@ export function HomeScreen({
 
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
                 {isInspire ? (
-                  <InspireQuote slot="heroFooter" color="#0E6F88" style={{ flex: 1, fontSize: 12.5 }} />
-                ) : (
-                  <Text style={[ui.small, { flex: 1, color: palette.muted }]}>Keep building your freedom.</Text>
-                )}
+                  <InspireQuote slot="heroFooter" color={palette.homeQuote} style={{ flex: 1, fontSize: 12 }} />
+                ) : <Text style={[ui.small, { flex: 1, color: palette.homeSecondary, fontSize: 11.5 }]}>Keep building your freedom.</Text>}
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`Change payoff strategy. Currently ${onboardingData.strategy === 'avalanche' ? 'Avalanche' : 'Snowball'}`}
                   style={[
                     ui.row,
                     isInspire
-                      ? { gap: 4, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#CBE6EC' }
+                      ? { gap: 4, alignItems: 'center', paddingHorizontal: 11, paddingVertical: 5, borderRadius: 999, backgroundColor: palette.homePillBg, borderWidth: 1.5, borderColor: palette.brand }
                       : { gap: 4, alignItems: 'center', paddingVertical: 4 },
                   ]}
                   onPress={() => navigate('debt', 'Strategy')}
                 >
-                  <Text style={{ color: palette.brand, fontSize: 13, fontWeight: '700' }}>
+                  <Text style={{ color: isInspire ? palette.homeCta : palette.homeInk, fontSize: 13, fontWeight: '700' }}>
                     {onboardingData.strategy === 'avalanche' ? 'Avalanche' : 'Snowball'}
                   </Text>
-                  <AppIcon name="chevronRight" size={14} color={palette.brand} />
+                  <AppIcon name="chevronRight" size={14} color={isInspire ? palette.homeCta : palette.homeInk} />
                 </Pressable>
               </View>
             </Card>
@@ -1852,74 +1955,26 @@ export function HomeScreen({
               currencySymbol={currencySymbol}
               onInformationVisibilityChange={setHomeInformationOpen}
             />
-            <Card style={{ padding: 16, gap: isInspire ? 6 : 2 }}>
-              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }]}>
-                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                  <Text accessibilityRole="header" style={ui.heading}>Payoff Strategy</Text>
-                  <Text style={ui.small}>
-                    {`${onboardingData.strategy === 'avalanche' ? 'Avalanche' : 'Snowball'} · Cards & Loans`}
-                  </Text>
-                </View>
-                <Pressable accessibilityRole="button" accessibilityLabel="See all payoff strategy details" style={[ui.row, { gap: 4, alignItems: 'center', paddingVertical: 4 }]} onPress={() => navigate('debt', 'Strategy')}>
-                  <Text style={[ui.buttonText, { color: palette.text, fontWeight: '600' }]}>See all</Text>
-                  <AppIcon name="chevronRight" size={14} color={palette.muted} />
-                </Pressable>
-              </View>
-              {plan.payoffOrder.length ? plan.payoffOrder.slice(0, 3).map((item, idx) => {
-                const badge = getCategoryBadge(item.category);
-                return (
-                  <Pressable
-                    key={item.id}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Open payoff strategy details for ${item.name}`}
-                    onPress={() => navigate('debt', 'Strategy')}
-                    style={[
-                      !isInspire && idx > 0 ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: palette.border } : null,
-                      ui.row,
-                      isInspire
-                        ? { justifyContent: 'space-between', alignItems: 'center', paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, backgroundColor: inspireStrategyTints[idx % inspireStrategyTints.length] }
-                        : { justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12 },
-                    ]}
-                  >
-                    <View style={[ui.row, { flex: 1, minWidth: 0, alignItems: 'center', gap: 10 }]}>
-                      <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: isInspire ? '#FFFFFF' : isLight ? '#F1F5F9' : palette.raised, alignItems: 'center', justifyContent: 'center' }}>
-                        <Text style={{ color: isInspire ? palette.brand : palette.muted, fontSize: 13, fontWeight: '700' }}>{idx + 1}</Text>
-                      </View>
-                      <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: badge.bg, alignItems: 'center', justifyContent: 'center' }}>
-                        <AppIcon name={badge.icon} size={18} color={badge.color} />
-                      </View>
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={[ui.heading, { fontSize: 16 }]} numberOfLines={1}>{item.name}</Text>
-                        <Text style={ui.small}>{`${item.apr.toFixed(2)}% APR`}</Text>
-                      </View>
-                    </View>
-                    <View style={{ backgroundColor: isInspire ? '#FFFFFF' : palette.tint, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 }}>
-                      <Text style={{ color: palette.brand, fontSize: 13, fontWeight: '600' }}>{item.projectedPayoffLabel}</Text>
-                    </View>
-                  </Pressable>
-                );
-              }) : <Text style={[ui.small, { paddingVertical: 10 }]}>Add an active debt account to see its payoff order.</Text>}
-            </Card>
             {/* Upcoming */}
-            {upcomingItems.length > 0 && <View onLayout={event => { upcomingSectionY.current = event.nativeEvent.layout.y; }}><Card style={{ padding: 16, gap: 2 }}>
+            {upcomingItems.length > 0 && <View onLayout={event => { upcomingSectionY.current = event.nativeEvent.layout.y; }}><Card style={{ padding: 16, gap: 2, borderRadius: 18, overflow: 'hidden' }}>
+              {isInspire ? <InspireCornerArt kind="corner-ridge" borderRadius={18} /> : null}
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }]}>
                 <Text accessibilityRole="header" style={ui.heading}>Upcoming</Text>
                 {sortedUpcomingItems.length > 4 ? (
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={showAllUpcoming ? 'Show fewer upcoming bills' : 'Show all upcoming bills'}
-                    style={[ui.row, { gap: 4, alignItems: 'center', paddingVertical: 4 }]}
+                    style={[ui.row, { gap: 4, alignItems: 'center', paddingVertical: 4, backgroundColor: 'transparent', borderWidth: 0 }]}
                     onPress={() => setShowAllUpcoming(value => !value)}
                   >
-                    <Text style={[ui.buttonText, { color: palette.brand, fontWeight: '600' }]}>
+                    <Text style={[ui.buttonText, { color: isInspire ? palette.accentInk : palette.brand, fontWeight: '700' }]}>
                       {showAllUpcoming ? 'Show less' : `See all (${sortedUpcomingItems.length})`}
                     </Text>
                   </Pressable>
                 ) : null}
               </View>
               {upcomingItems.map((item, idx) => {
-                  const badge = getCategoryBadge(item.category);
-                  const isPrimaryPay = !item.isPendingConfirmation && idx === 0;
+                  const isPrimaryPay = !item.isPendingConfirmation && (isLight || idx === 0);
                   const statusLabel = item.settlementStatus === 'pending_confirmation'
                     ? 'Pending'
                     : item.isPartiallyPaid
@@ -1935,36 +1990,36 @@ export function HomeScreen({
                       style={[
                         idx > 0 ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: palette.border } : null,
                         ui.row,
-                        { justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, gap: 10 },
+                        { justifyContent: 'space-between', alignItems: 'center', paddingVertical: 11, gap: 10 },
                       ]}
                     >
                       <View style={[ui.row, { flex: 1, minWidth: 0, alignItems: 'center', gap: 12 }]}>
-                        <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: item.isCritical ? criticalBg : badge.bg, alignItems: 'center', justifyContent: 'center' }}>
-                          <AppIcon name={badge.icon} size={18} color={item.isCritical ? criticalColor : badge.color} />
-                        </View>
+                        <AccountMark name={item.name} category={item.category} size={38} />
                         <View style={{ flex: 1, minWidth: 0 }}>
                           <View style={[ui.row, { gap: 6, alignItems: 'center', flexWrap: 'wrap' }]}>
-                            <Text style={[ui.heading, { fontSize: 16 }]} numberOfLines={1}>{item.name}</Text>
+                            <Text style={[ui.heading, { fontSize: 15.5 }]} numberOfLines={1}>{item.name}</Text>
                             {item.isCritical ? (
                               <View style={[ui.badge, { backgroundColor: criticalBg, borderColor: criticalColor, borderWidth: 1, paddingVertical: 2, paddingHorizontal: 6 }]}>
-                                <Text style={[ui.badgeText, { color: criticalColor, fontSize: 12 }]}>
+                                <Text style={[ui.badgeText, { color: criticalColor, fontSize: 11.5 }]}>
                                   {item.isPastDue ? 'Past Due' : 'Due Soon'}
                                 </Text>
                               </View>
                             ) : null}
                           </View>
                           <Text style={[ui.small, item.isCritical ? { color: criticalColor } : null]}>
-                            {`${formatShortActivityDate(item.dueDate)}${item.installmentLabel ? ` · ${item.installmentLabel}` : ''} · ${statusLabel}`}
+                            {`${formatShortActivityDate(item.dueDate)}${item.installmentLabel ? ` · ${item.installmentLabel}` : ''} · `}
+                            <Text style={statusLabel === 'Unpaid' ? { color: palette.neg } : undefined}>{statusLabel}</Text>
                           </Text>
                         </View>
                       </View>
                       <View style={{ alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
                         <View style={{ alignItems: 'flex-end' }}>
-                          <Text style={[ui.value, { fontSize: 16 }, item.isCritical ? { color: criticalColor } : null]}>
-                            {formatCurrency(item.amount, currencySymbol)}
-                          </Text>
+                          <AmountText
+                            value={formatCurrency(item.amount, currencySymbol)}
+                            style={[ui.value, { fontSize: 15.5 }, item.isCritical ? { color: criticalColor } : { color: palette.text }]}
+                          />
                           {item.isPartiallyPaid ? (
-                            <Text style={[ui.small, { color: isLight ? '#0a8554' : '#76DCB9' }]}>remaining</Text>
+                            <Text style={[ui.small, { color: palette.posInk }]}>remaining</Text>
                           ) : null}
                         </View>
                         {canEdit ? (
@@ -1974,9 +2029,9 @@ export function HomeScreen({
                             onPress={() => setPayUpcomingTarget(item.payTarget)}
                             hitSlop={4}
                             style={{
-                              backgroundColor: isPrimaryPay ? ctaBg : palette.tint,
-                              borderColor: isPrimaryPay ? ctaBg : item.isPendingConfirmation ? palette.border : palette.brand,
-                              borderWidth: 1,
+                              backgroundColor: isPrimaryPay ? payColors.background : palette.tint,
+                              borderColor: isPrimaryPay ? (isInspire ? (isLight ? 'rgba(255,255,255,0.42)' : 'rgba(9,13,20,0.3)') : payColors.background) : item.isPendingConfirmation ? palette.cardBorder : palette.brand,
+                              borderWidth: isInspire ? 1.5 : 1,
                               minHeight: 34,
                               paddingHorizontal: 14,
                               paddingVertical: 5,
@@ -1985,7 +2040,7 @@ export function HomeScreen({
                               justifyContent: 'center',
                             }}
                           >
-                            <Text style={{ color: isPrimaryPay ? ctaFg : palette.brand, fontWeight: '700', fontSize: 13 }}>
+                            <Text style={{ color: isPrimaryPay ? payColors.text : palette.accentInk, fontWeight: '700', fontSize: 13 }}>
                               {item.isPendingConfirmation ? 'Details' : 'Pay'}
                             </Text>
                           </Pressable>
@@ -1996,18 +2051,82 @@ export function HomeScreen({
                 })}
             </Card></View>}
 
+            <Card style={{ padding: 16, gap: isInspire ? 6 : 2, borderRadius: 18, overflow: 'hidden' }}>
+              {isInspire ? <InspireCornerArt kind="corner-leaf" borderRadius={18} /> : null}
+              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }]}>
+                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                  <Text accessibilityRole="header" style={ui.heading}>Payoff Strategy</Text>
+                  <Text style={ui.small}>
+                    {`${onboardingData.strategy === 'avalanche' ? 'Avalanche' : 'Snowball'} · Cards & Loans`}
+                  </Text>
+                </View>
+                <Pressable accessibilityRole="button" accessibilityLabel="See all payoff strategy details" style={[ui.row, { gap: 4, alignItems: 'center', paddingVertical: 4, backgroundColor: 'transparent', borderWidth: 0 }]} onPress={() => navigate('debt', 'Strategy')}>
+                  <Text style={[ui.buttonText, { color: isInspire ? palette.accentInk : palette.muted, fontWeight: isInspire ? '700' : '600' }]}>See all</Text>
+                  <AppIcon name="chevronRight" size={14} color={isInspire ? palette.accentInk : palette.muted} />
+                </Pressable>
+              </View>
+              {plan.payoffOrder.length ? plan.payoffOrder.slice(0, 3).map((item, idx) => {
+                const rowTone = inspireStrategyRows[idx % inspireStrategyRows.length];
+                return (
+                  <Pressable
+                    key={item.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open payoff strategy details for ${item.name}`}
+                    onPress={() => navigate('debt', 'Strategy')}
+                    style={[
+                      !isInspire && idx > 0 ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: palette.border } : null,
+                      ui.row,
+                      isInspire
+                        ? { justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 10, borderRadius: 12, backgroundColor: rowTone.bg, borderWidth: 1.5, borderColor: rowTone.border }
+                        : { justifyContent: 'space-between', alignItems: 'center', paddingVertical: 11 },
+                    ]}
+                  >
+                    <View style={[ui.row, { flex: 1, minWidth: 0, alignItems: 'center', gap: 10 }]}>
+                      <View style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 8,
+                        backgroundColor: isInspire ? palette.surface : palette.raised,
+                        borderWidth: isInspire ? 1.5 : 0,
+                        borderColor: palette.cardBorder,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}>
+                        <Text style={{ color: isInspire ? palette.accentInk : palette.text, fontSize: 13, fontWeight: '700' }}>{idx + 1}</Text>
+                      </View>
+                      <AccountMark name={item.name} category={item.category} size={38} />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[ui.heading, { fontSize: 15.5 }]} numberOfLines={1}>{item.name}</Text>
+                        <Text style={ui.small}><Text style={{ color: item.apr < 15 ? palette.posInk : palette.neg }}>{item.apr.toFixed(2)}%</Text> APR</Text>
+                      </View>
+                    </View>
+                    <View style={{
+                      backgroundColor: isInspire ? palette.surface : palette.selection,
+                      borderWidth: isInspire ? 1.5 : 0,
+                      borderColor: palette.cardBorder,
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: 9,
+                    }}>
+                      <Text style={{ color: palette.selectionInk, fontSize: 12.5, fontWeight: '700' }}>{item.projectedPayoffLabel}</Text>
+                    </View>
+                  </Pressable>
+                );
+              }) : <Text style={[ui.small, { paddingVertical: 10 }]}>Add an active debt account to see its payoff order.</Text>}
+            </Card>
             {/* Recent Activity */}
-            <Card style={{ padding: 16, gap: 2 }}>
+            <Card style={{ padding: 16, gap: 2, borderRadius: 18, overflow: 'hidden' }}>
+              {isInspire ? <InspireCornerArt kind="corner-wave" borderRadius={18} /> : null}
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }]}>
                 <Text accessibilityRole="header" style={ui.heading}>Recent Activity</Text>
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="See all recent activity"
-                  style={[ui.row, { gap: 4, alignItems: 'center', paddingVertical: 4 }]}
+                  style={[ui.row, { gap: 4, alignItems: 'center', paddingVertical: 4, backgroundColor: 'transparent', borderWidth: 0 }]}
                   onPress={() => navigate('transactions')}
                 >
-                  <Text style={[ui.buttonText, { color: palette.text, fontWeight: '600' }]}>See all</Text>
-                  <AppIcon name="chevronRight" size={14} color={palette.muted} />
+                  <Text style={[ui.buttonText, { color: isInspire ? palette.accentInk : palette.muted, fontWeight: isInspire ? '700' : '600' }]}>See all</Text>
+                  <AppIcon name="chevronRight" size={14} color={isInspire ? palette.accentInk : palette.muted} />
                 </Pressable>
               </View>
               {recentTxs.length === 0 ? (
@@ -2016,12 +2135,13 @@ export function HomeScreen({
                 recentTxs.map((tx, idx) => {
                     const dir = classifyCategoryDirection(tx.category);
                     const isPayment = dir === 'decrease_debt';
-                    const rawAccountLabel = tx.accountId ? debtNameById[tx.accountId] : undefined;
+                    const txDebt = tx.accountId ? debtById.get(tx.accountId) : undefined;
+                    const rawAccountLabel = txDebt?.name;
                     const isPaymentLikePayee = isPayment && (!tx.payee || /^Payment\b/i.test(tx.payee) || tx.category === 'payment');
                     const isBalanceAdj = tx.category === 'credit_adjustment' || tx.category === 'balance_adjustment' || /^Reconciliation credit adjustment$/i.test(tx.payee || '');
                     const titleLabel = isPaymentLikePayee ? 'Payment' : isBalanceAdj ? 'Balance Adjustment' : (tx.payee || (isPayment ? 'Payment' : 'Charge'));
                     const subtitleLabel = rawAccountLabel || (isPayment ? 'Payment' : 'Charge');
-                    const amountColor = isPayment ? (isLight ? '#0a8554' : '#86E3B8') : (isLight ? '#c53b27' : '#F08B78');
+                    const amountColor = isPayment ? palette.posInk : palette.neg;
                     return (
                       <Pressable
                         key={tx.id}
@@ -2031,21 +2151,25 @@ export function HomeScreen({
                         style={[
                           idx > 0 ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: palette.border } : null,
                           ui.row,
-                          { justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12 },
+                          { justifyContent: 'space-between', alignItems: 'center', paddingVertical: 11 },
                         ]}
                       >
                         <View style={[ui.row, { flex: 1, minWidth: 0, alignItems: 'center', gap: 12 }]}>
-                          <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: isPayment ? 'rgba(134, 227, 184, 0.14)' : 'rgba(240, 139, 120, 0.14)', alignItems: 'center', justifyContent: 'center' }}>
-                            <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={amountColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                              <Path d={isPayment ? 'M12 5v14M18 13l-6 6-6-6' : 'M12 19V5M6 11l6-6 6 6'} />
-                            </Svg>
-                          </View>
+                          {rawAccountLabel ? (
+                            <AccountMark name={rawAccountLabel} category={txDebt?.category} size={38} />
+                          ) : (
+                            <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: isPayment ? palette.posSoft : (isLight ? 'rgba(217, 68, 54, 0.12)' : 'rgba(240, 139, 120, 0.14)'), borderWidth: isInspire ? 1 : 0, borderColor: palette.cardBorder, alignItems: 'center', justifyContent: 'center' }}>
+                              <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={amountColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                                <Path d={isPayment ? 'M12 5v14M18 13l-6 6-6-6' : 'M12 19V5M6 11l6-6 6 6'} />
+                              </Svg>
+                            </View>
+                          )}
                           <View style={{ flex: 1, minWidth: 0 }}>
                             <View style={[ui.row, { gap: 6, alignItems: 'center', flexWrap: 'wrap' }]}>
-                              <Text style={[ui.heading, { fontSize: 16 }]} numberOfLines={1}>{titleLabel}</Text>
+                              <Text style={[ui.heading, { fontSize: 15.5 }]} numberOfLines={1}>{titleLabel}</Text>
                               {tx.isPending ? (
-                                <View style={[ui.badge, { backgroundColor: 'rgba(245, 197, 99, 0.15)', borderColor: 'rgba(245, 197, 99, 0.3)', borderWidth: 1, paddingVertical: 2, paddingHorizontal: 6 }]}>
-                                  <Text style={[ui.badgeText, { color: '#F5C563', fontSize: 12 }]}>Pending</Text>
+                                <View style={[ui.badge, { backgroundColor: isLight ? '#FEF3C7' : '#2D2514', borderColor: isLight ? '#F59E0B' : '#FBBF24', borderWidth: 1, paddingVertical: 2, paddingHorizontal: 6 }]}>
+                                  <Text style={[ui.badgeText, { color: isLight ? '#B45309' : '#FBBF24', fontSize: 11.5 }]}>Pending</Text>
                                 </View>
                               ) : null}
                             </View>
@@ -2053,9 +2177,10 @@ export function HomeScreen({
                           </View>
                         </View>
                         <View style={{ alignItems: 'flex-end', minWidth: 0, flexShrink: 0, gap: 2 }}>
-                          <Text style={[ui.value, { fontSize: 16, color: amountColor }]}>
-                            {isPayment ? `−${formatCurrency(moneyToMajor(tx.amount), currencySymbol)}` : `+${formatCurrency(moneyToMajor(tx.amount), currencySymbol)}`}
-                          </Text>
+                          <AmountText
+                            value={isPayment ? `−${formatCurrency(moneyToMajor(tx.amount), currencySymbol)}` : `+${formatCurrency(moneyToMajor(tx.amount), currencySymbol)}`}
+                            style={[ui.value, { fontSize: 15.5, color: amountColor }]}
+                          />
                           <Text style={ui.small}>{formatShortActivityDate(tx.date)}</Text>
                         </View>
                       </Pressable>
@@ -2063,7 +2188,7 @@ export function HomeScreen({
                   })
               )}
             </Card>
-          </ScrollView>
+          </PullToRefreshScrollView>
         </View>
           );
         }}</HomeAppearance>
@@ -2151,9 +2276,9 @@ const styles = StyleSheet.create({
   },
   homeContent: {
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 6,
     paddingBottom: 32,
-    gap: 14,
+    gap: 12,
   },
   inlineEditorCard: {
     backgroundColor: '#141816',

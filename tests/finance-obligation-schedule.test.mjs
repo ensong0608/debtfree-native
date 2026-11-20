@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initializeObligationSchedule as init, updateObligationSchedule as update, getObligationCycle as cycle, validateObligationSchedule, obligationScheduleKey } from '../src/finance/obligation-schedule.ts';
+import { prepareObligationEditorSchedule } from '../src/finance/obligation-editor-domain.ts';
 import { calculateOverdueObligations, getScheduledObligationRows } from '../src/finance/payment-matching.ts';
 import { findFutureRecurringBillTransactions, generateRecurringBillTransaction, processRecurringBills } from '../src/finance/recurring-bills.ts';
 const money = n => ({ currency: 'USD', minorUnits: n });
@@ -92,4 +93,83 @@ test('future terms can be revised without rewriting an effective cycle', () => {
   assert.throws(() => update(revised, {effectiveMonth:'2026-12', dueDay:13, amount:money(4000)}, '2026-12-01'));
   const future = init({today:'2026-11-07', dueDay:1, amount:money(1000)});
   assert.equal(update(future, {effectiveMonth:'2026-12', dueDay:3, amount:money(2000)}, '2026-11-07').firstDueDate, '2026-12-03');
+});
+const editSchedule = (existing, params = {}) => prepareObligationEditorSchedule({
+  kind:'bill', id:'a', today:'2026-11-20', dueDay:6, amount:money(2000), createdAt:'2026-11-01T00:00:00Z', isNew:false, existing, ...params,
+});
+test('confirmed same-cycle date change overrides only that cycle and updates future terms', () => {
+  const original = init({today:'2026-11-20', dueDay:25, amount:money(2000)});
+  const changed = editSchedule(original, { dueDay:22, cycleMove:{fromMonth:'2026-11', toDate:'2026-11-22'} });
+  assert.equal(changed.firstDueDate, original.firstDueDate);
+  assert.equal(cycle(changed,'2026-11').dueDate,'2026-11-22');
+  assert.equal(cycle(changed,'2026-12').dueDate,'2026-12-22');
+  assert.equal(cycle(changed,'2026-10'),null);
+});
+test('cross-cycle move replaces November with one December reminder and allows another edit', () => {
+  const original = init({today:'2026-11-20', dueDay:20, amount:money(2000)});
+  const changed = editSchedule(original, { dueDay:6, cycleMove:{fromMonth:'2026-11', toDate:'2026-12-06'} });
+  assert.equal(cycle(changed,'2026-11'),null);
+  assert.equal(cycle(changed,'2026-12').dueDate,'2026-12-06');
+  assert.equal(cycle(changed,'2027-01').dueDate,'2027-01-06');
+  const savedAgain = editSchedule(changed, { dueDay:6, cycleMove:{fromMonth:'2026-11', toDate:'2026-12-06'} });
+  assert.deepEqual(savedAgain, changed);
+  const revised = editSchedule(changed, { dueDay:8 });
+  assert.equal(cycle(revised,'2026-11'),null);
+  assert.equal(cycle(revised,'2026-12').dueDate,'2026-12-08');
+});
+test('legacy bill without schedule metadata can move its current reminder', () => {
+  const changed = editSchedule(undefined, {
+    legacyDueDay:20, cycleMove:{fromMonth:'2026-11', toDate:'2026-12-06'},
+  });
+  assert.equal(cycle(changed,'2026-11'),null);
+  assert.equal(cycle(changed,'2026-12').dueDate,'2026-12-06');
+});
+test('a first unpaid future cycle can move earlier if the new day is still upcoming', () => {
+  const original = init({today:'2026-11-20', dueDay:6, amount:money(2000)});
+  const changed = editSchedule(original, {
+    dueDay:25, cycleMove:{fromMonth:'2026-12', toDate:'2026-11-25'},
+  });
+  assert.equal(cycle(changed,'2026-11').dueDate,'2026-11-25');
+  assert.equal(cycle(changed,'2026-12').dueDate,'2026-12-25');
+});
+test('moving to a short month preserves the requested due day without duplicating the reminder', () => {
+  const original = init({today:'2026-02-20', dueDay:25, amount:money(2000)});
+  const changed = editSchedule(original, {
+    today:'2026-02-20', dueDay:31, cycleMove:{fromMonth:'2026-02', toDate:'2026-02-28'},
+  });
+  assert.equal(cycle(changed,'2026-02').dueDate,'2026-02-28');
+  assert.equal(cycle(changed,'2026-03').dueDate,'2026-03-31');
+});
+test('an explicitly moved immediately overdue cycle can be placed in the current month', () => {
+  const original = init({today:'2026-11-20', dueDay:20, amount:money(2000)});
+  const changed = editSchedule(original, { today:'2026-12-01', dueDay:6, cycleMove:{fromMonth:'2026-11', toDate:'2026-12-06'} });
+  assert.equal(cycle(changed,'2026-11'),null);
+  assert.equal(cycle(changed,'2026-12').dueDate,'2026-12-06');
+  assert.equal(changed.acknowledgedPaidCycles.length,0);
+});
+test('an advance payment keeps its linked due date when the recurring day changes', () => {
+  const original = init({today:'2026-11-20', dueDay:20, amount:money(2000)});
+  const changed = editSchedule(original, { protectedDueDays:{'2026-12':20} });
+  assert.equal(cycle(changed,'2026-11').dueDate,'2026-11-20');
+  assert.equal(cycle(changed,'2026-12').dueDate,'2026-12-20');
+  assert.equal(cycle(changed,'2027-01').dueDate,'2027-01-06');
+  assert.throws(() => editSchedule(original, {
+    protectedDueDays:{'2026-12':20}, cycleMove:{fromMonth:'2026-11', toDate:'2026-12-06'},
+  }), /recorded payment activity/);
+});
+test('acknowledged cycles are preserved and cannot be moved', () => {
+  const acknowledged = init({today:'2026-11-20', dueDay:20, amount:money(2000), paidToday:true});
+  assert.throws(() => editSchedule(acknowledged, { dueDay:6, cycleMove:{fromMonth:'2026-11', toDate:'2026-12-06'} }), /acknowledged/);
+  assert.deepEqual(acknowledged.acknowledgedPaidCycles, ['2026-11']);
+  assert.throws(() => validateObligationSchedule({ ...acknowledged, cycleDueDayOverrides:{'2026-11':null} }));
+});
+test('cycle moves reject invalid dates, backward months, and dates before today', () => {
+  const original = init({today:'2026-11-20', dueDay:20, amount:money(2000)});
+  assert.throws(() => editSchedule(original, { cycleMove:{fromMonth:'2026-11', toDate:'2026-10-06'} }));
+  assert.throws(() => editSchedule(original, { cycleMove:{fromMonth:'2026-11', toDate:'2026-11-19'} }));
+  assert.throws(() => editSchedule(original, { cycleMove:{fromMonth:'2026-11', toDate:'2026-02-30'} }));
+  assert.throws(() => editSchedule(original, { cycleMove:{fromMonth:'2026-09', toDate:'2026-11-20'} }));
+  assert.throws(() => editSchedule(original, { cycleMove:{fromMonth:'2026-11', toDate:'2027-01-06'} }));
+  assert.throws(() => validateObligationSchedule({ ...original, cycleDueDayOverrides:{'2026-10':6} }));
+  assert.throws(() => validateObligationSchedule({ ...original, cycleDueDayOverrides:{'2026-11':32} }));
 });

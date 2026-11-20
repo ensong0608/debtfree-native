@@ -1,0 +1,1 @@
+gradle.beforeProject { p -> if (p != p.rootProject && p.rootProject.projectDir.name == "android") { p.layout.buildDirectory.set(new File("C:/Users/lawre/AppData/Local/BitLessBuilds/T292-paid-off/android", p.path.replace(":", "_"))) } }

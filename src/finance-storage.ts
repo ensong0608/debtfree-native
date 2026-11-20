@@ -1052,7 +1052,7 @@ async function persistRecurringBillUnlocked(params: {
     p_expected_membership_version: context?.membershipVersion,
     p_bill: row,
     p_expected_updated_at: expectedRevision ?? null,
-    p_idempotency_key: commandId,
+    p_idempotency_key: bill.id,
   };
   await savePendingCommand(userId, { commandId, kind: 'bill_upsert', expectedVersions: { updated_at: expectedRevision ?? null }, payload,
     members: [{ domain: 'bills', rowId: bill.id, desired: row }], state: 'pending',

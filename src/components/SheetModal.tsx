@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react';
-import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Pressable, ScrollView, Text, View, useNativeAppearance } from './NativeAppearance';
 import Svg, { Path } from 'react-native-svg';
@@ -44,7 +43,7 @@ export function SheetModal({ visible, onClose, children, footer, height = '92%',
   const insets = useSafeAreaInsets();
   return (
     <AdaptiveModal visible={visible} transparent animationType="slide" presentationStyle="overFullScreen" onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.62)' }}>
+      <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.62)' }}>
         <Pressable accessibilityRole="button" accessibilityLabel={closeLabel} onPress={onClose} style={{ flex: 1 }} />
         <View accessibilityViewIsModal style={{ ...(contentSized ? { maxHeight: '90%' as const } : { height }), backgroundColor: palette.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22, overflow: 'hidden' }}>
           <View accessible={false} style={{ alignSelf: 'center', width: 32, height: 4, borderRadius: 2, backgroundColor: palette.border, marginTop: 8 }} />
@@ -53,7 +52,7 @@ export function SheetModal({ visible, onClose, children, footer, height = '92%',
           </ScrollView>
           {footer ? <View style={{ paddingBottom: bottomInsetPadding(insets.bottom, 4) }}>{footer}</View> : null}
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </AdaptiveModal>
   );
 }

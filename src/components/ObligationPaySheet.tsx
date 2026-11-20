@@ -3,19 +3,18 @@ import * as Crypto from 'expo-crypto';
 import { AmountText } from './AmountText';
 import { HeroGradient } from './HeroGradient';
 import { Card, ui } from './FinancialScreen';
-import { Pressable, Text, View, useNativeAppearance } from './NativeAppearance';
+import { Pressable, Text, TextInput, View, useNativeAppearance } from './NativeAppearance';
 import { SheetFormHeader, SheetModal } from './SheetModal';
 import { currentHouseholdDate, type DateOnly } from '../finance/calendar';
-import { getCurrency } from '../finance/currencies';
 import { type LedgerTransaction } from '../finance/ledger';
-import { makeMoney, moneyFromMajor, moneyToMajor, type Money } from '../finance/money';
+import { moneyFromMajor, moneyToMajor, type Money } from '../finance/money';
 import {
   findUnassignedPaymentsForObligation,
   getObligationPaymentState,
   type PaymentObligation,
 } from '../finance/payment-matching';
-import { type RecurringBill } from '../finance/recurring-bills';
-import { formatCurrency, type DebtItem } from '../onboarding-domain';
+import { creditRecurringBillCategory, type RecurringBill } from '../finance/recurring-bills';
+import { acceptMoneyEdit, formatCurrency, formatEditableMoney, parseMoneyInput, type DebtItem } from '../onboarding-domain';
 
 const normalizeDisplayName = (text: string) =>
   text.replace(/\b([A-Z]{4,})\b/g, w => w[0] + w.slice(1).toLowerCase());
@@ -62,6 +61,7 @@ export function ObligationPaySheet({
   const { palette, ctaBg, ctaFg } = useNativeAppearance();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [amountDraft, setAmountDraft] = useState<{ key: string; text: string } | null>(null);
 
   const payNowObligation: PaymentObligation | null = target
     ? {
@@ -70,7 +70,7 @@ export function ObligationPaySheet({
         name: target.name,
         dueDate: target.dueDate,
         dueCycleMonth: target.dueDate.slice(0, 7),
-        requiredAmount: makeMoney(currencyCode, Math.round(target.requiredAmount * 10 ** getCurrency(currencyCode).scale)),
+        requiredAmount: moneyFromMajor(target.requiredAmount, currencyCode),
         accountId: target.accountId,
         billId: target.bill?.id,
         linkedDebtId: Object.entries(loanBillPairs).find(([, id]) => id === target.bill?.id)?.[0],
@@ -89,6 +89,18 @@ export function ObligationPaySheet({
   const pendingThisCycle = paymentState ? moneyToMajor(paymentState.pendingAmount) : 0;
   const requiredAmount = target?.requiredAmount ?? 0;
   const remainingAmount = matchResult ? moneyToMajor(matchResult.remainingAmount) : requiredAmount;
+  const defaultPayAmount = target?.overridePayAmount != null && target.overridePayAmount > 0
+    ? Math.min(remainingAmount, target.overridePayAmount)
+    : remainingAmount;
+  const payTargetKey = target
+    ? `${target.type}:${target.bill?.id ?? target.debt?.id ?? target.name}:${target.dueDate}:${remainingAmount}`
+    : '';
+  const amountText = amountDraft && amountDraft.key === payTargetKey
+    ? amountDraft.text
+    : defaultPayAmount > 0
+      ? formatEditableMoney(defaultPayAmount, currencyCode)
+      : '';
+  const parsedPayAmount = parseMoneyInput(amountText, currencyCode);
 
   const candidatePayments = payNowObligation
     ? findUnassignedPaymentsForObligation(payNowObligation, transactions)
@@ -97,6 +109,7 @@ export function ObligationPaySheet({
   const handleClose = () => {
     if (busy) return;
     setError('');
+    setAmountDraft(null);
     onClose();
   };
 
@@ -119,6 +132,7 @@ export function ObligationPaySheet({
         memo: explicitMemo,
       };
       await onUpdateTransaction(updatedTx);
+      setAmountDraft(null);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to match payment');
@@ -129,24 +143,26 @@ export function ObligationPaySheet({
 
   const handleRecordNewPayment = async () => {
     if (readOnly || !target || busy) return;
-    setBusy(true);
     setError('');
+    if (remainingAmount <= 0 || matchResult?.isSatisfied) {
+      setError('Obligation is already satisfied for this cycle.');
+      return;
+    }
+    if (pendingThisCycle > 0) {
+      setError('A payment for this due cycle is awaiting confirmation. Reload after it syncs before adding another.');
+      return;
+    }
+    if (parsedPayAmount === null || parsedPayAmount <= 0) {
+      setError('Please enter a valid payment amount greater than zero.');
+      return;
+    }
+    if (target.type === 'bill' ? !onRecordBillPayment && !onAddTransaction : !onAddTransaction) {
+      setError('Payment recording is unavailable.');
+      return;
+    }
+    setBusy(true);
     try {
-      if (remainingAmount <= 0 || matchResult?.isSatisfied) {
-        setError('Obligation is already satisfied for this cycle.');
-        return;
-      }
-      if (pendingThisCycle > 0) {
-        setError('A payment for this due cycle is awaiting confirmation. Reload after it syncs before adding another.');
-        return;
-      }
-      if (target.type === 'bill' ? !onRecordBillPayment && !onAddTransaction : !onAddTransaction) {
-        setError('Payment recording is unavailable.');
-        return;
-      }
-      const payAmount = target.overridePayAmount != null && target.overridePayAmount > 0
-        ? Math.min(remainingAmount, target.overridePayAmount)
-        : remainingAmount;
+      const payAmount = parsedPayAmount;
       const todayStr = currentHouseholdDate(householdTimeZone);
 
       if (target.type === 'bill' && target.bill) {
@@ -163,7 +179,7 @@ export function ObligationPaySheet({
             date: todayStr,
             appliesToDate: target.dueDate,
             amount: paymentAmount,
-            category: isCredit ? (bill.category === 'subscription' ? 'subscription' : 'utilities') : 'debit_bill',
+            category: isCredit ? creditRecurringBillCategory(bill.category) : 'debit_bill',
             payee: bill.name,
             memo: `Payment for ${target.dueDate} [bill:${bill.id}]`,
             source: 'recurring_bill',
@@ -192,6 +208,7 @@ export function ObligationPaySheet({
           await onAddTransaction(newTx);
         }
       }
+      setAmountDraft(null);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to record payment');
@@ -203,7 +220,7 @@ export function ObligationPaySheet({
   const canRecord = !readOnly && (target?.type === 'bill'
     ? Boolean(onRecordBillPayment || onAddTransaction)
     : Boolean(onAddTransaction));
-  const recordDisabled = readOnly || busy || !canRecord || remainingAmount <= 0 || pendingThisCycle > 0;
+  const recordDisabled = readOnly || busy || !canRecord || remainingAmount <= 0 || pendingThisCycle > 0 || parsedPayAmount === null || parsedPayAmount <= 0;
 
   return (
     <SheetModal visible={!readOnly && target !== null} onClose={handleClose}>
@@ -248,6 +265,34 @@ export function ObligationPaySheet({
                 </Pressable>
               </View>
             )) : <Text style={ui.small}>No unassigned payments.</Text>}
+            {remainingAmount > 0 && pendingThisCycle <= 0 ? (
+              <View style={{ marginTop: 14, gap: 6 }}>
+                <Text style={ui.small}>Payment amount</Text>
+                <View style={ui.inputWrap}>
+                  <Text style={[ui.text, { color: palette.brand, fontWeight: '700' }]}>{currencySymbol}</Text>
+                  <TextInput
+                    accessibilityLabel="Payment amount"
+                    keyboardType="decimal-pad"
+                    editable={!busy}
+                    value={amountText}
+                    onChangeText={val => {
+                      if (error) setError('');
+                      setAmountDraft(prev => ({
+                        key: payTargetKey,
+                        text: acceptMoneyEdit(
+                          prev && prev.key === payTargetKey ? prev.text : amountText,
+                          val,
+                          currencyCode,
+                        ),
+                      }));
+                    }}
+                    placeholder={formatEditableMoney(0, currencyCode)}
+                    placeholderTextColor={palette.muted}
+                    style={ui.input}
+                  />
+                </View>
+              </View>
+            ) : null}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Record new payment"
@@ -260,9 +305,11 @@ export function ObligationPaySheet({
                   ? 'Saving…'
                   : remainingAmount <= 0
                     ? 'Paid'
-                    : target?.overridePayAmount != null && target.overridePayAmount > 0 && target.overridePayAmount < remainingAmount
-                      ? `Record ${formatCurrency(target.overridePayAmount, currencySymbol)} payment`
-                      : 'Record payment'}
+                    : parsedPayAmount !== null && parsedPayAmount > 0 && parsedPayAmount < remainingAmount
+                      ? `Record ${formatCurrency(parsedPayAmount, currencySymbol)} partial payment`
+                      : parsedPayAmount !== null && parsedPayAmount > 0
+                        ? `Record ${formatCurrency(parsedPayAmount, currencySymbol)} payment`
+                        : 'Record payment'}
               </Text>
             </Pressable>
           </>

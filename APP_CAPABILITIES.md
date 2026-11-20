@@ -1,0 +1,66 @@
+# BitLess app capabilities
+
+BitLess (DebtFree Native) is an Android and iOS app for individuals and households managing debt and monthly cash flow. Users enter balances, income, bills, and transactions, then use that information to plan payoff, track upcoming obligations, and see progress.
+
+This inventory reflects the native app source. Availability can depend on the platform, build configuration, household role, and backend setup. Use the limits below when comparing BitLess with another app.
+
+## Home
+
+- See debt balance snapshots and estimated payoff dates across cards and loans, mortgages, and auto debt. The balance snapshot and recorded payment activity answer different questions.
+- Review the active payoff strategy and jump directly to **Accounts → Strategy**.
+- See unpaid and partly paid obligations that need attention, including overdue items, when there are applicable entries. Open an obligation to record a payment. Review recent ledger activity and open transaction details from Home.
+
+## Accounts and debt payoff
+
+- Track credit cards, personal loans, auto loans, and mortgages. Browse active accounts by category, search and sort them, and open each account's **Overview**, **Transactions**, and **Detail**.
+- See institution marks in account lists and Strategy, with offline support for recognized names such as U.S. Bank, USBconnect, and PenFed.
+- Maintain balances, rates, credit limits, minimum payments, due dates, and account-specific terms. Reconcile an account to a verified statement balance. Track expected credit-card annual fees separately from recorded fees.
+- Mark a zero-balance account as paid off and browse it in **Paid Off**. History stays available. A balance above zero returns the account to active tracking.
+- Compare Snowball (lowest balance first) and Avalanche (highest APR first) by projected payoff time and interest. Expand account rows to see month-by-month payment, interest, and remaining balance.
+- Enter an **Extra monthly payment** and an optional **One-time extra payment** in Strategy. The one-time date selects a projected monthly cycle. Use **Save monthly plan** to save the recurring amount. The one-time amount remains part of the local estimate. Expand the Snowball and Avalanche comparison to see projected dates and interest. **Payoff order** shows current balances and lets you expand each account's allocation and monthly schedule. Mortgage extra payments have their own input.
+
+## Transactions and obligations
+
+- Manually add, edit, and delete ledger entries for payments, purchases, fees, interest, and other activity. History supports search, date sorting, lifetime/year/month views, and filters by transaction type and one or more accounts, including paid-off accounts.
+- When adding a transaction, expand **More details** for an optional payee and note or the applicable payment breakdown. A purchase can reuse an account from recent confirmed purchase history with one tap.
+- Keep history attached to the same account or recurring bill when its name changes. Link a mortgage or auto loan to its matching recurring bill so the same obligation can be tracked together. Record loan payments with principal, interest, and applicable escrow. The principal allocation determines the loan balance reduction.
+- Browse bills, debt minimums, and annual card fees in **Transactions → Scheduled** using a monthly calendar or due-date list. Record full, partial, or advance payments against the applicable cycle while preserving the actual transaction date.
+- Change the due day for account minimums and recurring bills. The next unpaid reminder can move to the new date, and future reminders follow the new day. Moving an overdue reminder requires confirmation.
+- Plan an obligation in two, three, or four installments. The plan shows intended amounts and dates. The obligation keeps its original due date and payment requirement.
+
+## Budget
+
+- Manage primary and additional income sources on different pay schedules. View normalized monthly take-home income and enter optional gross income separately.
+- Create, edit, or end recurring bills. Use built-in or custom category labels and record the payment method, including the specific credit card used.
+- Review monthly cash flow by category, including recurring bills, mortgage and auto commitments, the card debt payment plan, and money available or a shortfall. Find the monthly reserve estimate for annual card fees.
+- Expand Budget categories to see commitments, payment cycle status, and the card used when applicable. **Budget → Expense** summarizes monthly `Actual Cash Flow`, `Cash to Debt Payments`, `Others`, `Charges`, and `Net Balance Change` in a donut chart and metric breakdown, with expandable categories below. The Expense net subtracts full debt payments from unpaid charges. Expand an expense category to see recorded entries, and tap one to open its transaction details.
+
+## Progress
+
+- Review credit card and personal loan payments, charges, and net balance changes for a selected month, year, or all recorded history. Compare recorded payments with the current plan and review individual active accounts in **Balance activity**. Archived accounts remain in the applicable totals and history.
+- Check overall and individual card utilization from tracked balances and limits.
+- Track milestones supported by confirmed history and a current credit-utilization goal. Pending payments and reconciliation adjustments do not count as recorded payment achievements.
+
+## Sign-in, household access, and settings
+
+- Sign in with Google and complete guided household setup, including income and debts. The app also has an iOS Apple sign-in flow, with physical-device verification still pending.
+- Use household-scoped financial data. Where collaboration is enabled, users can join by invitation link or code and switch households. Owners can manage invitations and roles. Members can edit finances and Viewers have read-only access.
+- Choose **Fresh** or **Inspire**, follow system brightness or select **Light** or **Dark**, and choose among ten colors in either style. Appearance is saved per signed-in user on the device. Settings also offers haptics and applicable household preferences such as currency and time zone. Account recovery can help eligible users fix missing or invalid debt categories without restarting setup.
+- In **Settings → Data & security**, export a validated native JSON backup, review a pasted backup, and inspect financial changes that are awaiting confirmation or need review. In-app account deletion depends on build configuration.
+
+## Current limits for comparisons
+
+| Area | Current app scope |
+| --- | --- |
+| Bank connections and payment execution | Manual data entry and ledger recording. Live bank aggregation, automatic transaction imports through bank sync, and bank or lender payment initiation are unavailable. |
+| Budget method | Monthly cash flow and category commitments, with a separate Expense summary for recorded payments and charges. Per-category spending targets are unavailable. |
+| Reminders | In-app due dates, calendar, and obligation status. Notification preferences can be saved. Background scheduled alerts and remote push delivery are unavailable in the sandbox. |
+| Household collaboration | Invite-link and code flows are implemented in source. Availability depends on backend and build configuration. Automated invitation email delivery is unconfigured. |
+| Data portability | Native JSON export and backup review. Full backup restore is unavailable in the current app. |
+| Billing | Sandbox plan selection only. Live subscription purchases are disabled. |
+
+## Keeping this sheet current
+
+Update the relevant section in the same change that adds a user-facing capability or materially improves one. Edit the existing entry when it describes the same workflow, and update any affected availability or limits. If a capability is removed, remove or revise its entry so the inventory stays accurate.
+
+Write what a user can do today and call out platform, role, or build requirements that affect whether they can do it. Leave routine fixes that restore the documented behavior, visual polish, internal refactors, implementation history, task IDs, and roadmap ideas in their respective project records.

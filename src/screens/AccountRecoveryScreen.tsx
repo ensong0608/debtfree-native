@@ -16,7 +16,6 @@ export function AccountRecoveryScreen(p: Props) {
   const surface = palette.surface;
   const run = async (work: () => Promise<void>) => { if (busyRef.current) return; busyRef.current = true; setBusy(true); setError(''); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : 'Please try again.'); } finally { busyRef.current = false; setBusy(false); } };
   const actionBusy = busy || !!p.actionBusy;
-  const button = (label: string, action: () => void) => <Pressable disabled={actionBusy} onPress={action} accessibilityRole="button" style={{ backgroundColor: ctaBg, padding: 14, borderRadius: 12, marginTop: 10, opacity: actionBusy ? 0.5 : 1 }}><Text style={{ color: ctaFg, textAlign: 'center', fontWeight: '700' }}>{label}</Text></Pressable>;
   return <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 24, backgroundColor: palette.canvas }} keyboardShouldPersistTaps="handled">
     <Text accessibilityRole="header" style={{ fontSize: 28, fontWeight: '700', color: fg }}>Your account</Text>
     <Text style={{ color: fg, marginVertical: 12 }}>{p.email}</Text>
@@ -41,11 +40,16 @@ export function AccountRecoveryScreen(p: Props) {
       </View>)}
     </View>
     <Text style={{ color: fg, fontSize: 18, fontWeight: '700', marginTop: 24 }}>Your households</Text>
-    {p.households.map(h => h.householdId === p.currentId ? <View key={h.householdId} style={{ backgroundColor: palette.raised, padding: 14, borderRadius: 12, marginTop: 10 }}><Text style={{ color: fg, fontWeight: '700' }}>{h.householdName}</Text><Text style={{ color: palette.muted, marginTop: 4 }}>Current household</Text></View> : <React.Fragment key={h.householdId}>{button(h.householdName, () => void run(() => p.onSwitch(h.householdId)))}</React.Fragment>)}
+    {p.households.map(h => h.householdId === p.currentId ? <View key={h.householdId} style={{ backgroundColor: palette.raised, padding: 14, borderRadius: 12, marginTop: 10 }}><Text style={{ color: fg, fontWeight: '700' }}>{h.householdName}</Text><Text style={{ color: palette.muted, marginTop: 4 }}>Current household</Text></View> : <ActionButton key={h.householdId} label={h.householdName} disabled={actionBusy} bg={ctaBg} fg={ctaFg} onPress={() => { void run(() => p.onSwitch(h.householdId)); }} />)}
     <Text style={{ color: fg, fontSize: 18, fontWeight: '700', marginTop: 24 }}>Join a household</Text>
     <TextInput value={input} onChangeText={setInput} placeholder="Invitation link or code" placeholderTextColor={palette.muted} autoCapitalize="none" style={{ color: fg, backgroundColor: surface, padding: 14, borderRadius: 12, marginTop: 10 }} />
-    {button('Join', () => void run(() => p.onJoin(input)))}
+    <ActionButton label="Join" disabled={actionBusy} bg={ctaBg} fg={ctaFg} onPress={() => { void run(() => p.onJoin(input)); }} />
     {!!error && <Text accessibilityRole="alert" style={{ color: palette.text, marginTop: 12 }}>{error}</Text>}
-    {button('Refresh', p.onRefresh)}{button('Sign out', p.onSignOut)}
+    <ActionButton label="Refresh" disabled={actionBusy} bg={ctaBg} fg={ctaFg} onPress={p.onRefresh} />
+    <ActionButton label="Sign out" disabled={actionBusy} bg={ctaBg} fg={ctaFg} onPress={p.onSignOut} />
   </ScrollView>;
+}
+
+function ActionButton({ label, onPress, disabled, bg, fg }: { label: string; onPress: () => void; disabled: boolean; bg: string; fg: string }) {
+  return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" style={{ backgroundColor: bg, padding: 14, borderRadius: 12, marginTop: 10, opacity: disabled ? 0.5 : 1 }}><Text style={{ color: fg, textAlign: 'center', fontWeight: '700' }}>{label}</Text></Pressable>;
 }
