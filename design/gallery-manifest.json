@@ -1,6 +1,236 @@
 {
   "collections": [
     {
+      "id": "inspire-fresh-2026-11-19",
+      "title": "Inspire Interpretation · Fresh Light Architecture (Full App · 2026-11-19)",
+      "shortTitle": "Inspire · Fresh Light",
+      "badge": "Latest",
+      "date": "2026-11-19",
+      "file": "inspire-fresh-2026-11-19.html",
+      "palette": ["#0A85A5", "#14B8A6", "#FFD269", "#07131A"],
+      "variants": {
+        "Inspire Daylight": "signature",
+        "Inspire Twilight": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy",
+        "History",
+        "Scheduled",
+        "Budget",
+        "Expense",
+        "Overview",
+        "Utilization",
+        "Milestones",
+        "Settings"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": true,
+      "includeInIndex": true,
+      "note": "Custom Inspire theme interpretation built on the exact refined Fresh Light 11-screen architecture: coastal horizon sky & mountain SVG backdrop on the Debt-Free Date hero, 7-segment rainbow progress bar, encouraging italic whispers, Uphold-style 'Your accounts' donut + stacked Paid/Balance tiles card, soft pastel Strategy rows, and 4 selectable Horizon Moods (Coastal Sky, Sunlit Lagoon, Warm Horizon, Mist & Aurora) across Inspire Daylight & Inspire Twilight."
+    },
+    {
+      "id": "fresh-refined-2026-11-18",
+      "title": "Fresh Refined & 10-Color Selector (Full App · 2026-11-18)",
+      "shortTitle": "Fresh Refined + 10 Colors",
+      "badge": "Latest",
+      "date": "2026-11-18",
+      "file": "fresh-refined-2026-11-18.html",
+      "palette": ["#49CC68", "#2563EB", "#D97706", "#00B386", "#7C3AED", "#DB2777"],
+      "variants": {
+        "Fresh Light": "signature",
+        "After Dark": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy",
+        "History",
+        "Scheduled",
+        "Budget",
+        "Expense",
+        "Overview",
+        "Utilization",
+        "Milestones",
+        "Settings"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": true,
+      "includeInIndex": true,
+      "note": "Fresh Light & After Dark base with 10 live selectable Accent Themes (Green, Cobalt, Amber, Teal, Cyan, Indigo, Violet, Berry, Coral, Slate), Uphold-style 'Your accounts' donut + stacked Paid/Balance tiles card, Upcoming scheduled card, crisp vector bank logos, squircle '+' FAB, compact Strategy extra-payment stepper, clean History pill toolbar (without Paid tag), rounded-tile Scheduled calendar, and NOV 2026 Overview + interactive Date bottom-sheet modal."
+    },
+    {
+      "id": "kinetix-bento-2026-11-18",
+      "title": "Kinetix Bento: Alabaster & Cyan / Obsidian & Cyan (Full App · 2026-11-18)",
+      "shortTitle": "Kinetix Bento",
+      "badge": "2026-11-18",
+      "date": "2026-11-18",
+      "file": "kinetix-bento-full-app-2026-11-18.html",
+      "palette": ["#00A8C6", "#5B4BFF", "#FF3B5C", "#080B12"],
+      "variants": {
+        "Alabaster & Cyan": "light",
+        "Obsidian & Cyan": "dark"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy",
+        "History",
+        "Scheduled",
+        "Budget",
+        "Expense",
+        "Overview",
+        "Utilization",
+        "Milestones",
+        "Settings"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": false,
+      "includeInIndex": true,
+      "note": "Set 1 (2026-11-18): Swiss-grid Bento architecture with floating Base Black capsule dock, asymmetric date slab & countdown tower hero, 2-column card mosaic, waterfall strategy bars, timeline-spine history, proportional budget mosaic, 3D isometric cubes, halftone dot grids, restored original BitLess mark, and Uphold 3-primary + Base Black palette (Electric Cyan #00A8C6/#1FF2FF, Royal Iris #5B4BFF/#8B7FFF, Vermilion Punch #FF3B5C/#FF5E79)."
+    },
+    {
+      "id": "solaris-monograph-2026-11-18",
+      "title": "Solaris Monograph: Warm Ivory & Midnight Velvet (Full App · 2026-11-18)",
+      "shortTitle": "Solaris Monograph",
+      "badge": "2026-11-18",
+      "date": "2026-11-18",
+      "file": "solaris-monograph-full-app-2026-11-18.html",
+      "palette": ["#1E40FF", "#D98200", "#0D9F6E", "#0B0D14"],
+      "variants": {
+        "Warm Ivory": "ivory",
+        "Midnight Velvet": "velvet"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy",
+        "History",
+        "Scheduled",
+        "Budget",
+        "Expense",
+        "Overview",
+        "Utilization",
+        "Milestones",
+        "Settings"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": false,
+      "includeInIndex": true,
+      "note": "Set 2 (2026-11-18): Warm editorial Monograph layout on Warm Ivory (#FAF7F2) / Midnight Velvet (#0B0D14) with full-bleed dark masthead + 3D isometric planes, split statement card, 01/02 numbered priority cards, per-account SVG completion rings, statement-grouped ledger, half-donut allocation arc, restored original BitLess mark, and Uphold 3-primary + Base Black palette (Ultramarine Cobalt #1E40FF/#6488FF, Sovereign Gold #D98200/#FFC43D, Jade Emerald #0D9F6E/#2EE59D)."
+    },
+    {
+      "id": "uphold-prism-2026-11-18",
+      "title": "Uphold-Concept Prism: Daylight & Carbon Volt (Full App · 2026-11-18)",
+      "shortTitle": "Uphold-Concept Prism",
+      "badge": "2026-11-18",
+      "date": "2026-11-18",
+      "file": "uphold-prism-full-app-2026-11-18.html",
+      "palette": ["#00B386", "#2952FF", "#FF4D5E", "#090D14"],
+      "variants": {
+        "Daylight Prism": "daylight",
+        "Carbon Volt": "carbon"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy",
+        "History",
+        "Scheduled",
+        "Budget",
+        "Expense",
+        "Overview",
+        "Utilization",
+        "Milestones",
+        "Settings"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": false,
+      "includeInIndex": true,
+      "note": "Previous 2026-11-18 Uphold-concept exploration (Momentum Teal #00B386/#22F3BA, Cobalt Signal #2952FF/#6E8FFF, Ember Coral #FF4D5E/#FF6B78). Retained in index for comparison."
+    },
+    {
+      "id": "fresh-light-dark-2026-11-18",
+      "title": "Latest Fresh Light & After Dark (Full App · 2026-11-18)",
+      "shortTitle": "Fresh Light & After Dark (Nov 18)",
+      "badge": "Baseline · Nov 18",
+      "date": "2026-11-18",
+      "file": "fresh-light-dark-full-app-2026-11-18.html",
+      "palette": ["#49CC68", "#84FB7F", "#090D14", "#F7F9F8"],
+      "variants": {
+        "Fresh Light": "signature",
+        "After Dark": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy",
+        "History",
+        "Scheduled",
+        "Budget",
+        "Expense",
+        "Overview",
+        "Utilization",
+        "Milestones",
+        "Settings"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": false,
+      "includeInIndex": true,
+      "note": "Refined 11-screen Fresh Light (#49CC68 / #F7F9F8) & After Dark (#090D14 / #84FB7F) full-app design study: unified Light theme green (#49CC68), neutral See all links, red Home snapshot Balance, >30% shorter headers, Transactions Purchase & Charges labels, Budget renames (Debts, Home, Auto, Breakdown), neutral Available card, new Expense tab showing actual payments & charges, modernized Progress Overview with pill timeframe tabs and sleek speedometer, and highlighted Paid Off Accounts on Milestones."
+    },
+    {
+      "id": "fresh-light-dark-2026-11-17",
+      "title": "Fresh Light & After Dark (Full App · 2026-11-17)",
+      "shortTitle": "Fresh Light & After Dark (Nov 17)",
+      "badge": "Baseline · Nov 17",
+      "date": "2026-11-17",
+      "file": "fresh-light-dark-full-app-2026-11-17.html",
+      "palette": ["#49CC68", "#84FB7F", "#090D14", "#F7F9F8"],
+      "variants": {
+        "Fresh Light": "signature",
+        "After Dark": "studio"
+      },
+      "pages": [
+        "Home",
+        "Accounts",
+        "Strategy",
+        "History",
+        "Scheduled",
+        "Budget",
+        "Overview",
+        "Utilization",
+        "Milestones",
+        "Settings"
+      ],
+      "selector": "data-design",
+      "pageSelector": "data-screen",
+      "latest": false,
+      "includeInIndex": true,
+      "note": "Full 10-screen BitLess study extending Fresh Light (#49CC68 / #F7F9F8) paired with After Dark (#090D14 / #84FB7F), modeled directly from live T-296 Android emulator captures."
+    },
+    {
+      "title": "BitLess brand kit",
+      "file": "brand-kit/index.html",
+      "variants": {
+        "Complete kit": "overview"
+      },
+      "pages": [
+        "Overview"
+      ],
+      "selector": "data-brand-view",
+      "latest": false,
+      "includeInIndex": false,
+      "note": "Reusable SVG logo lockups, palette-matched light/dark variants, app icon tiles, and use guidance based on the supplied BitLess SVG."
+    },
+    {
       "title": "Latest Uphold color consistency",
       "file": "signature-uphold-consistent-2026-11-16.html",
       "variants": {
@@ -15,7 +245,8 @@
       ],
       "selector": "data-design",
       "pageSelector": "data-screen",
-      "latest": true,
+      "latest": false,
+      "includeInIndex": false,
       "note": "Uphold green (#49CC68 light / #84FB7F dark) marks debt reductions and selected controls; red marks increases. Balances and ordinary labels stay neutral. Currency uses a smaller, spaced dollar symbol. Montserrat is retained as the preview font; Proxima Nova is unavailable locally. Original blue + and BitLess logo remain."
     },
     {
@@ -34,6 +265,7 @@
       "selector": "data-design",
       "pageSelector": "data-screen",
       "latest": false,
+      "includeInIndex": false,
       "note": "Uphold official core colors #49CC68 / #84FB7F / #090D14 / white / black, with derived neutral surfaces. Proxima Nova is unavailable locally; Montserrat is the preview stand-in. BitLess identity, Signature composition and original blue + preserved. Brand reference: https://uphold.design/."
     },
     {
@@ -52,6 +284,7 @@
       "selector": "data-design",
       "pageSelector": "data-screen",
       "latest": false,
+      "includeInIndex": false,
       "note": "Visible swatch #416D55 is the darkest brand fill. Smaller bold headings and three rounded font alternatives. Shared Signature layout and Contour artwork keep typography comparable; Home composition and original blue + preserved."
     },
     {
@@ -70,6 +303,7 @@
       "selector": "data-design",
       "pageSelector": "data-screen",
       "latest": false,
+      "includeInIndex": false,
       "note": "Owner-supplied green palette and Ubuntu. Home composition is shared; Accounts and Strategy have distinct background art and equal summary heights. Header separators removed. Original blue + retained."
     },
     {
@@ -88,7 +322,8 @@
       "selector": "data-design",
       "pageSelector": "data-screen",
       "note": "Home leads with an expressive hero; Accounts and Strategy have matched compact summaries.",
-      "latest": false
+      "latest": false,
+      "includeInIndex": false
     },
     {
       "title": "Accounts & Strategy · first review",
@@ -104,6 +339,7 @@
       ],
       "selector": "data-design",
       "pageSelector": "data-section",
+      "includeInIndex": false,
       "note": "Earlier six-screen exploration, retained for comparison."
     },
     {
@@ -118,6 +354,7 @@
         "Home"
       ],
       "selector": "data-concept",
+      "includeInIndex": false,
       "note": "Argon interpretation. Original exploratory wording and financial labels are retained; these are not implementation specifications."
     },
     {
@@ -132,6 +369,7 @@
         "Home"
       ],
       "selector": "data-concept",
+      "includeInIndex": false,
       "note": "Three complete Home compositions exploring financial color associations."
     },
     {
@@ -146,6 +384,7 @@
         "Home"
       ],
       "selector": "data-style",
+      "includeInIndex": false,
       "note": "Refinement, full Home rework and metallic depth."
     },
     {
@@ -160,6 +399,7 @@
         "Home"
       ],
       "selector": "data-style",
+      "includeInIndex": false,
       "note": "Initial three studies. Signature Blue was the owner's preferred direction in this round."
     }
   ]

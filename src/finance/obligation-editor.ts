@@ -1,16 +1,22 @@
 import type { Session } from '@supabase/supabase-js';
 import { Alert } from 'react-native';
-import type { UserOnboardingData } from '../onboarding-domain';
+import type { DebtItem, UserOnboardingData } from '../onboarding-domain';
 import { FinancialSettingsConflictError, loadUserOnboardingData, saveUserOnboardingData } from '../onboarding-storage';
-import { type DateOnly } from './calendar';
-import { makeMoney } from './money';
+import { getNextMonthString, type DateOnly } from './calendar';
+import { makeMoney, moneyFromMajor } from './money';
+import type { LedgerTransaction } from './ledger';
+import { historicalBillIdsByDebtId } from './loan-bill-pairing';
+import { getScheduledObligationRows, resolveEffectiveDebtSchedule, type ScheduledObligationRow } from './payment-matching';
+import { resolveRecurringBillDate, type RecurringBill } from './recurring-bills';
+import { prepareObligationEditorSchedule, type ObligationDueDateEdit } from './obligation-editor-domain';
 import {
   initializeObligationSchedule,
   validateObligationSchedule,
   type ObligationSchedule,
   type ObligationScheduleKey,
 } from './obligation-schedule';
-export { prepareObligationEditorSchedule, shouldAskPaidToday } from './obligation-editor-domain';
+export { prepareObligationEditorSchedule };
+export { shouldAskPaidToday } from './obligation-editor-domain';
 
 /** Persist one schedule map entry through the existing revision-checked settings RPC. */
 export async function saveObligationEditorSchedule(params: {
@@ -75,6 +81,92 @@ export async function removeObligationEditorSchedule(params: {
 
 export function obligationFirstDueDate(dueDay: number, today: DateOnly, currencyCode = 'USD'): DateOnly {
   return initializeObligationSchedule({ today, dueDay, amount: makeMoney(currencyCode, 0) }).firstDueDate;
+}
+
+/** Reuse reminder settlement matching before changing a cycle's due date. */
+export async function chooseObligationDueDateEdit(params: {
+  current: UserOnboardingData;
+  today: DateOnly;
+  dueDay: number;
+  currencyCode: string;
+  transactions: readonly LedgerTransaction[];
+  recurringBills: readonly RecurringBill[];
+} & ({ bill: RecurringBill } | { debt: DebtItem })): Promise<ObligationDueDateEdit> {
+  const { current, today, dueDay, currencyCode, transactions, recurringBills } = params;
+  const bill = 'bill' in params ? params.bill : undefined;
+  const debt = 'debt' in params ? params.debt : undefined;
+  const month = today.slice(0, 7);
+  const nextMonth = getNextMonthString(month);
+  const toDate = obligationFirstDueDate(dueDay, today, currencyCode);
+  const historicalIds = historicalBillIdsByDebtId(current.loanBillPairingByDebtId);
+  const billIds = debt ? historicalIds[debt.id] ?? [] : [];
+  const key = bill ? `bill:${bill.id}` : `debt:${debt!.id}`;
+  const persisted = bill
+    ? current.obligationSchedules?.[`bill:${bill.id}`]
+    : debt && resolveEffectiveDebtSchedule(current.obligationSchedules, debt.id, billIds);
+  const applicableBills = bill ? [bill] : recurringBills.filter(item => billIds.includes(item.id));
+  const legacyBill = applicableBills[0];
+  const legacyDueDay = legacyBill?.dueDay ?? debt?.dueDay;
+  if (!persisted && legacyDueDay == null) return {};
+  const schedule = persisted ?? prepareObligationEditorSchedule({
+    kind: bill ? 'bill' : 'debt', id: bill?.id ?? debt!.id, today, timeZone: current.householdTimeZone,
+    dueDay: legacyDueDay!, legacyDueDay: legacyDueDay!,
+    amount: legacyBill?.amount ?? moneyFromMajor(debt!.minimumPayment, currencyCode),
+    createdAt: legacyBill?.createdAt ?? debt!.createdAt, isNew: false,
+  });
+  const lastTerm = schedule?.terms.at(-1);
+  const rows = getScheduledObligationRows({
+    debts: debt ? [debt] : [],
+    recurringBills: applicableBills,
+    transactions,
+    asOfDate: today,
+    currencyCode,
+    schedules: { [key]: schedule },
+    historicalBillIdsByDebtId: historicalIds,
+  });
+  const relevant = rows.filter(row => bill ? row.bill?.id === bill.id : row.debt?.id === debt?.id);
+  const hasActivity = (row: ScheduledObligationRow) =>
+    row.state.status !== 'unpaid' || row.state.withPendingMatch.matchedTransactions.length > 0;
+  const protectedDueDays = Object.fromEntries(relevant
+    .filter(row => row.dueCycleMonth > month && hasActivity(row) &&
+      row.dueDate !== resolveRecurringBillDate(row.dueCycleMonth, dueDay))
+    .map(row => [row.dueCycleMonth, Number(row.dueDate.slice(8, 10))]));
+  const edit = Object.keys(protectedDueDays).length ? { protectedDueDays } : {};
+  const nextDayThisMonth = resolveRecurringBillDate(month, dueDay);
+  const currentCycle = relevant.find(row => row.dueCycleMonth === month);
+  // A due day saved by an older app may already start this month. Allow the
+  // immediately preceding occurrence to be moved only with confirmation.
+  const carryover = lastTerm?.effectiveMonth === month && lastTerm.dueDay === dueDay
+    ? relevant.find(row => getNextMonthString(row.dueCycleMonth) === month &&
+      row.dueDate !== resolveRecurringBillDate(row.dueCycleMonth, dueDay))
+    : undefined;
+  const firstFutureCycle = lastTerm?.dueDay !== dueDay && schedule.firstDueDate.slice(0, 7) === nextMonth &&
+    schedule.terms.length === 1 && !schedule.cycleDueDayOverrides && toDate.slice(0, 7) === month
+    ? relevant.find(row => row.dueCycleMonth === nextMonth)
+    : undefined;
+  const cycle = currentCycle && currentCycle.dueDate !== nextDayThisMonth
+    ? currentCycle : carryover ?? firstFutureCycle;
+  const targetMonth = toDate.slice(0, 7);
+  if (!cycle || hasActivity(cycle) || schedule.acknowledgedPaidCycles.includes(targetMonth) ||
+      protectedDueDays[targetMonth] !== undefined) return edit;
+
+  const move = { fromMonth: cycle.dueCycleMonth, toDate };
+  if (cycle.dueDate >= today) return { ...edit, cycleMove: move };
+
+  const displayDate = (date: DateOnly) => new Intl.DateTimeFormat(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
+  }).format(new Date(`${date}T12:00:00Z`));
+  return new Promise(resolve => {
+    Alert.alert(
+      'Move overdue reminder?',
+      `If the lender or merchant moved the payment, move the reminder from ${displayDate(cycle.dueDate)} to ${displayDate(toDate)}. Otherwise, keep the overdue reminder and use the new due day for future payments.`,
+      [
+        { text: 'Keep overdue', style: 'cancel', onPress: () => resolve(edit) },
+        { text: 'Move reminder', onPress: () => resolve({ ...edit, cycleMove: move }) },
+      ],
+      { cancelable: false },
+    );
+  });
 }
 
 /** Ask only when a newly entered obligation is actually due today. */

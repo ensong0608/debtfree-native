@@ -18,7 +18,8 @@
       "expo-secure-store",
       "expo-apple-authentication",
       "expo-web-browser",
-      "./plugins/with-android-preview-build-type"
+      "./plugins/with-android-preview-build-type",
+      "./plugins/with-android-pull-down-view"
     ],
     "extra": {
       "environment": "sandbox-only"

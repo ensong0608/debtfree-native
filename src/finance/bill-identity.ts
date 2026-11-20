@@ -1,7 +1,7 @@
 /** Extract exact recurring-bill IDs from canonical memo markers. */
 export function extractBillIdsFromMemo(memo?: string | null): Set<string> {
   const ids = new Set<string>();
-  if (!memo) return ids;
+  if (!memo || !memo.includes('bill:')) return ids;
 
   const bracketMatches = memo.matchAll(/\[bill:([^\]:]+)(?::[^\]]*)?\]/g);
   for (const match of bracketMatches) {

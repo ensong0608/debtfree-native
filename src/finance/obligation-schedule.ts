@@ -6,7 +6,7 @@ import { makeMoney, type Money } from './money.ts';
 
 export type ObligationScheduleKey = `debt:${string}` | `bill:${string}`;
 export type ObligationTerms = Readonly<{ effectiveMonth: string; dueDay: number; amount: Money }>;
-export type ObligationSchedule = Readonly<{ firstDueDate: DateOnly; acknowledgedPaidCycles: readonly string[]; terms: readonly ObligationTerms[] }>;
+export type ObligationSchedule = Readonly<{ firstDueDate: DateOnly; acknowledgedPaidCycles: readonly string[]; terms: readonly ObligationTerms[]; cycleDueDayOverrides?: Readonly<Record<string, number | null>> }>;
 export type ObligationSchedules = Readonly<Record<string, ObligationSchedule>>;
 
 export function obligationScheduleKey(kind: 'debt' | 'bill', id: string): ObligationScheduleKey {
@@ -39,6 +39,14 @@ export function validateObligationSchedule(schedule: ObligationSchedule): void {
     if (cycle < schedule.firstDueDate.slice(0, 7) || seen.has(cycle)) throw new RangeError('Invalid acknowledged cycle');
     seen.add(cycle);
   }
+  const overrides = schedule.cycleDueDayOverrides;
+  if (overrides !== undefined) {
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).length > 1200) throw new RangeError('Invalid cycle override map');
+    for (const [month, day] of Object.entries(overrides)) {
+      dueDate(month, day ?? 1);
+      if (month < schedule.firstDueDate.slice(0, 7) || seen.has(month) || (day !== null && (!Number.isInteger(day) || day < 1 || day > 31))) throw new RangeError('Invalid cycle override');
+    }
+  }
 }
 /** Start on or after both today and the requested start date. Paid acknowledgement applies only when due today. */
 export function initializeObligationSchedule(params: { today: DateOnly; startDate?: DateOnly; dueDay: number; amount: Money; paidToday?: boolean }): ObligationSchedule {
@@ -69,9 +77,13 @@ export function getObligationCycle(schedule: ObligationSchedule, month: string):
   if (month < schedule.firstDueDate.slice(0, 7)) return null;
   let term = schedule.terms[0];
   for (const candidate of schedule.terms) { if (candidate.effectiveMonth > month) break; term = candidate; }
-  const date = dueDate(month, term.dueDay);
-  if (date < schedule.firstDueDate) return null;
-  return { dueDate: date, amount: term.amount, dueDay: term.dueDay, acknowledgedPaid: schedule.acknowledgedPaidCycles.includes(month) };
+  const overrides = schedule.cycleDueDayOverrides;
+  const hasOverride = !!overrides && Object.prototype.hasOwnProperty.call(overrides, month);
+  if (hasOverride && overrides![month] === null) return null;
+  const effectiveDueDay = hasOverride ? overrides![month]! : term.dueDay;
+  const date = dueDate(month, effectiveDueDay);
+  if (!hasOverride && date < schedule.firstDueDate) return null;
+  return { dueDate: date, amount: term.amount, dueDay: effectiveDueDay, acknowledgedPaid: schedule.acknowledgedPaidCycles.includes(month) };
 }
 export function isObligationCycleEligible(schedule: ObligationSchedule, month: string): boolean {
   const cycle = getObligationCycle(schedule, month);

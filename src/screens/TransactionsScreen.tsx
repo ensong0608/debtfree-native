@@ -1,21 +1,26 @@
+import { PeriodDateSheet } from '../components/PeriodDateSheet';
 import { AdaptiveModal } from '../components/ModalOverlay';
 import { ConfirmModal } from '../components/ConfirmModal';
-import { transactionHasBillId } from '../finance/bill-identity';
-import { useMemo, useState } from 'react';
+import { extractBillIdFromTxId, extractBillIdsFromMemo, transactionHasBillId } from '../finance/bill-identity';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Crypto from 'expo-crypto';
 import { Alert, TouchableWithoutFeedback } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Pressable, ScrollView, Text, TextInput, View, appearanceColor, useNativeAppearance } from '../components/NativeAppearance';
-import { AppIcon, type AppIconName } from '../components/AppIcon';
+import { payActionColors } from '../components/appearance-theme';
+import { AppIcon } from '../components/AppIcon';
+import { AccountMark } from '../components/AccountMark';
 import { AmountText } from '../components/AmountText';
 import { Card, FinancialScreen, ui } from '../components/FinancialScreen';
+import { InspireCornerArt } from '../components/InspireArt';
 import { ObligationCalendar } from '../components/ObligationCalendar';
 import { SelectDropdown, type DropdownOption } from '../components/SelectDropdown';
 import { SheetFormHeader, SheetModal } from '../components/SheetModal';
-import { formatCurrency, acceptMoneyEdit, type DebtItem } from '../onboarding-domain';
+import { formatCurrency, acceptMoneyEdit, formatEditableMoney, parseMoneyInput, suggestLoanPaymentSplit, type DebtItem } from '../onboarding-domain';
 import {
   classifyCategoryDirection,
   calculateTransactionBalanceDelta,
+  isPaidOffAccountArchived,
   type LedgerTransaction,
   type TransactionCategory,
 } from '../finance/ledger';
@@ -28,10 +33,23 @@ import { AnnualFeeSchedule, getAnnualFeeRows } from '../components/AnnualFeeSche
 import { clampDate, firstEligibleSplitTerm, getPlannedDebtInstallments, resolveDebtSplitPlanState, type DebtPaymentSplitPlansByDebtId, type BillPaymentSplitPlansByBillId } from '../finance/debt-payment-split';
 import { getCurrency } from '../finance/currencies';
 import { bottomInsetPadding } from '../components/bottom-inset';
+import { DEFAULT_TAB_UI_PREFERENCES, useTabShell, type TabUiPreferences, type TransactionsDateFilter } from '../components/TabShellContext';
 
 const SHORT_MONTH_DAY_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const HISTORY_DATE_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 const LONG_MONTH_FMT = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
+const HISTORY_DATE_CACHE = new Map<string, string>();
+const HISTORY_PAGE_SIZE = 30;
+const EMPTY_BILL_ID_SET = new Set<string>();
+
+const formatHistoryDate = (isoDate: string): string => {
+  let formatted = HISTORY_DATE_CACHE.get(isoDate);
+  if (formatted !== undefined) return formatted;
+  formatted = HISTORY_DATE_FMT.format(new Date(`${isoDate}T12:00:00`));
+  if (HISTORY_DATE_CACHE.size > 2000) HISTORY_DATE_CACHE.clear();
+  HISTORY_DATE_CACHE.set(isoDate, formatted);
+  return formatted;
+};
 
 const normalizeDisplayName = (text: string) =>
   text.replace(/\b([A-Z]{4,})\b/g, w => w[0] + w.slice(1).toLowerCase());
@@ -82,22 +100,583 @@ const formatTransactionSourceLabel = (source?: string): string => {
 
 const CATEGORY_CHOICES: { label: string; category: TransactionCategory; isDebt: boolean }[] = [
   { label: 'Payment', category: 'payment', isDebt: true },
-  { label: 'Single purchase', category: 'purchase', isDebt: true },
+  { label: 'Purchase', category: 'purchase', isDebt: true },
   { label: 'Subscription', category: 'subscription', isDebt: true },
   { label: 'Utilities', category: 'utilities', isDebt: true },
   { label: 'Interest', category: 'interest', isDebt: true },
-  { label: 'Fee / Annual Fee', category: 'fee', isDebt: true },
+  { label: 'Fee', category: 'fee', isDebt: true },
   { label: 'Refund', category: 'refund', isDebt: true },
-  { label: 'Debit Bill (Checking)', category: 'debit_bill', isDebt: false },
-  { label: 'Debit Spending (Checking)', category: 'debit_spending', isDebt: false },
 ];
 
 const EMPTY_TRANSACTIONS: LedgerTransaction[] = [];
 const EMPTY_BILLS: RecurringBill[] = [];
 const EMPTY_STRING_LIST: readonly string[] = [];
 
+type AccountTypeKey = 'credit_cards' | 'home' | 'auto' | 'subscriptions' | 'utilities' | 'insurance' | 'others' | 'paid_off';
+type AccountTypeOption = { id: string; label: string };
+type AccountTypeGroup = { key: AccountTypeKey; label: string; options: AccountTypeOption[] };
+
+const TransactionHistoryRow = memo(function TransactionHistoryRow({
+  tx,
+  targetDebt,
+  identifiedBillName,
+  linkedDebtName,
+  currencySymbol,
+  isLight,
+  mutedColor,
+  textColor,
+  canEdit,
+  rowIndex = 0,
+  onPress,
+}: {
+  tx: LedgerTransaction;
+  targetDebt: DebtItem | undefined;
+  identifiedBillName: string | undefined;
+  linkedDebtName: string | undefined;
+  currencySymbol: string;
+  isLight: boolean;
+  mutedColor: string;
+  textColor: string;
+  canEdit: boolean;
+  rowIndex?: number;
+  onPress: (tx: LedgerTransaction) => void;
+}) {
+  const { isInspire, palette } = useNativeAppearance();
+  const dir = classifyCategoryDirection(tx.category);
+  const accountLabel = tx.accountId === null
+    ? linkedDebtName ?? identifiedBillName ?? 'Checking'
+    : targetDebt?.name || 'Debt Account';
+  const isPayment = dir === 'decrease_debt';
+  const isCharge = dir === 'increase_debt';
+  const isPaymentLikePayee = isPayment && (!tx.payee || /^Payment\b/i.test(tx.payee) || tx.category === 'payment');
+  const isBalanceAdj = tx.category === 'credit_adjustment' || tx.category === 'balance_adjustment' || /^Reconciliation credit adjustment$/i.test(tx.payee || '');
+  const primaryLabel = isPaymentLikePayee ? 'Payment' : isBalanceAdj ? 'Balance Adjustment' : (tx.payee || accountLabel);
+  const categoryLabel = formatTransactionCategoryLabel(tx.category);
+  const amountFormatted = formatCurrency(moneyToMajor(tx.amount), currencySymbol);
+  const formattedDate = formatHistoryDate(tx.date);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={canEdit ? `Edit transaction ${primaryLabel}` : `View transaction ${primaryLabel}`}
+      onPress={() => onPress(tx)}
+    >
+      <Card style={{ paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, gap: 9, overflow: 'hidden' }}>
+        {isInspire ? <InspireCornerArt kind={rowIndex % 2 === 0 ? 'corner-wave' : 'corner-leaf'} borderRadius={16} /> : null}
+        <Text style={[ui.small, { fontSize: 12.5, fontWeight: '600', color: mutedColor }]}>{formattedDate}</Text>
+        <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 12 }]}>
+          <View style={[ui.row, { gap: 12, flex: 1, minWidth: 0, alignItems: 'center' }]}>
+            <AccountMark name={accountLabel} category={targetDebt?.category} size={38} />
+            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+              <Text numberOfLines={1} style={[ui.heading, { fontSize: 15.5 }]}>{primaryLabel}</Text>
+              <Text numberOfLines={1} style={[ui.small, { fontSize: 13 }]}>
+                {`${accountLabel} - ${categoryLabel}`}
+              </Text>
+            </View>
+          </View>
+          <View style={[ui.row, { gap: 8, alignItems: 'center', flexShrink: 0 }]}>
+            <View style={{ alignItems: 'flex-end', gap: 3 }}>
+              <AmountText
+                style={[ui.value, { fontSize: 16, fontWeight: '700', textAlign: 'right', color: isPayment ? palette.posInk : isCharge ? palette.neg : textColor }]}
+                value={isPayment ? `−${amountFormatted}` : isCharge ? `+${amountFormatted}` : amountFormatted}
+              />
+              {tx.isPending ? (
+                <Text style={{ color: isLight ? '#C6840C' : '#FBBF24', fontSize: 12.5, fontWeight: '600' }}>Pending</Text>
+              ) : tx.source === 'recurring_bill' ? (
+                <View style={[ui.row, { gap: 4 }]}>
+                  <AppIcon name="check" size={13} color={palette.posInk} />
+                  <Text style={{ color: mutedColor, fontSize: 12.5, fontWeight: '500' }}>Auto-Bill</Text>
+                </View>
+              ) : tx.source === 'reconciliation' ? (
+                <Text style={{ color: palette.neg, fontSize: 12.5, fontWeight: '500' }}>Reconciled</Text>
+              ) : null}
+            </View>
+            <AppIcon name="chevronRight" size={16} color={mutedColor} />
+          </View>
+        </View>
+      </Card>
+    </Pressable>
+  );
+});
+
+const ScheduledSegment = memo(function ScheduledSegment({
+  debts,
+  recurringBills,
+  transactions,
+  todayStr,
+  currentMonthStr,
+  currencyCode,
+  currencySymbol,
+  obligationSchedules,
+  loanBillPairs,
+  historicalBillIdsByDebtId,
+  excludedObligationDebtIds,
+  excludedObligationBillIds,
+  debtPaymentSplitPlansByDebtId,
+  billPaymentSplitPlansByBillId,
+  linkedDebtNameByBillId,
+  scheduledMonthOffset,
+  onChangeMonthOffset,
+  scheduledDate,
+  onSelectDate,
+  canEdit,
+  billError,
+  onSetBillError,
+  pendingBillCycle,
+  onSetPendingBillCycle,
+  onAddTransaction,
+  onRecordBillPayment,
+  onConfirmAnnualFee,
+  onSaveDebtPaymentSplitPlans,
+  onSaveBillPaymentSplitPlans,
+  onOpenSplitPlan,
+}: {
+  debts: DebtItem[];
+  recurringBills: RecurringBill[];
+  transactions: LedgerTransaction[];
+  todayStr: DateOnly;
+  currentMonthStr: string;
+  currencyCode: string;
+  currencySymbol: string;
+  obligationSchedules?: ObligationSchedules;
+  loanBillPairs: Readonly<Record<string, string>>;
+  historicalBillIdsByDebtId: Readonly<Record<string, readonly string[]>>;
+  excludedObligationDebtIds: readonly string[];
+  excludedObligationBillIds: readonly string[];
+  debtPaymentSplitPlansByDebtId: DebtPaymentSplitPlansByDebtId;
+  billPaymentSplitPlansByBillId: BillPaymentSplitPlansByBillId;
+  linkedDebtNameByBillId: Map<string, string | undefined>;
+  scheduledMonthOffset: number;
+  onChangeMonthOffset: (next: number | ((current: number) => number)) => void;
+  scheduledDate: string | null;
+  onSelectDate: (next: string | null) => void;
+  canEdit: boolean;
+  billError: string;
+  onSetBillError: (msg: string) => void;
+  pendingBillCycle: string | null;
+  onSetPendingBillCycle: (key: string | null) => void;
+  onAddTransaction?: (tx: LedgerTransaction) => unknown;
+  onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly, amount?: Money) => unknown;
+  onConfirmAnnualFee?: (debtId: string, renewalDate: DateOnly) => Promise<{ outcome: 'confirmed' | 'pending' } | void> | { outcome: 'confirmed' | 'pending' } | void;
+  onSaveDebtPaymentSplitPlans?: (plans: DebtPaymentSplitPlansByDebtId) => Promise<void>;
+  onSaveBillPaymentSplitPlans?: (plans: BillPaymentSplitPlansByBillId) => Promise<void>;
+  onOpenSplitPlan: (row: ScheduledObligationRow, candidateRows: ScheduledObligationRow[]) => void;
+}) {
+  const { isLight, isInspire, palette } = useNativeAppearance();
+  const { background: payBackground, text: payText } = payActionColors(palette, isLight);
+  const [expandedPlans, setExpandedPlans] = useState<Record<string, boolean>>({});
+
+  const scheduledAllRows = useMemo(
+    () =>
+      getScheduledObligationRows({
+        debts: debts.filter(debt => !excludedObligationDebtIds.includes(debt.id)),
+        recurringBills,
+        transactions,
+        asOfDate: todayStr,
+        currencyCode,
+        schedules: obligationSchedules,
+        loanBillPairs,
+        historicalBillIdsByDebtId,
+        excludedBillIds: excludedObligationBillIds,
+      }),
+    [debts, recurringBills, transactions, todayStr, currencyCode, obligationSchedules, loanBillPairs, historicalBillIdsByDebtId, excludedObligationDebtIds, excludedObligationBillIds],
+  );
+
+  const scheduledPlannedEvents = useMemo(
+    () =>
+      scheduledAllRows.length > 0
+        ? getPlannedDebtInstallments({
+            rows: scheduledAllRows,
+            plans: debtPaymentSplitPlansByDebtId,
+            billPlans: billPaymentSplitPlansByBillId,
+            historicalBillIdsByDebtId,
+            transactions,
+            asOfDate: todayStr,
+          })
+        : [],
+    [scheduledAllRows, debtPaymentSplitPlansByDebtId, billPaymentSplitPlansByBillId, historicalBillIdsByDebtId, transactions, todayStr],
+  );
+
+  const selectedMonth = useMemo(() => {
+    let m = currentMonthStr;
+    for (let index = 0; index < scheduledMonthOffset; index += 1) m = getNextMonthString(m);
+    return m;
+  }, [currentMonthStr, scheduledMonthOffset]);
+
+  const {
+    calendarRows,
+    plannedDates,
+    annualFeeDates,
+    monthRows,
+    sortedVisibleRows,
+    visibleAnnualFeeRows,
+    monthLabel,
+    paidCyclesCount,
+    unpaidCyclesCount,
+    pendingCyclesCount,
+  } = useMemo(() => {
+    const plannedEvents = scheduledPlannedEvents.filter(event => event.date.slice(0, 7) === selectedMonth);
+    const plannedObligationIdsInMonth = new Set(plannedEvents.map(event => event.obligationId));
+    const currentMonthRows = scheduledAllRows.filter(row => row.dueCycleMonth === selectedMonth || plannedObligationIdsInMonth.has(row.id));
+    const calRows = scheduledAllRows.filter(row => row.dueCycleMonth === selectedMonth);
+    const annualFees = getAnnualFeeRows(debts, transactions).filter(row => row.dueDate.slice(0, 7) === selectedMonth);
+    const visibleAnnual = scheduledDate ? annualFees.filter(row => row.dueDate === scheduledDate) : annualFees;
+    const matchingPlanObligationIdsOnDate = scheduledDate
+      ? new Set(plannedEvents.filter(event => event.date === scheduledDate).map(event => event.obligationId))
+      : null;
+    const visibleRows = scheduledDate
+      ? currentMonthRows.filter(row => row.dueDate === scheduledDate || Boolean(matchingPlanObligationIdsOnDate?.has(row.id)))
+      : currentMonthRows;
+    const sortedRows = [...visibleRows].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.name.localeCompare(b.name));
+    let paid = 0;
+    let unpaid = 0;
+    let pending = 0;
+    for (const row of currentMonthRows) {
+      if (row.state.status === 'paid') paid += 1;
+      else if (row.state.status === 'pending_confirmation') pending += 1;
+      else unpaid += 1;
+    }
+    return {
+      calendarRows: calRows,
+      plannedDates: plannedEvents.map(event => event.date),
+      annualFeeDates: annualFees.map(row => row.dueDate),
+      monthRows: currentMonthRows,
+      sortedVisibleRows: sortedRows,
+      visibleAnnualFeeRows: visibleAnnual,
+      monthLabel: LONG_MONTH_FMT.format(new Date(`${selectedMonth}-01T12:00:00`)),
+      paidCyclesCount: paid,
+      unpaidCyclesCount: unpaid,
+      pendingCyclesCount: pending,
+    };
+  }, [scheduledAllRows, scheduledPlannedEvents, selectedMonth, debts, transactions, scheduledDate]);
+
+  const scale = getCurrency(currencyCode).scale;
+
+  const openSplitForRow = (row: ScheduledObligationRow) => {
+    const isDebt = row.kind === 'debt';
+    const entityId = isDebt ? row.debt?.id : row.bill?.id;
+    const candidateRows = entityId
+      ? scheduledAllRows.filter(item => item.kind === row.kind && (isDebt ? item.debt?.id === entityId : item.bill?.id === entityId))
+      : [];
+    onOpenSplitPlan(row, candidateRows);
+  };
+
+  return (
+    <Card style={{ padding: 0, gap: 0, borderWidth: 0, borderRadius: 0, backgroundColor: 'transparent', shadowOpacity: 0, elevation: 0 }}>
+      {!canEdit ? (
+        <View style={{ marginBottom: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.tint }}>
+          <Text style={[ui.small, { color: palette.text, fontWeight: '600' }]}>View-only access · Payment recording and split plans are disabled for Viewers.</Text>
+        </View>
+      ) : null}
+      {!!billError ? <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight), marginBottom: 8 }]}>{billError}</Text> : null}
+      <ObligationCalendar
+        month={selectedMonth}
+        rows={calendarRows}
+        selectedDate={scheduledDate}
+        onSelect={onSelectDate}
+        plannedDates={plannedDates}
+        annualFeeDates={annualFeeDates}
+        canPrevMonth={scheduledMonthOffset > 0}
+        canNextMonth={scheduledMonthOffset < 11}
+        onPrevMonth={() => { onSelectDate(null); onChangeMonthOffset(value => Math.max(0, value - 1)); }}
+        onNextMonth={() => { onSelectDate(null); onChangeMonthOffset(value => Math.min(11, value + 1)); }}
+      />
+      {monthRows.map(row => {
+        const isDebt = row.kind === 'debt';
+        const entityId = isDebt ? row.debt?.id : row.bill?.id;
+        const plan = entityId ? (isDebt ? debtPaymentSplitPlansByDebtId[entityId] : billPaymentSplitPlansByBillId[entityId]) : undefined;
+        if (!plan) return null;
+        const state = resolveDebtSplitPlanState(plan, row);
+        if (state?.status === 'needs_review') {
+          const name = normalizeDisplayName(
+            isDebt
+              ? (row.debt?.name ?? row.name)
+              : ((row.bill?.id ? linkedDebtNameByBillId.get(row.bill.id) : undefined) ?? row.bill?.name ?? row.name),
+          );
+          return <Text key={`split-review:${row.id}`} accessibilityRole="alert" style={[ui.small, { color: '#F5C563', marginTop: 8 }]}>{name}: plan needs review. Selected days no longer fit before the actual due date; the full obligation remains due {formatShortMonthDay(row.dueDate)}.</Text>;
+        }
+        return null;
+      })}
+      {!sortedVisibleRows.length && !visibleAnnualFeeRows.length ? (
+        <View style={{ paddingVertical: 24, alignItems: 'center', gap: 6 }}>
+          <AppIcon name="calendar" size={26} color={palette.muted} />
+          <Text style={ui.heading}>{scheduledDate ? 'No items on this date' : 'Nothing scheduled this month'}</Text>
+          <Text style={ui.small}>Choose another day or browse the next month.</Text>
+        </View>
+      ) : null}
+      {sortedVisibleRows.length > 0 ? (
+        <View style={{ marginTop: 12, gap: 8 }}>
+          <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 2 }]}>
+            <Text accessibilityRole="header" style={ui.heading}>{monthLabel}</Text>
+            <View style={{ paddingHorizontal: 11, paddingVertical: 4, borderRadius: 999, backgroundColor: palette.selection, borderWidth: isInspire ? 1.5 : 1, borderColor: palette.brand }}>
+              <Text style={{ color: palette.accentInk, fontSize: 12, fontWeight: '700' }}>
+                {`${sortedVisibleRows.length} ${sortedVisibleRows.length === 1 ? 'item' : 'items'}`}
+              </Text>
+            </View>
+          </View>
+          <Card style={{ padding: 0, gap: 0, borderRadius: 16, overflow: 'hidden' }}>
+            {isInspire ? <InspireCornerArt kind="corner-ridge" borderRadius={16} /> : null}
+            {sortedVisibleRows.map((row, index) => {
+              const { bill, debt, dueDate: due, state } = row;
+              const match = state.confirmedMatch;
+              const isPending = state.status === 'pending_confirmation';
+              const isPastDue = due < todayStr && state.status !== 'paid';
+              const busyKey = `${row.kind}:${row.kind === 'debt' ? debt?.id : bill?.id}:${due}`;
+              const displayName = normalizeDisplayName(
+                row.kind === 'debt'
+                  ? (debt?.name ?? row.name.replace(/\s+minimum$/i, ''))
+                  : ((bill?.id ? linkedDebtNameByBillId.get(bill.id) : undefined) ?? bill?.name ?? row.name),
+              );
+              const entityId = row.kind === 'debt' ? debt?.id : bill?.id;
+              const hasPlan = Boolean(entityId && (row.kind === 'debt' ? debtPaymentSplitPlansByDebtId[entityId] : billPaymentSplitPlansByBillId[entityId]));
+              const canSplit = canEdit && ((row.kind === 'debt' && debt && onSaveDebtPaymentSplitPlans) || (row.kind === 'bill' && bill && onSaveBillPaymentSplitPlans));
+              const rowEvents = scheduledPlannedEvents.filter(event => event.obligationId === row.id);
+              const isExpanded = expandedPlans[row.id] ?? true;
+              const confirmedPaidMinor = Math.max(0, row.requiredAmount.minorUnits - match.remainingAmount.minorUnits);
+              const rightAmountMoney = match.isPartiallyPaid ? match.remainingAmount : row.requiredAmount;
+
+              const recordPaymentAmount = async (amountToRecord: Money, lockKey: string) => {
+                if (!canEdit || pendingBillCycle !== null) return;
+                onSetPendingBillCycle(lockKey);
+                onSetBillError('');
+                try {
+                  if (row.kind === 'debt' && debt && onAddTransaction) {
+                    await onAddTransaction(createDebtMinimumPaymentTransaction({
+                      id: `tx:${Crypto.randomUUID()}`,
+                      debt,
+                      today: todayStr,
+                      dueDate: due,
+                      amount: amountToRecord,
+                      createdAt: new Date().toISOString(),
+                    }));
+                  } else if (row.kind === 'bill' && bill) {
+                    await onRecordBillPayment?.(bill, due, amountToRecord);
+                  }
+                } catch (error) {
+                  onSetBillError(error instanceof Error ? error.message : 'Unable to record this payment.');
+                } finally {
+                  onSetPendingBillCycle(null);
+                }
+              };
+
+              const statusText = match.isSatisfied
+                ? 'Paid'
+                : isPending
+                  ? `Awaiting confirmation · ${formatCurrency(moneyToMajor(state.pendingAmount), currencySymbol)} pending`
+                  : match.isPartiallyPaid
+                    ? `Partial - ${formatCurrency(moneyToMajor(makeMoney(currencyCode, confirmedPaidMinor)), currencySymbol)}`
+                    : isPastDue
+                      ? 'Past due · Unpaid'
+                      : 'Unpaid';
+              const statusColor = match.isSatisfied
+                ? palette.posInk
+                : isPending
+                  ? (isLight ? '#C6840C' : '#FBBF24')
+                  : isPastDue
+                    ? palette.neg
+                    : match.isPartiallyPaid
+                      ? (isLight ? '#C6840C' : '#FBBF24')
+                      : palette.neg;
+
+              return (
+                <View key={row.id} style={index > 0 ? { borderTopWidth: 1, borderTopColor: palette.border } : undefined}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 13, gap: 12 }}>
+                    <AccountMark name={displayName} category={row.kind === 'debt' ? debt?.category : undefined} size={38} />
+                    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                      <Text style={[ui.heading, { fontSize: 15.5 }]}>{displayName}</Text>
+                      <Text style={ui.small}>
+                        {`${isPastDue ? 'Past due ' : 'Due '}${formatShortMonthDay(due)} · ${row.kind === 'debt' ? 'Minimum payment' : bill?.paymentMethod === 'credit' ? 'Credit Card' : 'Debit Card'}`}
+                      </Text>
+                      <Text style={[ui.small, { color: statusColor, fontWeight: match.isSatisfied || isPending || isPastDue || match.isPartiallyPaid ? '700' : '500' }]}>
+                        {statusText}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <AmountText style={[ui.value, { fontSize: 16, textAlign: 'right' }]} value={formatCurrency(moneyToMajor(rightAmountMoney), currencySymbol)} />
+                        {match.isPartiallyPaid ? (
+                          <Text style={[ui.small, { color: palette.posInk }]}>remaining</Text>
+                        ) : null}
+                      </View>
+                      <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        {canEdit && !match.isSatisfied && !isPending ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Pay ${displayName} due ${due}`}
+                            disabled={(row.kind === 'debt' ? !onAddTransaction : !onRecordBillPayment) || pendingBillCycle !== null}
+                            onPress={() => void recordPaymentAmount(match.remainingAmount, busyKey)}
+                            style={{
+                              backgroundColor: payBackground,
+                              borderColor: isInspire ? (isLight ? 'rgba(255,255,255,0.42)' : 'rgba(9,13,20,0.3)') : payBackground,
+                              borderWidth: isInspire ? 1.5 : 1,
+                              minHeight: 32,
+                              paddingHorizontal: 14,
+                              paddingVertical: 5,
+                              borderRadius: 999,
+                              justifyContent: 'center',
+                              alignItems: 'center',
+                            }}
+                          >
+                            <Text style={{ color: payText, fontSize: 13, fontWeight: '700', textAlign: 'center' }}>
+                              {pendingBillCycle === busyKey ? 'Saving…' : 'Pay'}
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                        {canSplit && !hasPlan ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Split payment plan for ${displayName}`}
+                            onPress={() => openSplitForRow(row)}
+                            style={{
+                              backgroundColor: isInspire ? palette.surface : palette.tint,
+                              borderColor: palette.brand,
+                              borderWidth: 1.5,
+                              minHeight: 32,
+                              paddingHorizontal: 12,
+                              paddingVertical: 5,
+                              borderRadius: 999,
+                              justifyContent: 'center',
+                              alignItems: 'center',
+                            }}
+                          >
+                            <Text style={{ color: palette.accentInk, fontSize: 13, fontWeight: '700', textAlign: 'center' }}>
+                              Split
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </View>
+                  </View>
+
+                  {rowEvents.length > 0 ? (
+                    <View style={{ marginHorizontal: 14, marginBottom: 12, borderRadius: 12, borderWidth: isInspire ? 1.5 : 1, borderColor: palette.cardBorder, backgroundColor: isLight ? palette.canvas : palette.raised, overflow: 'hidden' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 8 }}>
+                        <Pressable
+                          accessibilityRole={canSplit ? 'button' : undefined}
+                          accessibilityLabel={`Edit split plan for ${displayName}`}
+                          disabled={!canSplit}
+                          onPress={() => { if (canSplit) openSplitForRow(row); }}
+                          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 2 }}
+                        >
+                          <Text style={[ui.small, { color: palette.text, fontWeight: '700' }]}>
+                            {`${rowEvents.length} installments`}
+                          </Text>
+                          {canSplit ? <AppIcon name="edit" size={13} color={palette.accentInk} /> : null}
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ expanded: isExpanded }}
+                          accessibilityLabel={`${isExpanded ? 'Hide' : 'Show'} ${displayName} installments`}
+                          onPress={() => setExpandedPlans(previous => ({ ...previous, [row.id]: !isExpanded }))}
+                          hitSlop={6}
+                          style={{ paddingHorizontal: 6, paddingVertical: 2 }}
+                        >
+                          <Text style={[ui.small, { color: palette.accentInk, fontWeight: '600' }]}>
+                            {isExpanded ? 'Hide' : 'Show'}
+                          </Text>
+                        </Pressable>
+                      </View>
+                      {isExpanded ? rowEvents.map(event => {
+                        const neededForTargetMinor = Math.max(0, event.cumulativeTargetMinor - confirmedPaidMinor);
+                        const installmentPayMinor = Math.min(event.amountMinor, match.remainingAmount.minorUnits, neededForTargetMinor);
+                        const instBusyKey = `${busyKey}:inst:${event.installment}`;
+                        const canPayInstallment = canEdit && !match.isSatisfied && event.status !== 'covered' && event.status !== 'pending' && installmentPayMinor > 0;
+                        const instStatusLabel = event.status === 'covered'
+                          ? 'Paid'
+                          : event.status === 'pending'
+                            ? 'Pending'
+                            : event.status === 'behind_plan'
+                              ? 'Behind plan'
+                              : 'Planned';
+                        const instStatusColor = event.status === 'covered'
+                          ? palette.posInk
+                          : event.status === 'pending'
+                            ? (isLight ? '#C6840C' : '#FBBF24')
+                            : event.status === 'behind_plan'
+                              ? palette.neg
+                              : palette.muted;
+                        return (
+                          <Pressable
+                            key={`${event.date}:${event.installment}`}
+                            accessibilityRole={canSplit ? 'button' : undefined}
+                            accessibilityLabel={`Edit split plan for ${displayName}`}
+                            disabled={!canSplit}
+                            onPress={() => { if (canSplit) openSplitForRow(row); }}
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              paddingHorizontal: 12,
+                              paddingVertical: 9,
+                              gap: 10,
+                              borderTopWidth: 1,
+                              borderTopColor: palette.border,
+                            }}
+                          >
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text style={[ui.text, { fontSize: 14, fontWeight: '600', color: palette.text }]}>
+                                {`Installment ${event.installment}`}
+                              </Text>
+                              <Text style={[ui.small, { color: instStatusColor }]}>
+                                {`${formatShortMonthDay(event.date)} · ${instStatusLabel}`}
+                              </Text>
+                            </View>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                              <AmountText style={[ui.value, { fontSize: 14 }]} value={formatCurrency(event.amountMinor / 10 ** scale, currencySymbol)} />
+                              {canPayInstallment ? (
+                                <Pressable
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Pay installment ${event.installment} for ${displayName}`}
+                                  disabled={(row.kind === 'debt' ? !onAddTransaction : !onRecordBillPayment) || pendingBillCycle !== null}
+                                  onPress={eventPress => {
+                                    eventPress?.stopPropagation?.();
+                                    void recordPaymentAmount(makeMoney(currencyCode, installmentPayMinor), instBusyKey);
+                                  }}
+                                  style={{
+                                    backgroundColor: payBackground,
+                                    borderColor: isInspire ? (isLight ? 'rgba(255,255,255,0.42)' : 'rgba(9,13,20,0.3)') : payBackground,
+                                    borderWidth: isInspire ? 1.5 : 1,
+                                    minHeight: 28,
+                                    paddingHorizontal: 12,
+                                    paddingVertical: 4,
+                                    borderRadius: 999,
+                                    justifyContent: 'center',
+                                    alignItems: 'center',
+                                  }}
+                                >
+                                  <Text style={{ color: payText, fontSize: 12, fontWeight: '700', textAlign: 'center' }}>
+                                    {pendingBillCycle === instBusyKey ? 'Saving…' : 'Pay'}
+                                  </Text>
+                                </Pressable>
+                              ) : null}
+                            </View>
+                          </Pressable>
+                        );
+                      }) : null}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </Card>
+        </View>
+      ) : null}
+      <AnnualFeeSchedule debts={debts} transactions={transactions} mode="scheduled" currencySymbol={currencySymbol} currentDate={todayStr} selectedMonth={selectedMonth} selectedDate={scheduledDate} onConfirmAnnualFee={onConfirmAnnualFee} readOnly={!canEdit} />
+      <View style={{ marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: palette.border, gap: 8 }}>
+        <Text style={ui.heading}>This month</Text>
+        {[
+          ['Paid cycles', paidCyclesCount],
+          ['Unpaid cycles', unpaidCyclesCount],
+          ['Pending cycles', pendingCyclesCount],
+        ].map(([label, count]) => <View key={label} style={[ui.row, { justifyContent: 'space-between' }]}><Text style={[ui.text, label === 'Unpaid cycles' && { color: palette.neg }]}>{label}</Text><Text style={ui.value}>{count}</Text></View>)}
+      </View>
+    </Card>
+  );
+});
+
 export function TransactionsScreen({
   debts,
+  mortgageEscrowByDebtId = {},
   transactions = EMPTY_TRANSACTIONS,
   currencySymbol = '$',
   currencyCode = 'USD',
@@ -113,6 +692,7 @@ export function TransactionsScreen({
   onSaveBillPaymentSplitPlans,
   loanBillPairs = {}, identityLoanBillPairs = {},
   historicalBillIdsByDebtId = {}, excludedObligationDebtIds = EMPTY_STRING_LIST,
+  archivedPaidOffDebtIds = EMPTY_STRING_LIST,
   excludedObligationBillIds = EMPTY_STRING_LIST,
   householdTimeZone,
   canEdit = true,
@@ -126,6 +706,7 @@ export function TransactionsScreen({
   initialSection?: string;
   onEditDismiss?: () => void;
   debts: DebtItem[];
+  mortgageEscrowByDebtId?: Record<string, number>;
   transactions?: LedgerTransaction[];
   currencySymbol?: string;
   currencyCode?: string;
@@ -143,6 +724,7 @@ export function TransactionsScreen({
   loanBillPairs?: Readonly<Record<string, string>>;
   identityLoanBillPairs?: Readonly<Record<string, string>>;
   historicalBillIdsByDebtId?: Readonly<Record<string, readonly string[]>>;
+  archivedPaidOffDebtIds?: readonly string[];
   excludedObligationDebtIds?: readonly string[];
   excludedObligationBillIds?: readonly string[];
   householdTimeZone?: string;
@@ -150,27 +732,45 @@ export function TransactionsScreen({
   onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly, amount?: Money) => unknown;
   onConfirmAnnualFee?: (debtId: string, renewalDate: DateOnly) => Promise<{ outcome: 'confirmed' | 'pending' } | void> | { outcome: 'confirmed' | 'pending' } | void;
 }) {
-  const { isLight, palette, ctaBg, ctaFg } = useNativeAppearance();
+  const { isLight, isInspire, palette, ctaBg, ctaFg } = useNativeAppearance();
   const insets = useSafeAreaInsets();
+  const shell = useTabShell();
+  const [localUiPreferences, setLocalUiPreferences] = useState<TabUiPreferences>(() => ({
+    ...DEFAULT_TAB_UI_PREFERENCES,
+    transactionsSection: initialSection === 'Scheduled' ? 'Scheduled' : DEFAULT_TAB_UI_PREFERENCES.transactionsSection,
+  }));
+  const uiPreferences = shell?.uiPreferences ?? localUiPreferences;
+  const setUiPreferences = shell?.setUiPreferences ?? setLocalUiPreferences;
+  const updateUiPreferences = (updates: Partial<TabUiPreferences>) => setUiPreferences(current => ({ ...current, ...updates }));
   const initialEditingTx = initialTransactionId
     ? transactions.find(tx => tx.id === initialTransactionId && tx.deletedAt === null) ?? null
     : null;
-  const [tab, setTab] = useState(initialSection === 'Scheduled' ? 'Scheduled' : 'History');
+  const tab = uiPreferences.transactionsSection;
+  const setTab = (value: 'History' | 'Scheduled') => updateUiPreferences({ transactionsSection: value });
   const [scheduledMonthOffset, setScheduledMonthOffset] = useState(0);
   const [scheduledDate, setScheduledDate] = useState<string | null>(null);
-  const [accountId, setAccountId] = useState('all');
-  const [periodIdx, setPeriodIdx] = useState(0); // 0 = Current month, 1 = Previous month, 2 = All time
-  const [typeIdx, setTypeIdx] = useState(0); // 0 = All Types, 1 = Payments, 2 = Charges/Fees, 3 = Debit Only
-  const [draftAccountId, setDraftAccountId] = useState('all');
-  const [draftPeriodIdx, setDraftPeriodIdx] = useState(0);
+  const accountId = uiPreferences.transactionsAccountFilter;
+  const typeIdx = uiPreferences.transactionsTypeFilter;
+  const dateFilter = uiPreferences.transactionsDateFilter;
+  const search = uiPreferences.transactionsSearchQuery;
+  const searchOpen = uiPreferences.transactionsSearchOpen;
+  const sortAsc = uiPreferences.transactionsSortAsc;
+  const setAccountId = (value: string) => updateUiPreferences({ transactionsAccountFilter: value });
+  const setTypeIdx = (value: number) => updateUiPreferences({ transactionsTypeFilter: value });
+  const setDateFilter = (value: TransactionsDateFilter) => updateUiPreferences({ transactionsDateFilter: value });
+  const setSearch = (value: string) => updateUiPreferences({ transactionsSearchQuery: value });
+  const setSearchOpen = (value: boolean) => updateUiPreferences({ transactionsSearchOpen: value });
+  const setSortAsc = (value: boolean | ((current: boolean) => boolean)) => updateUiPreferences({ transactionsSortAsc: typeof value === 'function' ? value(sortAsc) : value });
+  const [draftAccountIds, setDraftAccountIds] = useState<string[]>([]);
   const [draftTypeIdx, setDraftTypeIdx] = useState(0);
-  const [sortAsc, setSortAsc] = useState(false); // false = newest first, true = oldest first
-  const [search, setSearch] = useState('');
   const [showFilters, setShowFilters] = useState(false);
+  const [expandedAccountType, setExpandedAccountType] = useState<AccountTypeKey | null>(null);
+  const [showHistoryDatePicker, setShowHistoryDatePicker] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
 
   // Add Transaction Form State
   const [newPayee, setNewPayee] = useState('');
+  const [newNote, setNewNote] = useState('');
   const [newAmount, setNewAmount] = useState('');
   const [newCategoryIdx, setNewCategoryIdx] = useState(0);
   const [newAccountId, setNewAccountId] = useState(debts[0]?.id ?? '');
@@ -188,21 +788,24 @@ export function TransactionsScreen({
   const [formError, setFormError] = useState('');
   const [billError, setBillError] = useState('');
   const [pendingBillCycle, setPendingBillCycle] = useState<string | null>(null);
-  const [splitPlanRow, setSplitPlanRow] = useState<ScheduledObligationRow | null>(null);
+  const [splitPlanState, setSplitPlanState] = useState<{
+    row: ScheduledObligationRow;
+    candidateRows: ScheduledObligationRow[];
+  } | null>(null);
+  const splitPlanRow = splitPlanState?.row ?? null;
   const [splitCount, setSplitCount] = useState<2 | 3 | 4>(2);
   const [extraDays, setExtraDays] = useState(['20', '25']);
   const [extraOffsets, setExtraOffsets] = useState<(0 | -1)[]>([0, 0]);
-  const [expandedPlans, setExpandedPlans] = useState<Record<string, boolean>>({});
   const [splitDay1, setSplitDay1] = useState('1');
   const [splitDay2, setSplitDay2] = useState('15');
   const [splitMonthOffset1, setSplitMonthOffset1] = useState<0 | -1>(0);
   const [splitMonthOffset2, setSplitMonthOffset2] = useState<0 | -1>(0);
   const [savingSplitPlan, setSavingSplitPlan] = useState(false);
 
-  const openSplitPlanModal = (row: ScheduledObligationRow) => {
+  const openSplitPlanModal = useCallback((row: ScheduledObligationRow, candidateRows: ScheduledObligationRow[]) => {
     if (!canEdit) return;
     setBillError('');
-    setSplitPlanRow(row);
+    setSplitPlanState({ row, candidateRows });
     const isDebt = row.kind === 'debt';
     const entityId = isDebt ? row.debt?.id : row.bill?.id;
     const plan = entityId ? (isDebt ? debtPaymentSplitPlansByDebtId[entityId] : billPaymentSplitPlansByBillId[entityId]) : undefined;
@@ -229,20 +832,20 @@ export function TransactionsScreen({
         setSplitDay2(String(Math.max(2, Math.min(15, dueDayNum - 1))));
       }
     }
-  };
+  }, [canEdit, debtPaymentSplitPlansByDebtId, billPaymentSplitPlansByBillId]);
 
   // Edit Transaction Form State
   const [editingTx, setEditingTx] = useState<LedgerTransaction | null>(initialEditingTx);
   const [editPayee, setEditPayee] = useState(initialEditingTx?.payee ?? '');
-  const [editAmount, setEditAmount] = useState(initialEditingTx ? moneyToMajor(initialEditingTx.amount).toFixed(2) : '');
-  const [editCategoryIdx, setEditCategoryIdx] = useState(() => initialEditingTx ? Math.max(0, CATEGORY_CHOICES.findIndex(item => item.category === initialEditingTx.category)) : 0);
+  const [editAmount, setEditAmount] = useState(initialEditingTx ? formatEditableMoney(moneyToMajor(initialEditingTx.amount), currencyCode) : '');
+  const [editCategoryIdx, setEditCategoryIdx] = useState(() => initialEditingTx ? CATEGORY_CHOICES.findIndex(item => item.category === initialEditingTx.category) : 0);
   const [editAccountId, setEditAccountId] = useState<string | null>(initialEditingTx?.accountId ?? null);
   const [editDate, setEditDate] = useState(initialEditingTx?.date ?? '');
   const [editMemo, setEditMemo] = useState(initialEditingTx?.memo ?? '');
-  const [editPrincipal, setEditPrincipal] = useState(initialEditingTx?.principalAmount ? moneyToMajor(initialEditingTx.principalAmount).toFixed(2) : '');
-  const [editInterest, setEditInterest] = useState(initialEditingTx?.interestAmount ? moneyToMajor(initialEditingTx.interestAmount).toFixed(2) : '');
-  const [editEscrow, setEditEscrow] = useState(initialEditingTx?.escrowAmount ? moneyToMajor(initialEditingTx.escrowAmount).toFixed(2) : '');
-  const [editFee, setEditFee] = useState(initialEditingTx?.feeAmount ? moneyToMajor(initialEditingTx.feeAmount).toFixed(2) : '');
+  const [editPrincipal, setEditPrincipal] = useState(initialEditingTx?.principalAmount ? formatEditableMoney(moneyToMajor(initialEditingTx.principalAmount), currencyCode) : '');
+  const [editInterest, setEditInterest] = useState(initialEditingTx?.interestAmount ? formatEditableMoney(moneyToMajor(initialEditingTx.interestAmount), currencyCode) : '');
+  const [editEscrow, setEditEscrow] = useState(initialEditingTx?.escrowAmount ? formatEditableMoney(moneyToMajor(initialEditingTx.escrowAmount), currencyCode) : '');
+  const [editFee, setEditFee] = useState(initialEditingTx?.feeAmount ? formatEditableMoney(moneyToMajor(initialEditingTx.feeAmount), currencyCode) : '');
   const [editPicker, setEditPicker] = useState<'category' | 'debt' | null>(null);
   const [editError, setEditError] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
@@ -250,36 +853,97 @@ export function TransactionsScreen({
   const [confirmDeleteTx, setConfirmDeleteTx] = useState<LedgerTransaction | null>(null);
   const [confirmRemoveSplitRow, setConfirmRemoveSplitRow] = useState<ScheduledObligationRow | null>(null);
 
-  const todayStr = currentHouseholdDate(householdTimeZone);
-  const currentMonthStr = currentHouseholdMonth(householdTimeZone);
-  const prevMonthStr = getPreviousMonthString(currentMonthStr);
+  const todayStr = useMemo(() => currentHouseholdDate(householdTimeZone), [householdTimeZone]);
+  const currentMonthStr = useMemo(() => currentHouseholdMonth(householdTimeZone), [householdTimeZone]);
+  const currentYear = todayStr.slice(0, 4);
+  const dateFilterLabel = useMemo(
+    () =>
+      dateFilter.scope === 'lifetime'
+        ? 'Lifetime'
+        : dateFilter.scope === 'year'
+          ? dateFilter.value
+          : LONG_MONTH_FMT.format(new Date(`${dateFilter.value || currentMonthStr}-01T12:00:00`)),
+    [dateFilter, currentMonthStr],
+  );
+  const openHistoryDatePicker = () => {
+    setShowHistoryDatePicker(true);
+  };
 
-  const accountOptions = [
-    { label: 'All accounts', id: 'all' },
-    ...debts.map(d => ({ label: d.name, id: `debt:${d.id}` })),
-    ...recurringBills.filter(b => !Object.values(identityLoanBillPairs).includes(b.id)).map(b => ({ label: b.name, id: `bill:${b.id}` })),
-  ];
-  const validAccountIds = new Set(accountOptions.map(option => option.id));
-  const effectiveAccountId = accountId !== 'all' && validAccountIds.has(accountId) ? accountId : 'all';
-  const effectiveDraftAccountId = draftAccountId !== 'all' && validAccountIds.has(draftAccountId) ? draftAccountId : 'all';
-  const debtNamesById = new Map(debts.map(debt => [debt.id, debt.name]));
-  const linkedDebtNameByBillId = new Map<string, string | undefined>(Object.entries(identityLoanBillPairs).map(([debtId, billId]) => [billId, debtNamesById.get(debtId)] as const));
+  const debtById = useMemo(() => new Map(debts.map(debt => [debt.id, debt])), [debts]);
+  const debtNamesById = useMemo(() => new Map(debts.map(debt => [debt.id, debt.name])), [debts]);
+  const linkedDebtNameByBillId = useMemo(
+    () => new Map<string, string | undefined>(Object.entries(identityLoanBillPairs).map(([debtId, billId]) => [billId, debtNamesById.get(debtId)] as const)),
+    [identityLoanBillPairs, debtNamesById],
+  );
+  const identityLoanBillEntries = useMemo(() => Object.entries(identityLoanBillPairs), [identityLoanBillPairs]);
 
-  const periodFilterOptions = [
-    { value: 0, label: 'Current month' },
-    { value: 1, label: 'Previous month' },
-    { value: 2, label: 'All time' },
-  ] as const;
+  const accountTypeGroups = useMemo(() => {
+    const pairedBillIds = new Set(Object.values(identityLoanBillPairs));
+    const archived = new Set(debts.filter(debt => isPaidOffAccountArchived(debt, archivedPaidOffDebtIds)).map(debt => debt.id));
+    const debtOptions = (matches: (debt: DebtItem) => boolean): AccountTypeOption[] => debts
+      .filter(debt => !archived.has(debt.id) && matches(debt))
+      .map(debt => ({ label: debt.name, id: `debt:${debt.id}` }));
+    const billOptions = (matches: (bill: RecurringBill) => boolean): AccountTypeOption[] => recurringBills
+      .filter(bill => !pairedBillIds.has(bill.id) && matches(bill))
+      .map(bill => ({ label: bill.name, id: `bill:${bill.id}` }));
+    return ([
+      { key: 'credit_cards', label: 'Credit Card', options: debtOptions(debt => debt.category === 'Credit card') },
+      {
+        key: 'home', label: 'Home',
+        options: [
+          ...debtOptions(debt => debt.category === 'Mortgage'),
+          ...billOptions(bill => bill.category === 'housing'),
+        ],
+      },
+      { key: 'auto', label: 'Auto', options: debtOptions(debt => debt.category === 'Auto loan') },
+      { key: 'subscriptions', label: 'Subscriptions', options: billOptions(bill => bill.category === 'subscription') },
+      { key: 'utilities', label: 'Utilities', options: billOptions(bill => bill.category === 'utilities') },
+      { key: 'insurance', label: 'Insurance', options: billOptions(bill => bill.category === 'insurance') },
+      {
+        key: 'others', label: 'Others',
+        options: [
+          ...debtOptions(debt => ['Personal loan', 'Student loan', 'Medical debt', 'Other loan'].includes(debt.category)),
+          ...billOptions(bill => bill.category === 'other_bill'),
+        ],
+      },
+      { key: 'paid_off', label: 'Paid off accounts', options: debts.filter(debt => archived.has(debt.id)).map(debt => ({ label: debt.name, id: `debt:${debt.id}` })) },
+    ] satisfies AccountTypeGroup[]).filter(group => group.options.length > 0);
+  }, [debts, recurringBills, identityLoanBillPairs, archivedPaidOffDebtIds]);
+
+  const validAccountIds = useMemo(
+    () => new Set(accountTypeGroups.flatMap(group => group.options.map(option => option.id))),
+    [accountTypeGroups],
+  );
+  const selectedAccountIds = useMemo((): string[] => {
+    if (accountId === 'all') return [];
+    if (accountId.startsWith('type:')) {
+      return accountTypeGroups.find(group => `type:${group.key}` === accountId)?.options.map(option => option.id) ?? [];
+    }
+    if (validAccountIds.has(accountId)) return [accountId];
+    try {
+      const parsed: unknown = JSON.parse(accountId);
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string' && validAccountIds.has(id)) : [];
+    } catch {
+      return [];
+    }
+  }, [accountId, accountTypeGroups, validAccountIds]);
+  const encodeAccountIds = (ids: string[]) => ids.length ? JSON.stringify(ids) : 'all';
+  const effectiveAccountId = encodeAccountIds(selectedAccountIds);
+  const effectiveDraftAccountId = encodeAccountIds(draftAccountIds.filter(id => validAccountIds.has(id)));
+
   const typeFilterOptions = [
-    { value: 0, label: 'All types' },
     { value: 1, label: 'Payments' },
-    { value: 2, label: 'Charges and fees' },
-    { value: 3, label: 'Debit only' },
+    { value: 2, label: 'Purchase' },
+    { value: 3, label: 'Fees' },
+    { value: 4, label: 'Others' },
   ] as const;
+  const effectiveTypeIdx = typeIdx >= 1 && typeIdx <= 4 ? typeIdx : 0;
+  const effectiveDraftTypeIdx = draftTypeIdx >= 1 && draftTypeIdx <= 4 ? draftTypeIdx : 0;
   const openFilters = () => {
-    setDraftPeriodIdx(periodIdx);
-    setDraftAccountId(effectiveAccountId);
-    setDraftTypeIdx(typeIdx);
+    setDraftAccountIds(selectedAccountIds);
+    setDraftTypeIdx(effectiveTypeIdx);
+    const selectedGroup = accountTypeGroups.find(group => group.options.some(option => selectedAccountIds.includes(option.id)));
+    setExpandedAccountType(selectedGroup?.key ?? null);
     setShowFilters(true);
   };
   const filterRadio = (label: string, checked: boolean, onPress: () => void, key: string) => (
@@ -292,133 +956,158 @@ export function TransactionsScreen({
     </Pressable>
   );
 
-  const categoryDropdownOptions: readonly DropdownOption<number>[] = CATEGORY_CHOICES.map((c, idx) => ({
-    value: idx,
-    label: c.label,
-    subtitle: c.isDebt ? 'Debt account transaction' : 'Checking cashflow ($0 debt)',
-    icon: c.category === 'payment' ? 'check' : (c.isDebt ? 'creditCard' : 'calendar'),
-  }));
-
-  const debtAccountDropdownOptions: readonly DropdownOption<string>[] = debts.map(d => ({
-    value: d.id,
-    label: d.name,
-    subtitle: `Balance: ${formatCurrency(d.balance, currencySymbol)}`,
-    icon: 'creditCard',
-  }));
-
   const selectedDebtId = newAccountId || debts[0]?.id || '';
-  const selectedDebt = debts.find(debt => debt.id === selectedDebtId);
-  const selectedDebtSchedule = selectedDebt ? resolveEffectiveDebtSchedule(obligationSchedules, selectedDebt.id, historicalBillIdsByDebtId?.[selectedDebt.id]) : undefined;
-  const dueCycleOptions: readonly DropdownOption<string>[] = [
-    { value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' },
-    ...(selectedDebt
-      ? [0, 1, 2].flatMap(monthOffset => {
-          let month = currentMonthStr;
-          for (let offset = 0; offset < monthOffset; offset++) month = getNextMonthString(month);
-          const cycle = selectedDebtSchedule ? getObligationCycle(selectedDebtSchedule, month) : undefined;
-          if (cycle === null || (!selectedDebtSchedule && !selectedDebt.dueDay)) return [];
-          const date = cycle?.dueDate ?? resolveRecurringBillDate(month, selectedDebt.dueDay!);
-          const labelDate = new Date(`${date}T12:00:00`);
-          const label = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(labelDate);
-          return { value: date, label: `Due ${label}`, subtitle: selectedDebt.dueDay ? `Apply this payment to ${label}` : `Link this payment to the ${label} cycle` };
-        })
-      : []),
-  ];
+  const selectedDebt = useMemo(() => debts.find(debt => debt.id === selectedDebtId), [debts, selectedDebtId]);
+  // Older manual payees may actually be notes, so reuse only the account and category.
+  const recentPurchase = useMemo(() => transactions
+    .filter(tx => tx.source === 'manual' && tx.category === 'purchase' && !tx.isPending && !tx.deletedAt && debts.some(debt => debt.id === tx.accountId && !isPaidOffAccountArchived(debt, archivedPaidOffDebtIds)))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))[0],
+  [transactions, debts, archivedPaidOffDebtIds]);
 
-
-  // Filter transactions
-  const filtered = transactions.filter(tx => {
-    if (tx.deletedAt !== null) return false;
-
-    // Period filter
-    if (periodIdx === 0 && !tx.date.startsWith(currentMonthStr)) return false;
-    if (periodIdx === 1 && !tx.date.startsWith(prevMonthStr)) return false;
-
-    // Account filter
-    const selectedAcc = { id: effectiveAccountId };
-    const identifiedBill = recurringBills.some(b => transactionHasBillId(tx, b.id));
-    if (selectedAcc.id === 'debit' && (tx.accountId !== null || identifiedBill)) return false;
-    if (selectedAcc.id.startsWith('debt:')) {
-      const debtId = selectedAcc.id.slice(5);
-      if (tx.accountId !== debtId && !(tx.accountId === null && identityLoanBillPairs[debtId] && transactionHasBillId(tx, identityLoanBillPairs[debtId]))) return false;
-    }
-    if (selectedAcc.id.startsWith('bill:') && !transactionHasBillId(tx, selectedAcc.id.slice(5))) return false;
-
-    // Type filter
-    const dir = classifyCategoryDirection(tx.category);
-    if (typeIdx === 1 && dir !== 'decrease_debt') return false; // Payments / refunds
-    if (typeIdx === 2 && dir !== 'increase_debt') return false; // Charges / interest / fees
-    if (typeIdx === 3 && dir !== 'cash_only') return false; // Debit only
-
-    // Search query
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      const matchPayee = tx.payee.toLowerCase().includes(q);
-      const matchCategory = tx.category.toLowerCase().includes(q);
-      const matchMemo = tx.memo ? tx.memo.toLowerCase().includes(q) : false;
-      if (!matchPayee && !matchCategory && !matchMemo) return false;
-    }
-
-    return true;
-  });
-
-  const debtById = useMemo(() => new Map(debts.map(debt => [debt.id, debt])), [debts]);
-
-  const scheduledAllRows = useMemo(
+  const categoryDropdownOptions = useMemo<readonly DropdownOption<number>[]>(
     () =>
-      tab === 'Scheduled' || splitPlanRow !== null
-        ? getScheduledObligationRows({
-            debts: debts.filter(debt => !excludedObligationDebtIds.includes(debt.id)),
-            recurringBills,
-            transactions,
-            asOfDate: todayStr,
-            currencyCode,
-            schedules: obligationSchedules,
-            loanBillPairs,
-            historicalBillIdsByDebtId,
-            excludedBillIds: excludedObligationBillIds,
-          })
-        : [],
-    [tab, splitPlanRow, debts, recurringBills, transactions, todayStr, currencyCode, obligationSchedules, loanBillPairs, historicalBillIdsByDebtId, excludedObligationDebtIds, excludedObligationBillIds],
+      CATEGORY_CHOICES.map((c, idx) => ({
+        value: idx,
+        label: c.label,
+        subtitle: c.isDebt ? 'Debt account transaction' : 'Checking cashflow ($0 debt)',
+        icon: c.category === 'payment' ? 'check' : (c.isDebt ? 'creditCard' : 'calendar'),
+      })),
+    [],
   );
 
-  const scheduledPlannedEvents = useMemo(
+  const debtAccountDropdownOptions = useMemo<readonly DropdownOption<string>[]>(
     () =>
-      tab === 'Scheduled' && scheduledAllRows.length > 0
-        ? getPlannedDebtInstallments({
-            rows: scheduledAllRows,
-            plans: debtPaymentSplitPlansByDebtId,
-            billPlans: billPaymentSplitPlansByBillId,
-            historicalBillIdsByDebtId,
-            transactions,
-            asOfDate: todayStr,
-          })
-        : [],
-    [tab, scheduledAllRows, debtPaymentSplitPlansByDebtId, billPaymentSplitPlansByBillId, historicalBillIdsByDebtId, transactions, todayStr],
+      debts.map(d => ({
+        value: d.id,
+        label: d.name,
+        subtitle: `Balance: ${formatCurrency(d.balance, currencySymbol)}`,
+        icon: 'creditCard',
+      })),
+    [debts, currencySymbol],
   );
+
+  const dueCycleOptions = useMemo<readonly DropdownOption<string>[]>(() => {
+    if (!showAddForm || !showMoreDetails) {
+      return [{ value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' }];
+    }
+    const selectedDebtSchedule = selectedDebt
+      ? resolveEffectiveDebtSchedule(obligationSchedules, selectedDebt.id, historicalBillIdsByDebtId?.[selectedDebt.id])
+      : undefined;
+    return [
+      { value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' },
+      ...(selectedDebt
+        ? [0, 1, 2].flatMap(monthOffset => {
+            let month = currentMonthStr;
+            for (let offset = 0; offset < monthOffset; offset++) month = getNextMonthString(month);
+            const cycle = selectedDebtSchedule ? getObligationCycle(selectedDebtSchedule, month) : undefined;
+            if (cycle === null || (!selectedDebtSchedule && !selectedDebt.dueDay)) return [];
+            const date = cycle?.dueDate ?? resolveRecurringBillDate(month, selectedDebt.dueDay!);
+            const label = formatHistoryDate(date);
+            return { value: date, label: `Due ${label}`, subtitle: selectedDebt.dueDay ? `Apply this payment to ${label}` : `Link this payment to the ${label} cycle` };
+          })
+        : []),
+    ];
+  }, [showAddForm, showMoreDetails, selectedDebt, obligationSchedules, historicalBillIdsByDebtId, currentMonthStr]);
+
+  // Filter transactions and compute summary metrics in one memoized pass
+  const { filtered, totalPaymentsMinor, totalInterestFeesMinor } = useMemo(() => {
+    const selectedMonth = dateFilter.value || currentMonthStr;
+    const trimmedSearch = search.trim().toLowerCase();
+    let paymentsMinor = 0;
+    let interestFeesMinor = 0;
+
+    const matchesIdentity = (tx: LedgerTransaction, id: string): boolean => {
+      if (id.startsWith('debt:')) {
+        const targetDebtId = id.slice(5);
+        if (tx.accountId === targetDebtId) return true;
+        const pairedBillId = identityLoanBillPairs[targetDebtId];
+        return tx.accountId === null && [pairedBillId, ...(historicalBillIdsByDebtId[targetDebtId] ?? [])].some(billId => Boolean(billId && transactionHasBillId(tx, billId)));
+      }
+      if (id.startsWith('bill:')) return transactionHasBillId(tx, id.slice(5));
+      return false;
+    };
+
+    const matchesAccount = (tx: LedgerTransaction): boolean =>
+      selectedAccountIds.length === 0 || selectedAccountIds.some(id => matchesIdentity(tx, id));
+
+    const list: LedgerTransaction[] = [];
+    for (let i = 0; i < transactions.length; i += 1) {
+      const tx = transactions[i];
+      if (tx.deletedAt !== null) continue;
+
+      if (dateFilter.scope === 'month' && !tx.date.startsWith(selectedMonth)) continue;
+      if (dateFilter.scope === 'year' && !tx.date.startsWith(dateFilter.value)) continue;
+
+      if (!matchesAccount(tx)) continue;
+
+      if (effectiveTypeIdx === 1 && tx.category !== 'payment' && tx.category !== 'refund') continue;
+      if (effectiveTypeIdx === 2 && tx.category !== 'purchase' && tx.category !== 'debit_spending') continue;
+      if (effectiveTypeIdx === 3 && tx.category !== 'interest' && tx.category !== 'fee' && tx.category !== 'annual_fee') continue;
+      if (effectiveTypeIdx === 4 && (
+        tx.category === 'payment' || tx.category === 'refund' || tx.category === 'purchase' ||
+        tx.category === 'debit_spending' || tx.category === 'interest' || tx.category === 'fee' || tx.category === 'annual_fee'
+      )) continue;
+
+      if (trimmedSearch) {
+        const matchPayee = tx.payee.toLowerCase().includes(trimmedSearch);
+        const matchCategory = tx.category.toLowerCase().includes(trimmedSearch);
+        const matchMemo = tx.memo ? tx.memo.toLowerCase().includes(trimmedSearch) : false;
+        if (!matchPayee && !matchCategory && !matchMemo) continue;
+      }
+
+      list.push(tx);
+      if (tx.category === 'payment') {
+        paymentsMinor += tx.amount.minorUnits;
+      } else if (tx.category === 'interest' || tx.category === 'fee' || tx.category === 'annual_fee') {
+        interestFeesMinor += tx.amount.minorUnits;
+      }
+    }
+
+    return {
+      filtered: list,
+      totalPaymentsMinor: paymentsMinor,
+      totalInterestFeesMinor: interestFeesMinor,
+    };
+  }, [transactions, dateFilter, currentMonthStr, selectedAccountIds, effectiveTypeIdx, search, identityLoanBillPairs, historicalBillIdsByDebtId]);
 
   // Sort transactions by date
-  const sorted = [...filtered].sort((a, b) => {
-    if (sortAsc) return a.date.localeCompare(b.date);
-    return b.date.localeCompare(a.date);
-  });
+  const sorted = useMemo(
+    () => [...filtered].sort((a, b) => (sortAsc ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date))),
+    [filtered, sortAsc],
+  );
 
-  // Calculate summary metrics for the filtered period
-  let totalPaymentsMinor = 0;
-  let totalInterestFeesMinor = 0;
-  for (const tx of filtered) {
-    if (tx.category === 'payment' || tx.category === 'refund') {
-      totalPaymentsMinor += tx.amount.minorUnits;
-    }
-    if (['interest', 'fee', 'annual_fee'].includes(tx.category)) {
-      totalInterestFeesMinor += tx.amount.minorUnits;
-    }
-  }
+  const historyFilterKey = `${dateFilter.scope}|${dateFilter.value}|${effectiveAccountId}|${effectiveTypeIdx}|${search}|${sortAsc ? '1' : '0'}`;
+  const [visibleState, setVisibleState] = useState<{ filterKey: string; limit: number }>(() => ({
+    filterKey: historyFilterKey,
+    limit: HISTORY_PAGE_SIZE,
+  }));
+  const visibleLimit = visibleState.filterKey === historyFilterKey ? visibleState.limit : HISTORY_PAGE_SIZE;
+
+  const visibleHistoryRows = useMemo(
+    () => sorted.slice(0, visibleLimit),
+    [sorted, visibleLimit],
+  );
+
+  const handleSegmentScrollNearEnd = useCallback(
+    (segment: string) => {
+      if (segment === 'History') {
+        setVisibleState(current => {
+          const baseLimit = current.filterKey === historyFilterKey ? current.limit : HISTORY_PAGE_SIZE;
+          if (baseLimit >= sorted.length) {
+            return current.filterKey === historyFilterKey ? current : { filterKey: historyFilterKey, limit: baseLimit };
+          }
+          return { filterKey: historyFilterKey, limit: baseLimit + HISTORY_PAGE_SIZE };
+        });
+      }
+    },
+    [historyFilterKey, sorted.length],
+  );
 
   const handleSaveTransaction = async () => {
     if (!canEdit) return;
     setFormError('');
-    if (!newAmount || parseFloat(newAmount) <= 0) {
+    const parsedNewAmount = parseMoneyInput(newAmount, currencyCode, false);
+    if (!newAmount || parsedNewAmount === null || !Number.isFinite(parsedNewAmount) || parsedNewAmount <= 0) {
       setFormError('Please enter a valid amount');
       return;
     }
@@ -453,7 +1142,7 @@ export function TransactionsScreen({
         amount: moneyAmount,
         category: catOption.category,
         payee: newPayee.trim() || (catOption.category === 'payment' ? 'Payment' : catOption.label),
-        memo: `Manual entry (${catOption.label})`,
+        memo: newNote.trim() || undefined,
         source: 'manual',
         reconciled: false,
         createdAt: new Date().toISOString(),
@@ -478,7 +1167,11 @@ export function TransactionsScreen({
       setAddPicker(null);
       setShowDatePicker(false);
       setNewPayee('');
+      setNewNote('');
       setNewAmount('');
+      setNewCategoryIdx(0);
+      setNewAccountId(debts[0]?.id ?? '');
+      setNewDate(currentHouseholdDate(householdTimeZone));
       setNewAppliesToDate('');
       setNewPrincipal('');
       setNewInterest('');
@@ -501,36 +1194,69 @@ export function TransactionsScreen({
     setAddPicker(null);
     setShowDatePicker(false);
     setFormError('');
+    setNewPayee('');
+    setNewNote('');
+    setNewAmount('');
+    setNewCategoryIdx(0);
+    setNewAccountId(debts[0]?.id ?? '');
+    setNewDate(currentHouseholdDate(householdTimeZone));
+    setNewAppliesToDate('');
+    setNewPrincipal('');
+    setNewInterest('');
+    setNewEscrow('');
+    setNewFee('');
   };
 
-  const handleOpenEdit = (tx: LedgerTransaction) => {
+  const handleOpenEdit = useCallback((tx: LedgerTransaction) => {
     const isPaymentLike = tx.category === 'payment' && (!tx.payee || /^Payment to\b/i.test(tx.payee));
     const isBalanceAdj = tx.category === 'credit_adjustment' || tx.category === 'balance_adjustment' || /^Reconciliation credit adjustment$/i.test(tx.payee || '');
     setEditingTx(tx);
     setEditPayee(isPaymentLike ? 'Payment' : isBalanceAdj ? 'Balance Adjustment' : tx.payee);
-    setEditAmount(moneyToMajor(tx.amount).toFixed(2));
+    setEditAmount(formatEditableMoney(moneyToMajor(tx.amount), currencyCode));
     const catIdx = CATEGORY_CHOICES.findIndex(c => c.category === tx.category);
-    setEditCategoryIdx(catIdx >= 0 ? catIdx : 0);
+    setEditCategoryIdx(catIdx);
     setEditAccountId(tx.accountId);
     setEditDate(tx.date);
     setEditMemo(tx.memo || '');
-    setEditPrincipal(tx.principalAmount ? moneyToMajor(tx.principalAmount).toFixed(2) : '');
-    setEditInterest(tx.interestAmount ? moneyToMajor(tx.interestAmount).toFixed(2) : '');
-    setEditEscrow(tx.escrowAmount ? moneyToMajor(tx.escrowAmount).toFixed(2) : '');
-    setEditFee(tx.feeAmount ? moneyToMajor(tx.feeAmount).toFixed(2) : '');
+    setEditPrincipal(tx.principalAmount ? formatEditableMoney(moneyToMajor(tx.principalAmount), currencyCode) : '');
+    setEditInterest(tx.interestAmount ? formatEditableMoney(moneyToMajor(tx.interestAmount), currencyCode) : '');
+    setEditEscrow(tx.escrowAmount ? formatEditableMoney(moneyToMajor(tx.escrowAmount), currencyCode) : '');
+    setEditFee(tx.feeAmount ? formatEditableMoney(moneyToMajor(tx.feeAmount), currencyCode) : '');
     setEditPicker(null);
     setEditError('');
-  };
+  }, [currencyCode]);
+
+  const lastAppliedInitialTxIdRef = useRef<string | null>(initialTransactionId ?? null);
+  useEffect(() => {
+    if (!initialTransactionId) {
+      lastAppliedInitialTxIdRef.current = null;
+      return;
+    }
+    if (lastAppliedInitialTxIdRef.current === initialTransactionId) return;
+    const target = transactions.find(tx => tx.id === initialTransactionId && tx.deletedAt === null);
+    if (!target) return;
+    const frameId = requestAnimationFrame(() => {
+      lastAppliedInitialTxIdRef.current = initialTransactionId;
+      handleOpenEdit(target);
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [initialTransactionId, transactions, handleOpenEdit]);
 
   const handleSaveEdit = async () => {
     if (!canEdit || !editingTx || savingEdit) return;
     setEditError('');
-    const parsedAmt = parseFloat(editAmount);
-    if (Number.isNaN(parsedAmt) || parsedAmt <= 0) {
+    const parsedAmt = parseMoneyInput(editAmount, currencyCode, false);
+    if (parsedAmt === null || !Number.isFinite(parsedAmt) || parsedAmt <= 0) {
       setEditError('Please enter a valid amount');
       return;
     }
-    const catOption = CATEGORY_CHOICES[editCategoryIdx];
+    const catOption = editCategoryIdx >= 0
+      ? CATEGORY_CHOICES[editCategoryIdx]
+      : {
+          label: formatTransactionCategoryLabel(editingTx.category),
+          category: editingTx.category,
+          isDebt: editingTx.category !== 'debit_bill' && editingTx.category !== 'debit_spending',
+        };
     if (catOption.isDebt && !editAccountId) {
       setEditError(debts.length === 0 ? 'Please add a debt account on the Debt tab first' : 'Select a debt account for this transaction');
       return;
@@ -613,70 +1339,7 @@ export function TransactionsScreen({
     }
   };
 
-  // Live Balance Preview Calculation for Edit Modal
-  const editCatOption = CATEGORY_CHOICES[editCategoryIdx];
-  const targetEditDebt = debts.find(d => d.id === editAccountId);
-  let editCurrentBal = targetEditDebt ? targetEditDebt.balance : 0;
-  let editAfterBal = editCurrentBal;
-
-  if (targetEditDebt) {
-    const curMoney = moneyFromMajor(targetEditDebt.balance, currencyCode);
-    let previewMoney = curMoney;
-
-    // 1. Revert original transaction if it targeted this debt and was active
-    if (editingTx && editingTx.accountId === targetEditDebt.id && editingTx.deletedAt === null) {
-      const origDelta = calculateTransactionBalanceDelta(editingTx, targetEditDebt.category);
-      previewMoney = addMoney(previewMoney, makeMoney(currencyCode, -origDelta.minorUnits));
-    }
-
-    // 2. Apply newly configured amount and category
-    const parsedAmt = parseFloat(editAmount);
-    if (!Number.isNaN(parsedAmt) && parsedAmt > 0 && editCatOption.isDebt) {
-      try {
-        const newAmtMoney = parseMoney(editAmount, currencyCode);
-        const pAmt = editPrincipal.trim() ? parseMoney(editPrincipal.trim(), currencyCode) : null;
-        const iAmt = editInterest.trim() ? parseMoney(editInterest.trim(), currencyCode) : null;
-        const eAmt = editEscrow.trim() ? parseMoney(editEscrow.trim(), currencyCode) : null;
-        const fAmt = editFee.trim() ? parseMoney(editFee.trim(), currencyCode) : null;
-
-        const candidateTx: LedgerTransaction = {
-          ...editingTx!,
-          accountId: targetEditDebt.id,
-          amount: newAmtMoney,
-          category: editCatOption.category,
-          principalAmount: pAmt,
-          interestAmount: iAmt,
-          escrowAmount: eAmt,
-          feeAmount: fAmt,
-        };
-        const newDelta = calculateTransactionBalanceDelta(candidateTx, targetEditDebt.category);
-        previewMoney = addMoney(previewMoney, newDelta);
-      } catch {
-        // invalid input ignored for preview
-      }
-    }
-
-    editAfterBal = moneyToMajor(previewMoney);
-  }
-
-  return (
-    <FinancialScreen
-      title="Transactions"
-      segments={['History', 'Scheduled']}
-      selected={tab}
-      onSelect={nextTab => {
-        if (nextTab !== tab) {
-          setScheduledDate(null);
-          if (nextTab === 'Scheduled') setScheduledMonthOffset(0);
-        }
-        setTab(nextTab);
-        if (nextTab !== 'History') closeAddForm();
-      }}
-      onSettings={onSettings}
-      onAdd={canEdit && !showAddForm ? () => { setFormError(''); setShowMoreDetails(false); setAddPicker(null); setShowAddForm(true); } : undefined}
-      addLabel="Add Transaction"
-    >
-      {canEdit && showAddForm ? (
+  const addTransactionModal = canEdit && showAddForm ? (
         <SheetModal
           visible={canEdit && showAddForm}
           onClose={closeAddForm}
@@ -761,7 +1424,7 @@ export function TransactionsScreen({
               <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction date *</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
                 <Text style={{ color: palette.brand, fontSize: 15, fontWeight: '600' }}>
-                  {new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(`${newDate}T12:00:00`))}
+                  {formatHistoryDate(newDate)}
                 </Text>
                 <AppIcon name="calendar" size={16} color={palette.brand} />
               </View>
@@ -773,7 +1436,7 @@ export function TransactionsScreen({
               <TextInput
                 accessibilityLabel="Transaction amount"
                 accessibilityHint="Required"
-                placeholder="0.00"
+                placeholder={formatEditableMoney(0, currencyCode)}
                 placeholderTextColor={palette.muted}
                 keyboardType="decimal-pad"
                 textAlign="right"
@@ -783,22 +1446,6 @@ export function TransactionsScreen({
               />
             </View>
 
-            <View style={{ height: 1, backgroundColor: palette.border }} />
-            <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 2 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-                <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Add a note</Text>
-                <Text style={{ color: palette.muted, fontSize: 12 }}>optional</Text>
-              </View>
-              <TextInput
-                accessibilityLabel="Add a note"
-                placeholder="Optional note"
-                placeholderTextColor={palette.muted}
-                textAlign="right"
-                value={newPayee}
-                onChangeText={setNewPayee}
-                style={{ flex: 1, minWidth: 96, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 14 }}
-              />
-            </View>
           </View>
 
           {CATEGORY_CHOICES[newCategoryIdx].isDebt && selectedDebt && newAmount ? (() => {
@@ -823,8 +1470,12 @@ export function TransactionsScreen({
             } catch { return null; }
           })() : null}
 
-          {CATEGORY_CHOICES[newCategoryIdx].category === 'payment' ? (
-            <View style={{ gap: 8 }}>
+          {recentPurchase?.accountId && CATEGORY_CHOICES[newCategoryIdx].category === 'purchase' ? (
+            <Pressable accessibilityRole="button" onPress={() => setNewAccountId(recentPurchase.accountId ?? '')} style={{ alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', paddingHorizontal: 10, borderRadius: 12, backgroundColor: palette.tint }}>
+              <Text style={{ color: palette.brand, fontSize: 13 }}>Use recent purchase account ? {debts.find(debt => debt.id === recentPurchase.accountId)?.name}</Text>
+            </Pressable>
+          ) : null}
+          <View style={{ gap: 8 }}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityState={{ expanded: showMoreDetails }}
@@ -837,6 +1488,11 @@ export function TransactionsScreen({
 
               {showMoreDetails ? (
                 <View style={{ gap: 10 }}>
+                  <Text style={ui.small}>Payee (optional)</Text>
+                  <TextInput accessibilityLabel="Payee" placeholder="Payee" placeholderTextColor={palette.muted} value={newPayee} onChangeText={setNewPayee} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
+                  <Text style={ui.small}>Note (optional)</Text>
+                  <TextInput accessibilityLabel="Note" placeholder="Note" placeholderTextColor={palette.muted} value={newNote} onChangeText={setNewNote} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
+                  {CATEGORY_CHOICES[newCategoryIdx].category === 'payment' ? <>
                   <SelectDropdown
                     label="Applies to payment cycle (optional)"
                     sheetTitle="Choose Payment Due Cycle"
@@ -848,13 +1504,49 @@ export function TransactionsScreen({
 
                   {selectedDebt && (selectedDebt.category === 'Mortgage' || selectedDebt.category === 'Auto loan') ? (
                     <View style={{ padding: 12, backgroundColor: palette.raised, borderRadius: 12, borderWidth: 1, borderColor: palette.border, gap: 6 }}>
-                      <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700' }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+                      <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
+                        <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700', flex: 1 }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Suggest principal and interest split"
+                          onPress={() => {
+                            const parsedAmt = parseMoneyInput(newAmount, currencyCode, false);
+                            const targetAmount = parsedAmt !== null && parsedAmt > 0 ? parsedAmt : selectedDebt.minimumPayment;
+                            if (!Number.isFinite(targetAmount) || targetAmount <= 0) return;
+                            if (parsedAmt === null || parsedAmt <= 0) {
+                              setNewAmount(formatEditableMoney(targetAmount, currencyCode));
+                            }
+                            const suggestion = suggestLoanPaymentSplit({
+                              balance: selectedDebt.balance,
+                              aprPercent: selectedDebt.apr,
+                              paymentAmount: targetAmount,
+                              escrowAmount: selectedDebt.category === 'Mortgage' ? mortgageEscrowByDebtId[selectedDebt.id] : undefined,
+                              currencyCode,
+                            });
+                            setNewPrincipal(formatEditableMoney(suggestion.principal, currencyCode));
+                            setNewInterest(formatEditableMoney(suggestion.interest, currencyCode));
+                            if (selectedDebt.category === 'Mortgage' && suggestion.escrow > 0) {
+                              setNewEscrow(formatEditableMoney(suggestion.escrow, currencyCode));
+                            }
+                          }}
+                          style={{
+                            paddingHorizontal: 10,
+                            paddingVertical: 5,
+                            borderRadius: 999,
+                            borderWidth: 1,
+                            borderColor: palette.brand,
+                            backgroundColor: palette.tint,
+                          }}
+                        >
+                          <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Suggest P/I split</Text>
+                        </Pressable>
+                      </View>
                       <Text style={[ui.small, { color: palette.muted, marginBottom: 4 }]}>
                         If unknown, full payment is recorded in cashflow while loan principal remains unchanged.
                       </Text>
                       <Text style={ui.small}>Principal reduction</Text>
                       <TextInput
-                        placeholder="0.00"
+                        placeholder={formatEditableMoney(0, currencyCode)}
                         placeholderTextColor={palette.muted}
                         keyboardType="decimal-pad"
                         value={newPrincipal}
@@ -863,7 +1555,7 @@ export function TransactionsScreen({
                       />
                       <Text style={[ui.small, { marginTop: 4 }]}>Interest paid</Text>
                       <TextInput
-                        placeholder="0.00"
+                        placeholder={formatEditableMoney(0, currencyCode)}
                         placeholderTextColor={palette.muted}
                         keyboardType="decimal-pad"
                         value={newInterest}
@@ -874,7 +1566,7 @@ export function TransactionsScreen({
                         <>
                           <Text style={[ui.small, { marginTop: 4 }]}>Escrow (taxes & insurance)</Text>
                           <TextInput
-                            placeholder="0.00"
+                            placeholder={formatEditableMoney(0, currencyCode)}
                             placeholderTextColor={palette.muted}
                             keyboardType="decimal-pad"
                             value={newEscrow}
@@ -885,7 +1577,7 @@ export function TransactionsScreen({
                       ) : null}
                       <Text style={[ui.small, { marginTop: 4 }]}>Fees</Text>
                       <TextInput
-                        placeholder="0.00"
+                        placeholder={formatEditableMoney(0, currencyCode)}
                         placeholderTextColor={palette.muted}
                         keyboardType="decimal-pad"
                         value={newFee}
@@ -894,470 +1586,192 @@ export function TransactionsScreen({
                       />
                     </View>
                   ) : null}
+                  </> : null}
                 </View>
               ) : null}
             </View>
+
+          {addPicker !== null ? (
+            <AdaptiveModal visible transparent animationType="fade" onRequestClose={() => setAddPicker(null)}>
+              <TouchableWithoutFeedback onPress={() => setAddPicker(null)}>
+                <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
+                  <TouchableWithoutFeedback>
+                    <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
+                        <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
+                          {addPicker === 'category' ? 'Select Transaction Category' : 'Select Target Debt Account'}
+                        </Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Close picker"
+                          onPress={() => setAddPicker(null)}
+                          style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
+                        >
+                          <AppIcon name="close" size={20} color={palette.muted} />
+                        </Pressable>
+                      </View>
+                      <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
+                        {addPicker === 'category'
+                          ? categoryDropdownOptions.map(option => {
+                              const isSelected = option.value === newCategoryIdx;
+                              return (
+                                <Pressable
+                                  key={String(option.value)}
+                                  accessibilityRole="button"
+                                  accessibilityState={{ selected: isSelected }}
+                                  onPress={() => { setNewCategoryIdx(option.value); setAddPicker(null); }}
+                                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                                >
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                    {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
+                                    <View style={{ flex: 1 }}>
+                                      <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                                      {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
+                                    </View>
+                                  </View>
+                                  {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                                </Pressable>
+                              );
+                            })
+                          : debtAccountDropdownOptions.map(option => {
+                              const isSelected = option.value === selectedDebtId;
+                              return (
+                                <Pressable
+                                  key={String(option.value)}
+                                  accessibilityRole="button"
+                                  accessibilityState={{ selected: isSelected }}
+                                  onPress={() => { setNewAccountId(option.value); setNewAppliesToDate(''); setAddPicker(null); }}
+                                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                                >
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                    {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
+                                    <View style={{ flex: 1 }}>
+                                      <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                                      {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
+                                    </View>
+                                  </View>
+                                  {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                                </Pressable>
+                              );
+                            })}
+                      </ScrollView>
+                    </View>
+                  </TouchableWithoutFeedback>
+                </View>
+              </TouchableWithoutFeedback>
+            </AdaptiveModal>
           ) : null}
 
-          <AdaptiveModal visible={addPicker !== null} transparent animationType="fade" onRequestClose={() => setAddPicker(null)}>
-            <TouchableWithoutFeedback onPress={() => setAddPicker(null)}>
-              <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
-                <TouchableWithoutFeedback>
-                  <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
-                      <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
-                        {addPicker === 'category' ? 'Select Transaction Category' : 'Select Target Debt Account'}
-                      </Text>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Close picker"
-                        onPress={() => setAddPicker(null)}
-                        style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
-                      >
-                        <AppIcon name="close" size={20} color={palette.muted} />
+          {showDatePicker ? (
+            <AdaptiveModal visible transparent animationType="slide" onRequestClose={() => setShowDatePicker(false)}>
+              <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
+                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' }}>
+                  <TouchableWithoutFeedback>
+                    <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, padding: 18, paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
+                      <View style={[ui.row, { justifyContent: 'space-between', marginBottom: 16 }]}>
+                        <Pressable accessibilityRole="button" accessibilityLabel="Previous month" onPress={() => {
+                          const [year, month] = datePickerMonth.split('-').map(Number);
+                          const previous = new Date(year, month - 2, 1);
+                          setDatePickerMonth(`${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`);
+                        }} style={ui.button}><AppIcon name="chevronLeft" size={17} color={palette.brand} /></Pressable>
+                        <Text style={ui.heading}>{LONG_MONTH_FMT.format(new Date(`${datePickerMonth}-01T12:00:00`))}</Text>
+                        <Pressable accessibilityRole="button" accessibilityLabel="Next month" onPress={() => {
+                          const [year, month] = datePickerMonth.split('-').map(Number);
+                          const next = new Date(year, month, 1);
+                          setDatePickerMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`);
+                        }} style={ui.button}><AppIcon name="chevronRight" size={17} color={palette.brand} /></Pressable>
+                      </View>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 }}>
+                        {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => <Text key={`${day}-${index}`} style={[ui.small, { width: '13%', textAlign: 'center' }]}>{day}</Text>)}
+                      </View>
+                      {(() => {
+                        const [year, month] = datePickerMonth.split('-').map(Number);
+                        const offset = new Date(year, month - 1, 1).getDay();
+                        const count = new Date(year, month, 0).getDate();
+                        const cells: (number | null)[] = [...Array(offset).fill(null), ...Array.from({ length: count }, (_, index) => index + 1)];
+                        while (cells.length % 7) cells.push(null);
+                        const weeks = Array.from({ length: cells.length / 7 }, (_, index) => cells.slice(index * 7, index * 7 + 7));
+                        return weeks.map((week, weekIndex) => (
+                          <View key={`week-${weekIndex}`} style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 5 }}>
+                            {week.map((day, dayIndex) => {
+                              if (day === null) return <View key={`blank-${weekIndex}-${dayIndex}`} style={{ width: '13%', height: 42 }} />;
+                              const value = `${datePickerMonth}-${String(day).padStart(2, '0')}`;
+                              const selected = value === newDate;
+                              return (
+                                <Pressable key={value} accessibilityRole="button" accessibilityLabel={value} accessibilityState={{ selected }}
+                                  onPress={() => { setNewDate(parseDateOnly(value)); setShowDatePicker(false); }}
+                                  style={{ width: '13%', height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: selected ? palette.brand : 'transparent' }}>
+                                  <Text style={[ui.text, selected ? { color: palette.onBrand, fontWeight: '700' } : null]}>{day}</Text>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                        ));
+                      })()}
+                      <Pressable accessibilityRole="button" onPress={() => { setNewDate(todayStr); setShowDatePicker(false); }} style={[ui.button, { alignSelf: 'center', marginTop: 8 }]}>
+                        <Text style={[ui.buttonText, { color: palette.brand, textAlign: 'center' }]}>Today</Text>
                       </Pressable>
                     </View>
-                    <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
-                      {addPicker === 'category'
-                        ? categoryDropdownOptions.map(option => {
-                            const isSelected = option.value === newCategoryIdx;
-                            return (
-                              <Pressable
-                                key={String(option.value)}
-                                accessibilityRole="button"
-                                accessibilityState={{ selected: isSelected }}
-                                onPress={() => { setNewCategoryIdx(option.value); setAddPicker(null); }}
-                                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                              >
-                                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                  {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
-                                  <View style={{ flex: 1 }}>
-                                    <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                    {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
-                                  </View>
-                                </View>
-                                {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                              </Pressable>
-                            );
-                          })
-                        : debtAccountDropdownOptions.map(option => {
-                            const isSelected = option.value === selectedDebtId;
-                            return (
-                              <Pressable
-                                key={String(option.value)}
-                                accessibilityRole="button"
-                                accessibilityState={{ selected: isSelected }}
-                                onPress={() => { setNewAccountId(option.value); setNewAppliesToDate(''); setAddPicker(null); }}
-                                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                              >
-                                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                  {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
-                                  <View style={{ flex: 1 }}>
-                                    <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                    {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
-                                  </View>
-                                </View>
-                                {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                              </Pressable>
-                            );
-                          })}
-                    </ScrollView>
-                  </View>
-                </TouchableWithoutFeedback>
-              </View>
-            </TouchableWithoutFeedback>
-          </AdaptiveModal>
-
-          <AdaptiveModal visible={showDatePicker} transparent animationType="slide" onRequestClose={() => setShowDatePicker(false)}>
-            <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
-              <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' }}>
-                <TouchableWithoutFeedback>
-                  <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, padding: 18, paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
-                    <View style={[ui.row, { justifyContent: 'space-between', marginBottom: 16 }]}>
-                      <Pressable accessibilityRole="button" accessibilityLabel="Previous month" onPress={() => {
-                        const [year, month] = datePickerMonth.split('-').map(Number);
-                        const previous = new Date(year, month - 2, 1);
-                        setDatePickerMonth(`${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`);
-                      }} style={ui.button}><AppIcon name="chevronLeft" size={17} color={palette.brand} /></Pressable>
-                      <Text style={ui.heading}>{new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(new Date(`${datePickerMonth}-01T12:00:00`))}</Text>
-                      <Pressable accessibilityRole="button" accessibilityLabel="Next month" onPress={() => {
-                        const [year, month] = datePickerMonth.split('-').map(Number);
-                        const next = new Date(year, month, 1);
-                        setDatePickerMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`);
-                      }} style={ui.button}><AppIcon name="chevronRight" size={17} color={palette.brand} /></Pressable>
-                    </View>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 }}>
-                      {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => <Text key={`${day}-${index}`} style={[ui.small, { width: '13%', textAlign: 'center' }]}>{day}</Text>)}
-                    </View>
-                    {(() => {
-                      const [year, month] = datePickerMonth.split('-').map(Number);
-                      const offset = new Date(year, month - 1, 1).getDay();
-                      const count = new Date(year, month, 0).getDate();
-                      const cells: (number | null)[] = [...Array(offset).fill(null), ...Array.from({ length: count }, (_, index) => index + 1)];
-                      while (cells.length % 7) cells.push(null);
-                      const weeks = Array.from({ length: cells.length / 7 }, (_, index) => cells.slice(index * 7, index * 7 + 7));
-                      return weeks.map((week, weekIndex) => (
-                        <View key={`week-${weekIndex}`} style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 5 }}>
-                          {week.map((day, dayIndex) => {
-                            if (day === null) return <View key={`blank-${weekIndex}-${dayIndex}`} style={{ width: '13%', height: 42 }} />;
-                            const value = `${datePickerMonth}-${String(day).padStart(2, '0')}`;
-                            const selected = value === newDate;
-                            return (
-                              <Pressable key={value} accessibilityRole="button" accessibilityLabel={value} accessibilityState={{ selected }}
-                                onPress={() => { setNewDate(parseDateOnly(value)); setShowDatePicker(false); }}
-                                style={{ width: '13%', height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: selected ? palette.brand : 'transparent' }}>
-                                <Text style={[ui.text, selected ? { color: palette.onBrand, fontWeight: '700' } : null]}>{day}</Text>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      ));
-                    })()}
-                    <Pressable accessibilityRole="button" onPress={() => { setNewDate(todayStr); setShowDatePicker(false); }} style={[ui.button, { alignSelf: 'center', marginTop: 8 }]}>
-                      <Text style={[ui.buttonText, { color: palette.brand }]}>Today</Text>
-                    </Pressable>
-                  </View>
-                </TouchableWithoutFeedback>
-              </View>
-            </TouchableWithoutFeedback>
-          </AdaptiveModal>
+                  </TouchableWithoutFeedback>
+                </View>
+              </TouchableWithoutFeedback>
+            </AdaptiveModal>
+          ) : null}
         </View>
         </SheetModal>
-      ) : null}
+  ) : null;
 
-      {tab === 'Scheduled' ? (
-        <Card style={{ padding: 0, gap: 0, borderWidth: 0, borderRadius: 0, backgroundColor: 'transparent', shadowOpacity: 0, elevation: 0 }}>
-          {!canEdit ? (
-            <View style={{ marginBottom: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.tint }}>
-              <Text style={[ui.small, { color: palette.text, fontWeight: '600' }]}>View-only access · Payment recording and split plans are disabled for Viewers.</Text>
-            </View>
-          ) : null}
-          {!!billError ? <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight), marginBottom: 8 }]}>{billError}</Text> : null}
-          {(() => {
-            const allRows = scheduledAllRows;
-            let selectedMonth = currentMonthStr;
-            for (let index = 0; index < scheduledMonthOffset; index += 1) selectedMonth = getNextMonthString(selectedMonth);
-            const allPlannedEvents = scheduledPlannedEvents;
-            const plannedEvents = allPlannedEvents.filter(event => event.date.slice(0, 7) === selectedMonth);
-            const plannedObligationIdsInMonth = new Set(plannedEvents.map(event => event.obligationId));
-            const monthRows = allRows.filter(row => row.dueCycleMonth === selectedMonth || plannedObligationIdsInMonth.has(row.id));
-            const annualFeeRows = getAnnualFeeRows(debts, transactions).filter(row => row.dueDate.slice(0, 7) === selectedMonth);
-            const visibleAnnualFeeRows = scheduledDate ? annualFeeRows.filter(row => row.dueDate === scheduledDate) : annualFeeRows;
-            const matchingPlanObligationIdsOnDate = scheduledDate
-              ? new Set(plannedEvents.filter(event => event.date === scheduledDate).map(event => event.obligationId))
-              : null;
-            const visibleRows = scheduledDate
-              ? monthRows.filter(row => row.dueDate === scheduledDate || Boolean(matchingPlanObligationIdsOnDate?.has(row.id)))
-              : monthRows;
-            const sortedVisibleRows = [...visibleRows].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.name.localeCompare(b.name));
-            const monthLabel = LONG_MONTH_FMT.format(new Date(`${selectedMonth}-01T12:00:00`));
-            const scale = getCurrency(currencyCode).scale;
-            return <>
-              <ObligationCalendar
-                month={selectedMonth}
-                rows={allRows.filter(row => row.dueCycleMonth === selectedMonth)}
-                selectedDate={scheduledDate}
-                onSelect={setScheduledDate}
-                plannedDates={plannedEvents.map(event => event.date)}
-                annualFeeDates={annualFeeRows.map(row => row.dueDate)}
-                canPrevMonth={scheduledMonthOffset > 0}
-                canNextMonth={scheduledMonthOffset < 11}
-                onPrevMonth={() => { setScheduledDate(null); setScheduledMonthOffset(value => Math.max(0, value - 1)); }}
-                onNextMonth={() => { setScheduledDate(null); setScheduledMonthOffset(value => Math.min(11, value + 1)); }}
-              />
-              {monthRows.map(row => {
-                const isDebt = row.kind === 'debt';
-                const entityId = isDebt ? row.debt?.id : row.bill?.id;
-                const plan = entityId ? (isDebt ? debtPaymentSplitPlansByDebtId[entityId] : billPaymentSplitPlansByBillId[entityId]) : undefined;
-                if (!plan) return null;
-                const state = resolveDebtSplitPlanState(plan, row);
-                if (state?.status === 'needs_review') {
-                  const name = normalizeDisplayName(
-                    isDebt
-                      ? (row.debt?.name ?? row.name)
-                      : ((row.bill?.id ? linkedDebtNameByBillId.get(row.bill.id) : undefined) ?? row.bill?.name ?? row.name),
-                  );
-                  return <Text key={`split-review:${row.id}`} accessibilityRole="alert" style={[ui.small, { color: '#F5C563', marginTop: 8 }]}>{name}: plan needs review. Selected days no longer fit before the actual due date; the full obligation remains due {formatShortMonthDay(row.dueDate)}.</Text>;
-                }
-                return null;
-              })}
-              {!sortedVisibleRows.length && !visibleAnnualFeeRows.length ? (
-                <View style={{ paddingVertical: 24, alignItems: 'center', gap: 6 }}>
-                  <AppIcon name="calendar" size={26} color={palette.muted} />
-                  <Text style={ui.heading}>{scheduledDate ? 'No items on this date' : 'Nothing scheduled this month'}</Text>
-                  <Text style={ui.small}>Choose another day or browse the next month.</Text>
-                </View>
-              ) : null}
-              {sortedVisibleRows.length > 0 ? (
-                <View style={{ marginTop: 12, gap: 8 }}>
-                  <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 2 }]}>
-                    <Text accessibilityRole="header" style={ui.heading}>{monthLabel}</Text>
-                    <View style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, backgroundColor: isLight ? '#E5F8F8' : 'rgba(39, 238, 233, 0.14)', borderWidth: 1, borderColor: isLight ? '#A5E5E7' : 'rgba(39, 238, 233, 0.35)' }}>
-                      <Text style={{ color: isLight ? '#087F85' : '#27EEE9', fontSize: 12, fontWeight: '700' }}>
-                        {`${sortedVisibleRows.length} ${sortedVisibleRows.length === 1 ? 'item' : 'items'}`}
-                      </Text>
-                    </View>
-                  </View>
-                  <Card style={{ padding: 0, gap: 0, borderRadius: 16, overflow: 'hidden' }}>
-                    {sortedVisibleRows.map((row, index) => {
-                      const { bill, debt, dueDate: due, state } = row;
-                      const match = state.confirmedMatch;
-                      const isPending = state.status === 'pending_confirmation';
-                      const isPastDue = due < todayStr && state.status !== 'paid';
-                      const busyKey = `${row.kind}:${row.kind === 'debt' ? debt?.id : bill?.id}:${due}`;
-                      const displayName = normalizeDisplayName(
-                        row.kind === 'debt'
-                          ? (debt?.name ?? row.name.replace(/\s+minimum$/i, ''))
-                          : ((bill?.id ? linkedDebtNameByBillId.get(bill.id) : undefined) ?? bill?.name ?? row.name),
-                      );
-                      const entityId = row.kind === 'debt' ? debt?.id : bill?.id;
-                      const hasPlan = Boolean(entityId && (row.kind === 'debt' ? debtPaymentSplitPlansByDebtId[entityId] : billPaymentSplitPlansByBillId[entityId]));
-                      const canSplit = canEdit && ((row.kind === 'debt' && debt && onSaveDebtPaymentSplitPlans) || (row.kind === 'bill' && bill && onSaveBillPaymentSplitPlans));
-                      const rowEvents = allPlannedEvents.filter(event => event.obligationId === row.id);
-                      const isExpanded = expandedPlans[row.id] ?? true;
-                      const confirmedPaidMinor = Math.max(0, row.requiredAmount.minorUnits - match.remainingAmount.minorUnits);
-                      const rightAmountMoney = match.isPartiallyPaid ? match.remainingAmount : row.requiredAmount;
-
-                      const recordPaymentAmount = async (amountToRecord: Money, lockKey: string) => {
-                        if (!canEdit || pendingBillCycle !== null) return;
-                        setPendingBillCycle(lockKey);
-                        setBillError('');
-                        try {
-                          if (row.kind === 'debt' && debt && onAddTransaction) {
-                            await onAddTransaction(createDebtMinimumPaymentTransaction({
-                              id: `tx:${Crypto.randomUUID()}`,
-                              debt,
-                              today: todayStr,
-                              dueDate: due,
-                              amount: amountToRecord,
-                              createdAt: new Date().toISOString(),
-                            }));
-                          } else if (row.kind === 'bill' && bill) {
-                            await onRecordBillPayment?.(bill, due, amountToRecord);
-                          }
-                        } catch (error) {
-                          setBillError(error instanceof Error ? error.message : 'Unable to record this payment.');
-                        } finally {
-                          setPendingBillCycle(null);
-                        }
-                      };
-
-                      const statusText = match.isSatisfied
-                        ? 'Paid'
-                        : isPending
-                          ? `Awaiting confirmation · ${formatCurrency(moneyToMajor(state.pendingAmount), currencySymbol)} pending`
-                          : match.isPartiallyPaid
-                            ? `Partial - ${formatCurrency(moneyToMajor(makeMoney(currencyCode, confirmedPaidMinor)), currencySymbol)}`
-                            : isPastDue
-                              ? 'Past due · Unpaid'
-                              : 'Unpaid';
-                      const statusColor = match.isSatisfied
-                        ? appearanceColor('#76DCB9', isLight)
-                        : isPending
-                          ? appearanceColor('#F5C563', isLight)
-                          : isPastDue
-                            ? appearanceColor('#F08B78', isLight)
-                            : match.isPartiallyPaid
-                              ? appearanceColor('#F5C563', isLight)
-                              : palette.muted;
-
-                      return (
-                        <View key={row.id} style={index > 0 ? { borderTopWidth: 1, borderTopColor: palette.border } : undefined}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 13, gap: 12 }}>
-                            <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: palette.tint, alignItems: 'center', justifyContent: 'center' }}>
-                              <AppIcon name={row.kind === 'debt' ? 'creditCard' : 'calendar'} size={17} color={palette.brand} />
-                            </View>
-                            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                              <Text style={[ui.heading, { fontSize: 16 }]}>{displayName}</Text>
-                              <Text style={ui.small}>
-                                {`${isPastDue ? 'Past due ' : 'Due '}${formatShortMonthDay(due)} · ${row.kind === 'debt' ? 'Minimum payment' : bill?.paymentMethod === 'credit' ? 'Credit Card' : 'Debit Card'}`}
-                              </Text>
-                              <Text style={[ui.small, { color: statusColor, fontWeight: match.isSatisfied || isPending || isPastDue || match.isPartiallyPaid ? '600' : '400' }]}>
-                                {statusText}
-                              </Text>
-                            </View>
-                            <View style={{ alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
-                              <View style={{ alignItems: 'flex-end' }}>
-                                <AmountText style={[ui.value, { fontSize: 16, textAlign: 'right' }]} value={formatCurrency(moneyToMajor(rightAmountMoney), currencySymbol)} />
-                                {match.isPartiallyPaid ? (
-                                  <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight) }]}>remaining</Text>
-                                ) : null}
-                              </View>
-                              <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                                {canEdit && !match.isSatisfied && !isPending ? (
-                                  <Pressable
-                                    accessibilityRole="button"
-                                    accessibilityLabel={`Pay ${displayName} due ${due}`}
-                                    disabled={(row.kind === 'debt' ? !onAddTransaction : !onRecordBillPayment) || pendingBillCycle !== null}
-                                    onPress={() => void recordPaymentAmount(match.remainingAmount, busyKey)}
-                                    style={{
-                                      backgroundColor: ctaBg,
-                                      borderColor: ctaBg,
-                                      borderWidth: 1,
-                                      minHeight: 32,
-                                      paddingHorizontal: 14,
-                                      paddingVertical: 5,
-                                      borderRadius: 999,
-                                      justifyContent: 'center',
-                                      alignItems: 'center',
-                                    }}
-                                  >
-                                    <Text style={{ color: ctaFg, fontSize: 13, fontWeight: '700' }}>
-                                      {pendingBillCycle === busyKey ? 'Saving…' : 'Pay'}
-                                    </Text>
-                                  </Pressable>
-                                ) : null}
-                                {canSplit && !hasPlan ? (
-                                  <Pressable
-                                    accessibilityRole="button"
-                                    accessibilityLabel={`Split payment plan for ${displayName}`}
-                                    onPress={() => openSplitPlanModal(row)}
-                                    style={{
-                                      backgroundColor: palette.tint,
-                                      borderColor: palette.brand,
-                                      borderWidth: 1,
-                                      minHeight: 32,
-                                      paddingHorizontal: 12,
-                                      paddingVertical: 5,
-                                      borderRadius: 999,
-                                      justifyContent: 'center',
-                                      alignItems: 'center',
-                                    }}
-                                  >
-                                    <Text style={{ color: palette.brand, fontSize: 13, fontWeight: '700' }}>
-                                      Split
-                                    </Text>
-                                  </Pressable>
-                                ) : null}
-                              </View>
-                            </View>
-                          </View>
-
-                          {rowEvents.length > 0 ? (
-                            <View style={{ marginHorizontal: 14, marginBottom: 12, borderRadius: 12, borderWidth: 1, borderColor: palette.border, backgroundColor: isLight ? palette.canvas : palette.raised, overflow: 'hidden' }}>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 8 }}>
-                                <Pressable
-                                  accessibilityRole={canSplit ? 'button' : undefined}
-                                  accessibilityLabel={`Edit split plan for ${displayName}`}
-                                  disabled={!canSplit}
-                                  onPress={() => { if (canSplit) openSplitPlanModal(row); }}
-                                  style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 2 }}
-                                >
-                                  <Text style={[ui.small, { color: palette.text, fontWeight: '700' }]}>
-                                    {`${rowEvents.length} installments`}
-                                  </Text>
-                                  {canSplit ? <AppIcon name="edit" size={13} color={palette.brand} /> : null}
-                                </Pressable>
-                                <Pressable
-                                  accessibilityRole="button"
-                                  accessibilityState={{ expanded: isExpanded }}
-                                  accessibilityLabel={`${isExpanded ? 'Hide' : 'Show'} ${displayName} installments`}
-                                  onPress={() => setExpandedPlans(previous => ({ ...previous, [row.id]: !isExpanded }))}
-                                  hitSlop={6}
-                                  style={{ paddingHorizontal: 6, paddingVertical: 2 }}
-                                >
-                                  <Text style={[ui.small, { color: palette.brand, fontWeight: '600' }]}>
-                                    {isExpanded ? 'Hide' : 'Show'}
-                                  </Text>
-                                </Pressable>
-                              </View>
-                              {isExpanded ? rowEvents.map(event => {
-                                const neededForTargetMinor = Math.max(0, event.cumulativeTargetMinor - confirmedPaidMinor);
-                                const installmentPayMinor = Math.min(event.amountMinor, match.remainingAmount.minorUnits, neededForTargetMinor);
-                                const instBusyKey = `${busyKey}:inst:${event.installment}`;
-                                const canPayInstallment = canEdit && !match.isSatisfied && event.status !== 'covered' && event.status !== 'pending' && installmentPayMinor > 0;
-                                const instStatusLabel = event.status === 'covered'
-                                  ? 'Paid'
-                                  : event.status === 'pending'
-                                    ? 'Pending'
-                                    : event.status === 'behind_plan'
-                                      ? 'Behind plan'
-                                      : 'Planned';
-                                const instStatusColor = event.status === 'covered'
-                                  ? appearanceColor('#76DCB9', isLight)
-                                  : event.status === 'pending'
-                                    ? appearanceColor('#F5C563', isLight)
-                                    : event.status === 'behind_plan'
-                                      ? appearanceColor('#F08B78', isLight)
-                                      : palette.muted;
-                                return (
-                                  <Pressable
-                                    key={`${event.date}:${event.installment}`}
-                                    accessibilityRole={canSplit ? 'button' : undefined}
-                                    accessibilityLabel={`Edit split plan for ${displayName}`}
-                                    disabled={!canSplit}
-                                    onPress={() => { if (canSplit) openSplitPlanModal(row); }}
-                                    style={{
-                                      flexDirection: 'row',
-                                      alignItems: 'center',
-                                      justifyContent: 'space-between',
-                                      paddingHorizontal: 12,
-                                      paddingVertical: 9,
-                                      gap: 10,
-                                      borderTopWidth: 1,
-                                      borderTopColor: palette.border,
-                                    }}
-                                  >
-                                    <View style={{ flex: 1, minWidth: 0 }}>
-                                      <Text style={[ui.text, { fontSize: 14, fontWeight: '600', color: palette.text }]}>
-                                        {`Installment ${event.installment}`}
-                                      </Text>
-                                      <Text style={[ui.small, { color: instStatusColor }]}>
-                                        {`${formatShortMonthDay(event.date)} · ${instStatusLabel}`}
-                                      </Text>
-                                    </View>
-                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                                      <AmountText style={[ui.value, { fontSize: 14 }]} value={formatCurrency(event.amountMinor / 10 ** scale, currencySymbol)} />
-                                      {canPayInstallment ? (
-                                        <Pressable
-                                          accessibilityRole="button"
-                                          accessibilityLabel={`Pay installment ${event.installment} for ${displayName}`}
-                                          disabled={(row.kind === 'debt' ? !onAddTransaction : !onRecordBillPayment) || pendingBillCycle !== null}
-                                          onPress={eventPress => {
-                                            eventPress?.stopPropagation?.();
-                                            void recordPaymentAmount(makeMoney(currencyCode, installmentPayMinor), instBusyKey);
-                                          }}
-                                          style={{
-                                            backgroundColor: ctaBg,
-                                            borderColor: ctaBg,
-                                            borderWidth: 1,
-                                            minHeight: 28,
-                                            paddingHorizontal: 12,
-                                            paddingVertical: 4,
-                                            borderRadius: 999,
-                                            justifyContent: 'center',
-                                            alignItems: 'center',
-                                          }}
-                                        >
-                                          <Text style={{ color: ctaFg, fontSize: 12, fontWeight: '700' }}>
-                                            {pendingBillCycle === instBusyKey ? 'Saving…' : 'Pay'}
-                                          </Text>
-                                        </Pressable>
-                                      ) : null}
-                                    </View>
-                                  </Pressable>
-                                );
-                              }) : null}
-                            </View>
-                          ) : null}
-                        </View>
-                      );
-                    })}
-                  </Card>
-                </View>
-              ) : null}
-              <AnnualFeeSchedule debts={debts} transactions={transactions} mode="scheduled" currencySymbol={currencySymbol} currentDate={todayStr} selectedMonth={selectedMonth} selectedDate={scheduledDate} onConfirmAnnualFee={onConfirmAnnualFee} readOnly={!canEdit} />
-              <View style={{ marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: palette.border, gap: 8 }}>
-                <Text style={ui.heading}>This month</Text>
-                {[
-                  ['Paid cycles', monthRows.filter(row => row.state.status === 'paid').length],
-                  ['Unpaid cycles', monthRows.filter(row => row.state.status !== 'paid' && row.state.status !== 'pending_confirmation').length],
-                  ['Pending cycles', monthRows.filter(row => row.state.status === 'pending_confirmation').length],
-                ].map(([label, count]) => <View key={label} style={[ui.row, { justifyContent: 'space-between' }]}><Text style={ui.text}>{label}</Text><Text style={ui.value}>{count}</Text></View>)}
-              </View>
-            </>;
-          })()}
-        </Card>
+  return (
+    <FinancialScreen
+      title="Transactions"
+      segments={['History', 'Scheduled']}
+      selected={tab}
+      onSelect={nextTab => {
+        const resolvedTab = nextTab === 'Scheduled' ? 'Scheduled' : 'History';
+        if (resolvedTab !== tab) {
+          setScheduledDate(null);
+          if (resolvedTab === 'Scheduled') setScheduledMonthOffset(0);
+        }
+        setTab(resolvedTab);
+        if (resolvedTab !== 'History') closeAddForm();
+      }}
+      onSettings={onSettings}
+      onAdd={canEdit && !showAddForm ? () => { setFormError(''); setShowMoreDetails(false); setAddPicker(null); setShowAddForm(true); } : undefined}
+      addLabel="Add Transaction"
+      onSegmentScrollNearEnd={handleSegmentScrollNearEnd}
+      renderSegment={segment => (segment === 'Scheduled' ? (
+        <ScheduledSegment
+          debts={debts}
+          recurringBills={recurringBills}
+          transactions={transactions}
+          todayStr={todayStr}
+          currentMonthStr={currentMonthStr}
+          currencyCode={currencyCode}
+          currencySymbol={currencySymbol}
+          obligationSchedules={obligationSchedules}
+          loanBillPairs={loanBillPairs}
+          historicalBillIdsByDebtId={historicalBillIdsByDebtId}
+          excludedObligationDebtIds={excludedObligationDebtIds}
+          excludedObligationBillIds={excludedObligationBillIds}
+          debtPaymentSplitPlansByDebtId={debtPaymentSplitPlansByDebtId}
+          billPaymentSplitPlansByBillId={billPaymentSplitPlansByBillId}
+          linkedDebtNameByBillId={linkedDebtNameByBillId}
+          scheduledMonthOffset={scheduledMonthOffset}
+          onChangeMonthOffset={setScheduledMonthOffset}
+          scheduledDate={scheduledDate}
+          onSelectDate={setScheduledDate}
+          canEdit={canEdit}
+          billError={billError}
+          onSetBillError={setBillError}
+          pendingBillCycle={pendingBillCycle}
+          onSetPendingBillCycle={setPendingBillCycle}
+          onAddTransaction={onAddTransaction}
+          onRecordBillPayment={onRecordBillPayment}
+          onConfirmAnnualFee={onConfirmAnnualFee}
+          onSaveDebtPaymentSplitPlans={onSaveDebtPaymentSplitPlans}
+          onSaveBillPaymentSplitPlans={onSaveBillPaymentSplitPlans}
+          onOpenSplitPlan={openSplitPlanModal}
+        />
       ) : (
         <>
           {!canEdit ? (
@@ -1366,83 +1780,138 @@ export function TransactionsScreen({
             </View>
           ) : null}
           <View style={[ui.row, { gap: 10, marginVertical: 4 }]}>
-            <Card style={{ flex: 1, padding: 16, borderRadius: 14, gap: 4 }}>
+            <Card style={{ flex: 1, padding: 15, borderRadius: 15, gap: 5, overflow: 'hidden' }}>
+              {isInspire ? <InspireCornerArt kind="tile-pay" borderRadius={15} /> : null}
               <View style={[ui.row, { gap: 5 }]}>
-                <AppIcon name="trendDown" size={14} color={appearanceColor('#76DCB9', isLight)} />
+                <AppIcon name="trendDown" size={14} color={palette.posInk} />
                 <Text numberOfLines={1} style={ui.small}>Payments</Text>
               </View>
-              <AmountText style={[ui.heading, { fontSize: 20, color: appearanceColor('#76DCB9', isLight) }]} value={formatCurrency(moneyToMajor(makeMoney(currencyCode, totalPaymentsMinor)), currencySymbol)} />
+              <AmountText style={[ui.heading, { fontSize: 20, color: palette.posInk }]} value={formatCurrency(moneyToMajor(makeMoney(currencyCode, totalPaymentsMinor)), currencySymbol)} />
             </Card>
-            <Card style={{ flex: 1, padding: 16, borderRadius: 14, gap: 4 }}>
+            <Card style={{ flex: 1, padding: 15, borderRadius: 15, gap: 5, overflow: 'hidden' }}>
+              {isInspire ? <InspireCornerArt kind="tile-chg" borderRadius={15} /> : null}
               <View style={[ui.row, { gap: 5 }]}>
-                <AppIcon name="brandRise" size={14} color={appearanceColor('#F08B78', isLight)} />
+                <AppIcon name="brandRise" size={14} color={palette.neg} />
                 <Text numberOfLines={1} style={ui.small}>Interest & Fees</Text>
               </View>
-              <AmountText style={[ui.heading, { fontSize: 20, color: appearanceColor('#F08B78', isLight) }]} value={formatCurrency(moneyToMajor(makeMoney(currencyCode, totalInterestFeesMinor)), currencySymbol)} />
+              <AmountText style={[ui.heading, { fontSize: 20, color: palette.neg }]} value={formatCurrency(moneyToMajor(makeMoney(currencyCode, totalInterestFeesMinor)), currencySymbol)} />
             </Card>
           </View>
 
           <View style={[ui.row, { gap: 8, marginVertical: 2 }]}>
-            <View style={[ui.inputWrap, { flex: 1, paddingHorizontal: 16 }]}>
-              <AppIcon name="search" size={16} color={palette.muted} />
-              <TextInput
-                accessibilityLabel="Search transactions"
-                placeholder="Search"
-                placeholderTextColor={palette.muted}
-                value={search}
-                onChangeText={setSearch}
-                style={[ui.input, { borderWidth: 0, paddingHorizontal: 0, paddingVertical: 8, flex: 1, fontSize: 15 }]}
-              />
-            </View>
-            <Pressable accessibilityRole="button" accessibilityLabel="Filters" accessibilityState={{ expanded: showFilters }} onPress={openFilters} style={[ui.button, { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 0 }]}>
-              <AppIcon name="filter" size={18} color={palette.brand} />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Select transaction date range, ${dateFilterLabel}`}
+              onPress={openHistoryDatePicker}
+              style={[
+                ui.button,
+                {
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: 42,
+                  borderRadius: 999,
+                  paddingHorizontal: 14,
+                  backgroundColor: palette.surface,
+                  borderWidth: isInspire ? 1.5 : 1,
+                  borderColor: palette.cardBorder,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                },
+              ]}
+            >
+              <View style={[ui.row, { gap: 8, flex: 1, minWidth: 0 }]}>
+                <AppIcon name="calendar" size={17} color={palette.accentInk} />
+                <Text numberOfLines={1} style={[ui.buttonText, { color: palette.text, flex: 1, textAlign: 'left', fontWeight: '700' }]}>{dateFilterLabel}</Text>
+              </View>
+              <AppIcon name="chevronDown" size={16} color={palette.muted} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Search transactions"
+              accessibilityState={{ expanded: searchOpen }}
+              onPress={() => { if (searchOpen) { setSearchOpen(false); setSearch(''); } else setSearchOpen(true); }}
+              style={[
+                ui.button,
+                {
+                  width: 42,
+                  height: 42,
+                  minHeight: 42,
+                  borderRadius: 21,
+                  backgroundColor: searchOpen ? palette.tint : palette.surface,
+                  borderWidth: isInspire ? 1.5 : 1,
+                  borderColor: searchOpen ? palette.brand : palette.cardBorder,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingHorizontal: 0,
+                },
+              ]}
+            >
+              <AppIcon name="search" size={18} color={searchOpen ? palette.brand : palette.accentInk} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Filters"
+              accessibilityState={{ expanded: showFilters }}
+              onPress={openFilters}
+              style={[
+                ui.button,
+                {
+                  width: 42,
+                  height: 42,
+                  minHeight: 42,
+                  borderRadius: 21,
+                  backgroundColor: effectiveAccountId !== 'all' || effectiveTypeIdx !== 0 ? palette.tint : palette.surface,
+                  borderWidth: isInspire ? 1.5 : 1,
+                  borderColor: effectiveAccountId !== 'all' || effectiveTypeIdx !== 0 ? palette.brand : palette.cardBorder,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingHorizontal: 0,
+                },
+              ]}
+            >
+              <AppIcon name="filter" size={18} color={effectiveAccountId !== 'all' || effectiveTypeIdx !== 0 ? palette.brand : palette.accentInk} />
             </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={sortAsc ? 'Sort newest first' : 'Sort oldest first'}
-              onPress={() => setSortAsc(prev => !prev)}
-              style={[ui.button, { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 0 }]}
+              onPress={() => setSortAsc(!sortAsc)}
+              style={[
+                ui.button,
+                {
+                  width: 42,
+                  height: 42,
+                  minHeight: 42,
+                  borderRadius: 21,
+                  backgroundColor: palette.surface,
+                  borderWidth: isInspire ? 1.5 : 1,
+                  borderColor: palette.cardBorder,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingHorizontal: 0,
+                },
+              ]}
             >
-              <AppIcon name="sort" size={18} color={palette.brand} />
+              <AppIcon name="sort" size={18} color={palette.accentInk} />
             </Pressable>
           </View>
-
-          <SheetModal visible={showFilters} onClose={() => setShowFilters(false)} height="92%" closeLabel="Cancel filters" footer={(
-            <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface }}>
-              <Pressable accessibilityRole="button" accessibilityLabel="Apply filters" onPress={() => {
-                setPeriodIdx(draftPeriodIdx);
-                setAccountId(effectiveDraftAccountId);
-                setTypeIdx(draftTypeIdx);
-                setShowFilters(false);
-              }} style={[ui.button, { flex: 1, minHeight: 44, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center' }]}>
-                <Text style={[ui.buttonText, { color: ctaFg, fontWeight: '700' }]}>Apply</Text>
-              </Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel="Cancel filters" onPress={() => setShowFilters(false)} style={[ui.button, { flex: 1, minHeight: 44, justifyContent: 'center' }]}>
-                <Text style={[ui.buttonText, { color: palette.brand }]}>Cancel</Text>
-              </Pressable>
-            </View>
-          )}>
-            <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }]}>
-              <Text accessibilityRole="header" style={ui.title}>Filters</Text>
-              <Pressable accessibilityRole="button" accessibilityLabel="Close filters" onPress={() => setShowFilters(false)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}>
-                <AppIcon name="close" size={20} color={palette.muted} />
+          {searchOpen ? (
+            <View style={[ui.inputWrap, { marginVertical: 2, paddingHorizontal: 12 }]}>
+              <AppIcon name="search" size={16} color={palette.muted} />
+              <TextInput
+                accessibilityLabel="Search transactions"
+                placeholder="Search transactions"
+                placeholderTextColor={palette.muted}
+                value={search}
+                onChangeText={setSearch}
+                autoFocus
+                style={[ui.input, { borderWidth: 0, paddingHorizontal: 0, paddingVertical: 8, flex: 1, fontSize: 15 }]}
+              />
+              <Pressable accessibilityRole="button" accessibilityLabel="Close transaction search" hitSlop={8} onPress={() => { setSearchOpen(false); setSearch(''); }} style={{ width: 32, height: 40, alignItems: 'center', justifyContent: 'center' }}>
+                <AppIcon name="close" size={16} color={palette.muted} />
               </Pressable>
             </View>
-            <Text accessibilityRole="header" style={[ui.heading, { marginTop: 4 }]}>Period</Text>
-            <View accessibilityRole="radiogroup" accessibilityLabel="Transaction period" style={{ marginTop: 4 }}>
-              {periodFilterOptions.map(option => filterRadio(option.label, draftPeriodIdx === option.value, () => setDraftPeriodIdx(option.value), `period:${option.value}`))}
-            </View>
-            <Text accessibilityRole="header" style={[ui.heading, { marginTop: 14 }]}>Account</Text>
-            <ScrollView nestedScrollEnabled style={{ height: 132, marginTop: 4 }}>
-              <View accessibilityRole="radiogroup" accessibilityLabel="Transaction account" style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                {accountOptions.map(option => <View key={option.id} style={{ width: '50%' }}>{filterRadio(option.label, effectiveDraftAccountId === option.id, () => setDraftAccountId(option.id), `account:${option.id}`)}</View>)}
-              </View>
-            </ScrollView>
-            <Text accessibilityRole="header" style={[ui.heading, { marginTop: 14 }]}>Transaction type</Text>
-            <View accessibilityRole="radiogroup" accessibilityLabel="Transaction type" style={{ marginTop: 4 }}>
-              {typeFilterOptions.map(option => filterRadio(option.label, draftTypeIdx === option.value, () => setDraftTypeIdx(option.value), `type:${option.value}`))}
-            </View>
-          </SheetModal>
+          ) : null}
 
           {sorted.length === 0 ? (
             <Card>
@@ -1452,215 +1921,308 @@ export function TransactionsScreen({
               </Text>
             </Card>
           ) : (
-            sorted.map(tx => {
-              const dir = classifyCategoryDirection(tx.category);
-              const targetDebt = tx.accountId ? debtById.get(tx.accountId) : undefined;
-              const identifiedBill = recurringBills.find(bill => transactionHasBillId(tx, bill.id));
-              const aliasDebtId = Object.entries(identityLoanBillPairs).find(([id, billId]) => (tx.accountId === null || tx.accountId === id) && transactionHasBillId(tx, billId))?.[0];
-              const linkedDebtName = aliasDebtId ? debtNamesById.get(aliasDebtId) : undefined;
-              const accountLabel = tx.accountId === null
-                ? linkedDebtName ?? identifiedBill?.name ?? 'Checking'
-                : targetDebt?.name || 'Debt Account';
-              const isPayment = dir === 'decrease_debt';
-              const isCharge = dir === 'increase_debt';
-              const isPaymentLikePayee = isPayment && (!tx.payee || /^Payment\b/i.test(tx.payee) || tx.category === 'payment');
-              const isBalanceAdj = tx.category === 'credit_adjustment' || tx.category === 'balance_adjustment' || /^Reconciliation credit adjustment$/i.test(tx.payee || '');
-              const primaryLabel = isPaymentLikePayee ? 'Payment' : isBalanceAdj ? 'Balance Adjustment' : (tx.payee || accountLabel);
-              const categoryLabel = formatTransactionCategoryLabel(tx.category);
-              const amountFormatted = formatCurrency(moneyToMajor(tx.amount), currencySymbol);
-              const formattedDate = HISTORY_DATE_FMT.format(new Date(`${tx.date}T12:00:00`));
-              const badgeColor = isPayment
-                ? appearanceColor('#76DCB9', isLight)
-                : tx.category === 'interest' || tx.category === 'fee'
-                ? appearanceColor('#F08B78', isLight)
-                : targetDebt?.category === 'Mortgage'
-                ? appearanceColor('#60A5FA', isLight)
-                : targetDebt?.category === 'Auto loan'
-                ? appearanceColor('#60A5FA', isLight)
-                : tx.accountId === null
-                ? appearanceColor('#F5C563', isLight)
-                : appearanceColor('#A78BFA', isLight);
-              const badgeIcon: AppIconName = targetDebt?.category === 'Mortgage'
-                ? 'homeLoan'
-                : targetDebt?.category === 'Auto loan'
-                ? 'auto'
-                : isPayment
-                ? 'creditCard'
-                : tx.category === 'interest' || tx.category === 'fee'
-                ? 'progress'
-                : tx.accountId === null
-                ? 'grid'
-                : 'creditCard';
-
-              return (
-                <Pressable
-                  key={tx.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={canEdit ? `Edit transaction ${primaryLabel}` : `View transaction ${primaryLabel}`}
-                  onPress={() => handleOpenEdit(tx)}
-                >
-                  <Card style={{ paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, gap: 10 }}>
-                    <Text style={[ui.small, { fontSize: 13, fontWeight: '500', color: palette.muted }]}>{formattedDate}</Text>
-                    <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 12 }]}>
-                      <View style={[ui.row, { gap: 12, flex: 1, minWidth: 0, alignItems: 'center' }]}>
-                        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: badgeColor + '18', alignItems: 'center', justifyContent: 'center' }}>
-                          <AppIcon name={badgeIcon} size={19} color={badgeColor} />
-                        </View>
-                        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                          <Text numberOfLines={1} style={[ui.heading, { fontSize: 16 }]}>{primaryLabel}</Text>
-                          <Text numberOfLines={1} style={[ui.small, { fontSize: 13 }]}>
-                            {`${accountLabel} - ${categoryLabel}`}
-                          </Text>
-                        </View>
-                      </View>
-                      <View style={[ui.row, { gap: 8, alignItems: 'center', flexShrink: 0 }]}>
-                        <View style={{ alignItems: 'flex-end', gap: 3 }}>
-                          <AmountText
-                            style={[ui.value, { fontSize: 16, fontWeight: '700', textAlign: 'right', color: isPayment ? appearanceColor('#76DCB9', isLight) : isCharge ? appearanceColor('#F08B78', isLight) : palette.text }]}
-                            value={isPayment ? `-${amountFormatted}` : isCharge ? `+${amountFormatted}` : amountFormatted}
-                          />
-                          {tx.isPending ? (
-                            <Text style={{ color: appearanceColor('#F5C563', isLight), fontSize: 13, fontWeight: '600' }}>Pending</Text>
-                          ) : tx.source === 'recurring_bill' ? (
-                            <View style={[ui.row, { gap: 4 }]}>
-                              <AppIcon name="check" size={13} color={appearanceColor('#76DCB9', isLight)} />
-                              <Text style={{ color: palette.muted, fontSize: 13, fontWeight: '500' }}>Auto-Bill</Text>
-                            </View>
-                          ) : tx.source === 'reconciliation' ? (
-                            <Text style={{ color: appearanceColor('#F08B78', isLight), fontSize: 13, fontWeight: '500' }}>Reconciled</Text>
-                          ) : isPayment ? (
-                            <View style={[ui.row, { gap: 4 }]}>
-                              <AppIcon name="check" size={13} color={appearanceColor('#76DCB9', isLight)} />
-                              <Text style={{ color: palette.muted, fontSize: 13, fontWeight: '500' }}>Paid</Text>
-                            </View>
-                          ) : null}
-                        </View>
-                        <AppIcon name="chevronRight" size={16} color={palette.muted} />
-                      </View>
-                    </View>
-                  </Card>
-                </Pressable>
-              );
-            })
-          )}
-        </>
-      )}
-
-      <SheetModal visible={canEdit && !!splitPlanRow} onClose={() => setSplitPlanRow(null)} contentSized>
-        <SheetFormHeader
-          title={splitPlanRow ? `Plan ${normalizeDisplayName(splitPlanRow.kind === 'debt' ? (splitPlanRow.debt?.name ?? splitPlanRow.name.replace(/\s+minimum$/i, '')) : ((splitPlanRow.bill?.id ? linkedDebtNameByBillId.get(splitPlanRow.bill.id) : undefined) ?? splitPlanRow.bill?.name ?? splitPlanRow.name))} split` : 'Plan split'}
-          onClose={() => setSplitPlanRow(null)}
-          closeLabel="Close split plan"
-        />
-        <View accessibilityRole="radiogroup" style={[ui.row, { gap: 8, marginTop: 8 }]}>{([2, 3, 4] as const).map(count => <Pressable key={count} accessibilityRole="radio" accessibilityState={{ checked: splitCount === count }} onPress={() => setSplitCount(count)} style={[ui.button, { flex: 1, backgroundColor: splitCount === count ? ctaBg : palette.surface, borderColor: splitCount === count ? ctaBg : palette.border }]}><Text style={[ui.buttonText, { color: splitCount === count ? ctaFg : palette.text }]}>{count} installments</Text></Pressable>)}</View>
-        <Text style={ui.small}>Choose calendar dates on or before the due date. Each installment can be set in the due month or the previous month. This plan is informational and never sends a payment.</Text>
-        {!!billError ? <Text accessibilityRole="alert" style={[ui.small, { color: '#F08B78', marginTop: 8 }]}>{billError}</Text> : null}
-        {splitPlanRow ? (() => {
-          const isDebt = splitPlanRow.kind === 'debt';
-          const entityId = isDebt ? splitPlanRow.debt?.id : splitPlanRow.bill?.id;
-          const cycleMonth = splitPlanRow.dueCycleMonth;
-          const prevMonth = getPreviousMonthString(cycleMonth);
-          const days = [splitDay1, splitDay2, ...extraDays].slice(0, splitCount);
-          const offsets = [splitMonthOffset1, splitMonthOffset2, ...extraOffsets].slice(0, splitCount);
-          const previews = days.map((day, i) => { const n = Number(day); return day && Number.isInteger(n) && n >= 1 && n <= 31 ? clampDate(offsets[i] === -1 ? prevMonth : cycleMonth, n) : null; });
-          const baseAmount = Math.floor(splitPlanRow.requiredAmount.minorUnits / splitCount);
-          const scale = getCurrency(currencyCode).scale;
-          const hasExisting = Boolean(entityId && (isDebt ? debtPaymentSplitPlansByDebtId[entityId] : billPaymentSplitPlansByBillId[entityId]));
-          const datesInOrder = previews.every((date, i) => date !== null && (i === 0 || date > previews[i - 1]!));
-          const datesBeforeDue = previews.every(date => date !== null && date <= splitPlanRow.dueDate);
-
-          return (
             <>
-              <View style={{ marginTop: 12, gap: 12 }}>
-                {days.map((day, i) => <View key={i} style={{ gap: 6 }}>
-                  <Text style={[ui.small, { fontWeight: '600' }]}>Installment {i + 1}</Text>
-                  <View style={[ui.row, { gap: 8 }]}>
-                    {([-1, 0] as const).map(offset => <Pressable key={offset} accessibilityRole="button" accessibilityLabel={`Installment ${i + 1} ${offset === -1 ? 'previous month' : 'due month'}`} onPress={() => { if (i === 0) setSplitMonthOffset1(offset); else if (i === 1) setSplitMonthOffset2(offset); else setExtraOffsets(values => values.map((value, j) => j === i - 2 ? offset : value)); }} style={[ui.button, { flex: 1, backgroundColor: offsets[i] === offset ? ctaBg : palette.surface, borderColor: offsets[i] === offset ? ctaBg : palette.border }]}><Text style={[ui.buttonText, { color: offsets[i] === offset ? ctaFg : palette.text }]}>{['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'][Number((offset === -1 ? prevMonth : cycleMonth).slice(5, 7)) - 1]}</Text></Pressable>)}
-                    <TextInput accessibilityLabel={`Installment ${i + 1} calendar day`} placeholder="Day" keyboardType="number-pad" value={day} onChangeText={value => { if (i === 0) setSplitDay1(value); else if (i === 1) setSplitDay2(value); else setExtraDays(values => values.map ( (old, j) => j === i - 2 ? value : old)); }} maxLength={2} style={[ui.input, { width: 80, textAlign: 'center', color: palette.text, borderColor: palette.border }]} />
-                  </View>
-                </View>)}
-              </View>
-              <View style={{ marginTop: 14, padding: 12, borderRadius: 10, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, gap: 6 }}>
-                <Text style={[ui.small, { fontWeight: '700' }]}>Actual installment schedule:</Text>
-                {previews.map((date, i) => <View key={i} style={[ui.row, { justifyContent: 'space-between' }]}><Text style={ui.small}>Installment {i + 1} ({formatCurrency((i === splitCount - 1 ? splitPlanRow.requiredAmount.minorUnits - baseAmount * (splitCount - 1) : baseAmount) / 10 ** scale, currencySymbol)}):</Text><Text style={ui.small}>{date ? formatShortMonthDay(date) : 'Invalid day'}</Text></View>)}
-                <View style={[ui.row, { justifyContent: 'space-between' }]}><Text style={ui.small}>Due date ({formatCurrency(splitPlanRow.requiredAmount.minorUnits / 10 ** scale, currencySymbol)}):</Text><Text style={ui.small}>{formatShortMonthDay(splitPlanRow.dueDate)}</Text></View>
-                {!datesInOrder || !datesBeforeDue ? <Text accessibilityRole="alert" style={[ui.small, { color: '#F08B78' }]}>Dates must be strictly increasing and on or before the due date.</Text> : null}
-              </View>
-
-              <Pressable
-                accessibilityRole="button"
-                disabled={savingSplitPlan || !datesInOrder || !datesBeforeDue}
-                onPress={async () => {
-                  if (!splitPlanRow || !entityId) return;
-                  const onSave = isDebt ? onSaveDebtPaymentSplitPlans : onSaveBillPaymentSplitPlans;
-                  if (!onSave) return;
-                  try {
-                    const day1 = Number(splitDay1), day2 = Number(splitDay2);
-                    const candidateRows = scheduledAllRows.filter(row =>
-                      row.kind === splitPlanRow.kind &&
-                      (isDebt ? row.debt?.id === entityId : row.bill?.id === entityId)
-                    );
-                    const term = firstEligibleSplitTerm({
-                      debtId: isDebt ? entityId : undefined,
-                      billId: !isDebt ? entityId : undefined,
-                      day1,
-                      day2,
-                      monthOffset1: splitMonthOffset1,
-                      monthOffset2: splitMonthOffset2,
-                      current: splitPlanRow,
-                      candidates: candidateRows,
-                      today: todayStr,
-                    });
-                    const extendedTerm = splitCount === 2 ? term : { ...term, count: splitCount, day3: Number(extraDays[0]), monthOffset3: extraOffsets[0], ...(splitCount === 4 ? { day4: Number(extraDays[1]), monthOffset4: extraOffsets[1] } : {}) };
-                    setSavingSplitPlan(true);
-                    if (isDebt) {
-                      const plans = { ...(debtPaymentSplitPlansByDebtId ?? {}) };
-                      const existing = plans[entityId];
-                      const terms = [...(existing?.terms ?? [])].filter(item => item.effectiveMonth !== term.effectiveMonth);
-                      terms.push(extendedTerm);
-                      terms.sort((a, b) => a.effectiveMonth.localeCompare(b.effectiveMonth));
-                      await onSaveDebtPaymentSplitPlans?.({ ...plans, [entityId]: { terms } });
-                    } else {
-                      const plans = { ...(billPaymentSplitPlansByBillId ?? {}) };
-                      const existing = plans[entityId];
-                      const terms = [...(existing?.terms ?? [])].filter(item => item.effectiveMonth !== term.effectiveMonth);
-                      terms.push(extendedTerm);
-                      terms.sort((a, b) => a.effectiveMonth.localeCompare(b.effectiveMonth));
-                      await onSaveBillPaymentSplitPlans?.({ ...plans, [entityId]: { terms } });
+              {visibleHistoryRows.map((tx, rowIndex) => {
+                const targetDebt = tx.accountId ? debtById.get(tx.accountId) : undefined;
+                let identifiedBillName: string | undefined;
+                let linkedDebtName: string | undefined;
+                if (tx.accountId === null && (tx.id.startsWith('bill:') || tx.memo?.includes('bill:'))) {
+                  const idBillId = extractBillIdFromTxId(tx.id);
+                  const memoBillIds = tx.memo && tx.memo.includes('bill:') ? extractBillIdsFromMemo(tx.memo) : EMPTY_BILL_ID_SET;
+                  if (idBillId || memoBillIds.size > 0) {
+                    for (let i = 0; i < recurringBills.length; i += 1) {
+                      const bill = recurringBills[i];
+                      if (bill.id === idBillId || memoBillIds.has(bill.id)) {
+                        identifiedBillName = bill.name;
+                        break;
+                      }
                     }
-                    setSplitPlanRow(null);
-                  } catch (error) {
-                    setBillError(error instanceof Error ? error.message : 'Unable to save split plan.');
-                  } finally {
-                    setSavingSplitPlan(false);
+                    for (let i = 0; i < identityLoanBillEntries.length; i += 1) {
+                      const [debtId, billId] = identityLoanBillEntries[i];
+                      if (billId === idBillId || memoBillIds.has(billId)) {
+                        linkedDebtName = debtNamesById.get(debtId);
+                        if (linkedDebtName) break;
+                      }
+                    }
                   }
-                }}
-                style={[ui.button, { backgroundColor: ctaBg, borderColor: ctaBg, marginTop: 16, justifyContent: 'center' }]}
-              >
-                <Text style={[ui.buttonText, { color: ctaFg }]}>{savingSplitPlan ? 'Saving…' : 'Save plan'}</Text>
-              </Pressable>
-
-              {hasExisting ? (
+                }
+                return (
+                  <TransactionHistoryRow
+                    key={tx.id}
+                    tx={tx}
+                    targetDebt={targetDebt}
+                    identifiedBillName={identifiedBillName}
+                    linkedDebtName={linkedDebtName}
+                    currencySymbol={currencySymbol}
+                    isLight={isLight}
+                    mutedColor={palette.muted}
+                    textColor={palette.text}
+                    canEdit={canEdit}
+                    rowIndex={rowIndex}
+                    onPress={handleOpenEdit}
+                  />
+                );
+              })}
+              {visibleHistoryRows.length < sorted.length ? (
                 <Pressable
                   accessibilityRole="button"
-                  disabled={savingSplitPlan}
-                  onPress={() => {
-                    if (splitPlanRow && entityId) {
-                      setConfirmRemoveSplitRow(splitPlanRow);
-                    }
-                  }}
-                  style={{ alignItems: 'center', padding: 12 }}
+                  accessibilityLabel={`Show more transactions, ${sorted.length - visibleHistoryRows.length} remaining`}
+                  onPress={() => setVisibleState(current => {
+                    const baseLimit = current.filterKey === historyFilterKey ? current.limit : HISTORY_PAGE_SIZE;
+                    return { filterKey: historyFilterKey, limit: baseLimit + HISTORY_PAGE_SIZE };
+                  })}
+                  style={[ui.button, { minHeight: 44, justifyContent: 'center', alignItems: 'center', marginTop: 4 }]}
                 >
-                  <Text style={[ui.buttonText, { color: '#F08B78' }]}>Return to one monthly payment</Text>
+                  <Text style={[ui.buttonText, { color: palette.brand, fontWeight: '600' }]}>
+                    {`Show more (${sorted.length - visibleHistoryRows.length} more)`}
+                  </Text>
                 </Pressable>
               ) : null}
             </>
-          );
-        })() : null}
-      </SheetModal>
+          )}
+        </>
+      ))}
+    >
+      {addTransactionModal}
+
+      {showFilters ? (
+        <SheetModal visible onClose={() => setShowFilters(false)} height="92%" closeLabel="Close filters" footer={(
+          <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface }}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Apply filters" onPress={() => {
+              setAccountId(effectiveDraftAccountId);
+              setTypeIdx(effectiveDraftTypeIdx);
+              setShowFilters(false);
+            }} style={[ui.button, { flex: 1, minHeight: 44, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center', alignItems: 'center' }]}>
+              <Text style={[ui.buttonText, { color: ctaFg, fontWeight: '700' }]}>Apply</Text>
+            </Pressable>
+          </View>
+        )}>
+          <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }]}>
+            <Text accessibilityRole="header" style={ui.title}>Filters</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close filters" onPress={() => setShowFilters(false)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}>
+              <AppIcon name="close" size={20} color={palette.muted} />
+            </Pressable>
+          </View>
+          <Text accessibilityRole="header" style={[ui.heading, { marginTop: 4 }]}>Account Type</Text>
+          <View accessibilityLabel="Account Type" style={{ marginTop: 4 }}>
+            {filterRadio('All', effectiveDraftAccountId === 'all', () => setDraftAccountIds([]), 'account-type:all')}
+            {accountTypeGroups.map(group => {
+              const isExpanded = expandedAccountType === group.key;
+              return (
+                <View key={group.key} style={{ borderBottomWidth: 1, borderBottomColor: palette.border }}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`${group.label} filters`} accessibilityState={{ expanded: isExpanded }} onPress={() => setExpandedAccountType(isExpanded ? null : group.key)} style={[ui.row, { minHeight: 46, justifyContent: 'space-between', paddingHorizontal: 10 }]}>
+                    <Text style={[ui.text, { fontWeight: '600', flex: 1 }]}>{group.label}</Text>
+                    <Text style={[ui.small, { marginRight: 8 }]}>{group.options.length}</Text>
+                    <AppIcon name={isExpanded ? 'chevronDown' : 'chevronRight'} size={16} color={palette.muted} />
+                  </Pressable>
+                  {isExpanded ? (
+                    <View style={{ paddingLeft: 10, paddingBottom: 6 }}>
+                      {group.options.map(option => {
+                        const checked = draftAccountIds.includes(option.id);
+                        return (
+                          <Pressable key={option.id} accessibilityRole="checkbox" accessibilityLabel={option.label} accessibilityState={{ checked }} onPress={() => setDraftAccountIds(ids => ids.includes(option.id) ? ids.filter(id => id !== option.id) : [...ids, option.id])}
+                            style={{ minHeight: 44, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 10, backgroundColor: checked ? palette.tint : 'transparent' }}>
+                            <View style={{ width: 20, height: 20, borderRadius: 4, borderWidth: 2, borderColor: checked ? palette.brand : palette.muted, alignItems: 'center', justifyContent: 'center', backgroundColor: checked ? palette.brand : 'transparent' }}>
+                              {checked ? <AppIcon name="check" size={14} color={palette.surface} /> : null}
+                            </View>
+                            <Text style={[ui.text, { flex: 1 }]}>{option.label}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
+          <Text accessibilityRole="header" style={[ui.heading, { marginTop: 14 }]}>Transaction Type</Text>
+          <View accessibilityRole="radiogroup" accessibilityLabel="Transaction type" style={{ marginTop: 4 }}>
+            {typeFilterOptions.map(option => filterRadio(option.label, effectiveDraftTypeIdx === option.value, () => setDraftTypeIdx(effectiveDraftTypeIdx === option.value ? 0 : option.value), `type:${option.value}`))}
+          </View>
+        </SheetModal>
+      ) : null}
+
+      {showHistoryDatePicker ? (() => {
+        let earliestYearNum = Number(currentYear) || new Date().getFullYear();
+        for (let i = 0; i < transactions.length; i += 1) {
+          const tx = transactions[i];
+          if (tx.deletedAt !== null) continue;
+          const txYear = Number(tx.date.slice(0, 4));
+          if (Number.isInteger(txYear) && txYear >= 1970 && txYear < earliestYearNum) {
+            earliestYearNum = txYear;
+          }
+        }
+        const currentYearNum = Number(currentYear) || new Date().getFullYear();
+        return <PeriodDateSheet
+          value={dateFilter.scope === 'lifetime' ? 'lifetime' : dateFilter.value || currentMonthStr}
+          currentYear={currentYearNum} earliestYear={earliestYearNum}
+          onSelect={value => setDateFilter(value === 'lifetime' ? { scope: 'lifetime', value: '' } : { scope: value.length === 4 ? 'year' : 'month', value })}
+          onClose={() => setShowHistoryDatePicker(false)} />;
+      })() : null}
+
+      {canEdit && splitPlanState && splitPlanRow ? (
+        <SheetModal visible onClose={() => setSplitPlanState(null)} contentSized>
+          <SheetFormHeader
+            title={`Plan ${normalizeDisplayName(splitPlanRow.kind === 'debt' ? (splitPlanRow.debt?.name ?? splitPlanRow.name.replace(/\s+minimum$/i, '')) : ((splitPlanRow.bill?.id ? linkedDebtNameByBillId.get(splitPlanRow.bill.id) : undefined) ?? splitPlanRow.bill?.name ?? splitPlanRow.name))} split`}
+            onClose={() => setSplitPlanState(null)}
+            closeLabel="Close split plan"
+          />
+          <View accessibilityRole="radiogroup" style={[ui.row, { gap: 8, marginTop: 8 }]}>{([2, 3, 4] as const).map(count => <Pressable key={count} accessibilityRole="radio" accessibilityState={{ checked: splitCount === count }} onPress={() => setSplitCount(count)} style={[ui.button, { flex: 1, backgroundColor: splitCount === count ? ctaBg : palette.surface, borderColor: splitCount === count ? ctaBg : palette.border }]}><Text style={[ui.buttonText, { color: splitCount === count ? ctaFg : palette.text }]}>{count} installments</Text></Pressable>)}</View>
+          <Text style={ui.small}>Choose calendar dates on or before the due date. Each installment can be set in the due month or the previous month. This plan is informational and never sends a payment.</Text>
+          {!!billError ? <Text accessibilityRole="alert" style={[ui.small, { color: '#F08B78', marginTop: 8 }]}>{billError}</Text> : null}
+          {(() => {
+            const isDebt = splitPlanRow.kind === 'debt';
+            const entityId = isDebt ? splitPlanRow.debt?.id : splitPlanRow.bill?.id;
+            const cycleMonth = splitPlanRow.dueCycleMonth;
+            const prevMonth = getPreviousMonthString(cycleMonth);
+            const days = [splitDay1, splitDay2, ...extraDays].slice(0, splitCount);
+            const offsets = [splitMonthOffset1, splitMonthOffset2, ...extraOffsets].slice(0, splitCount);
+            const previews = days.map((day, i) => { const n = Number(day); return day && Number.isInteger(n) && n >= 1 && n <= 31 ? clampDate(offsets[i] === -1 ? prevMonth : cycleMonth, n) : null; });
+            const baseAmount = Math.floor(splitPlanRow.requiredAmount.minorUnits / splitCount);
+            const scale = getCurrency(currencyCode).scale;
+            const hasExisting = Boolean(entityId && (isDebt ? debtPaymentSplitPlansByDebtId[entityId] : billPaymentSplitPlansByBillId[entityId]));
+            const datesInOrder = previews.every((date, i) => date !== null && (i === 0 || date > previews[i - 1]!));
+            const datesBeforeDue = previews.every(date => date !== null && date <= splitPlanRow.dueDate);
+
+            return (
+              <>
+                <View style={{ marginTop: 12, gap: 12 }}>
+                  {days.map((day, i) => <View key={i} style={{ gap: 6 }}>
+                    <Text style={[ui.small, { fontWeight: '600' }]}>Installment {i + 1}</Text>
+                    <View style={[ui.row, { gap: 8 }]}>
+                      {([-1, 0] as const).map(offset => <Pressable key={offset} accessibilityRole="button" accessibilityLabel={`Installment ${i + 1} ${offset === -1 ? 'previous month' : 'due month'}`} onPress={() => { if (i === 0) setSplitMonthOffset1(offset); else if (i === 1) setSplitMonthOffset2(offset); else setExtraOffsets(values => values.map((value, j) => j === i - 2 ? offset : value)); }} style={[ui.button, { flex: 1, backgroundColor: offsets[i] === offset ? ctaBg : palette.surface, borderColor: offsets[i] === offset ? ctaBg : palette.border }]}><Text style={[ui.buttonText, { color: offsets[i] === offset ? ctaFg : palette.text }]}>{['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'][Number((offset === -1 ? prevMonth : cycleMonth).slice(5, 7)) - 1]}</Text></Pressable>)}
+                      <TextInput accessibilityLabel={`Installment ${i + 1} calendar day`} placeholder="Day" keyboardType="number-pad" value={day} onChangeText={value => { if (i === 0) setSplitDay1(value); else if (i === 1) setSplitDay2(value); else setExtraDays(values => values.map ( (old, j) => j === i - 2 ? value : old)); }} maxLength={2} style={[ui.input, { width: 80, textAlign: 'center', color: palette.text, borderColor: palette.border }]} />
+                    </View>
+                  </View>)}
+                </View>
+                <View style={{ marginTop: 14, padding: 12, borderRadius: 10, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border, gap: 6 }}>
+                  <Text style={[ui.small, { fontWeight: '700' }]}>Actual installment schedule:</Text>
+                  {previews.map((date, i) => <View key={i} style={[ui.row, { justifyContent: 'space-between' }]}><Text style={ui.small}>Installment {i + 1} ({formatCurrency((i === splitCount - 1 ? splitPlanRow.requiredAmount.minorUnits - baseAmount * (splitCount - 1) : baseAmount) / 10 ** scale, currencySymbol)}):</Text><Text style={ui.small}>{date ? formatShortMonthDay(date) : 'Invalid day'}</Text></View>)}
+                  <View style={[ui.row, { justifyContent: 'space-between' }]}><Text style={ui.small}>Due date ({formatCurrency(splitPlanRow.requiredAmount.minorUnits / 10 ** scale, currencySymbol)}):</Text><Text style={ui.small}>{formatShortMonthDay(splitPlanRow.dueDate)}</Text></View>
+                  {!datesInOrder || !datesBeforeDue ? <Text accessibilityRole="alert" style={[ui.small, { color: '#F08B78' }]}>Dates must be strictly increasing and on or before the due date.</Text> : null}
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={savingSplitPlan || !datesInOrder || !datesBeforeDue}
+                  onPress={async () => {
+                    if (!splitPlanRow || !entityId) return;
+                    const onSave = isDebt ? onSaveDebtPaymentSplitPlans : onSaveBillPaymentSplitPlans;
+                    if (!onSave) return;
+                    try {
+                      const day1 = Number(splitDay1), day2 = Number(splitDay2);
+                      const candidateRows = splitPlanState.candidateRows;
+                      const term = firstEligibleSplitTerm({
+                        debtId: isDebt ? entityId : undefined,
+                        billId: !isDebt ? entityId : undefined,
+                        day1,
+                        day2,
+                        monthOffset1: splitMonthOffset1,
+                        monthOffset2: splitMonthOffset2,
+                        current: splitPlanRow,
+                        candidates: candidateRows,
+                        today: todayStr,
+                      });
+                      const extendedTerm = splitCount === 2 ? term : { ...term, count: splitCount, day3: Number(extraDays[0]), monthOffset3: extraOffsets[0], ...(splitCount === 4 ? { day4: Number(extraDays[1]), monthOffset4: extraOffsets[1] } : {}) };
+                      setSavingSplitPlan(true);
+                      if (isDebt) {
+                        const plans = { ...(debtPaymentSplitPlansByDebtId ?? {}) };
+                        const existing = plans[entityId];
+                        const terms = [...(existing?.terms ?? [])].filter(item => item.effectiveMonth !== term.effectiveMonth);
+                        terms.push(extendedTerm);
+                        terms.sort((a, b) => a.effectiveMonth.localeCompare(b.effectiveMonth));
+                        await onSaveDebtPaymentSplitPlans?.({ ...plans, [entityId]: { terms } });
+                      } else {
+                        const plans = { ...(billPaymentSplitPlansByBillId ?? {}) };
+                        const existing = plans[entityId];
+                        const terms = [...(existing?.terms ?? [])].filter(item => item.effectiveMonth !== term.effectiveMonth);
+                        terms.push(extendedTerm);
+                        terms.sort((a, b) => a.effectiveMonth.localeCompare(b.effectiveMonth));
+                        await onSaveBillPaymentSplitPlans?.({ ...plans, [entityId]: { terms } });
+                      }
+                      setSplitPlanState(null);
+                    } catch (error) {
+                      setBillError(error instanceof Error ? error.message : 'Unable to save split plan.');
+                    } finally {
+                      setSavingSplitPlan(false);
+                    }
+                  }}
+                  style={[ui.button, { backgroundColor: ctaBg, borderColor: ctaBg, marginTop: 16, justifyContent: 'center' }]}
+                >
+                  <Text style={[ui.buttonText, { color: ctaFg, textAlign: 'center' }]}>{savingSplitPlan ? 'Saving…' : 'Save plan'}</Text>
+                </Pressable>
+
+                {hasExisting ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={savingSplitPlan}
+                    onPress={() => {
+                      if (splitPlanRow && entityId) {
+                        setConfirmRemoveSplitRow(splitPlanRow);
+                      }
+                    }}
+                    style={{ alignItems: 'center', padding: 12 }}
+                  >
+                    <Text style={[ui.buttonText, { color: '#F08B78', textAlign: 'center' }]}>Return to one monthly payment</Text>
+                  </Pressable>
+                ) : null}
+              </>
+            );
+          })()}
+        </SheetModal>
+      ) : null}
 
       {/* Edit Transaction Modal */}
-      {(() => {
+      {editingTx !== null ? (() => {
+        const editCatOption = editCategoryIdx >= 0
+          ? CATEGORY_CHOICES[editCategoryIdx]
+          : {
+              label: formatTransactionCategoryLabel(editingTx.category),
+              category: editingTx.category,
+              isDebt: editingTx.category !== 'debit_bill' && editingTx.category !== 'debit_spending',
+            };
+        const targetEditDebt = editAccountId ? debtById.get(editAccountId) : undefined;
+        const editCurrentBal = targetEditDebt ? targetEditDebt.balance : 0;
+        let editAfterBal = editCurrentBal;
+
+        if (targetEditDebt) {
+          const curMoney = moneyFromMajor(targetEditDebt.balance, currencyCode);
+          let previewMoney = curMoney;
+
+          if (editingTx.accountId === targetEditDebt.id && editingTx.deletedAt === null) {
+            const origDelta = calculateTransactionBalanceDelta(editingTx, targetEditDebt.category);
+            previewMoney = addMoney(previewMoney, makeMoney(currencyCode, -origDelta.minorUnits));
+          }
+
+          const parsedAmt = parseFloat(editAmount);
+          if (!Number.isNaN(parsedAmt) && parsedAmt > 0 && editCatOption.isDebt) {
+            try {
+              const newAmtMoney = parseMoney(editAmount, currencyCode);
+              const pAmt = editPrincipal.trim() ? parseMoney(editPrincipal.trim(), currencyCode) : null;
+              const iAmt = editInterest.trim() ? parseMoney(editInterest.trim(), currencyCode) : null;
+              const eAmt = editEscrow.trim() ? parseMoney(editEscrow.trim(), currencyCode) : null;
+              const fAmt = editFee.trim() ? parseMoney(editFee.trim(), currencyCode) : null;
+
+              const candidateTx: LedgerTransaction = {
+                ...editingTx,
+                accountId: targetEditDebt.id,
+                amount: newAmtMoney,
+                category: editCatOption.category,
+                principalAmount: pAmt,
+                interestAmount: iAmt,
+                escrowAmount: eAmt,
+                feeAmount: fAmt,
+              };
+              const newDelta = calculateTransactionBalanceDelta(candidateTx, targetEditDebt.category);
+              previewMoney = addMoney(previewMoney, newDelta);
+            } catch {
+              // invalid input ignored for preview
+            }
+          }
+
+          editAfterBal = moneyToMajor(previewMoney);
+        }
+
         const groupedCardStyle = {
           borderRadius: 16,
           borderWidth: 1,
@@ -1689,7 +2251,7 @@ export function TransactionsScreen({
         };
         return (
           <SheetModal
-            visible={editingTx !== null}
+            visible
             onClose={() => { setEditPicker(null); setEditingTx(null); onEditDismiss?.(); }}
             contentSized
             closeLabel="Close edit form"
@@ -1759,7 +2321,7 @@ export function TransactionsScreen({
                 </View>
               ) : null}
 
-              {editingTx?.isPending ? (
+              {editingTx.isPending ? (
                 <View style={{ backgroundColor: isLight ? '#FFF3CD' : '#2D281E', borderColor: appearanceColor('#F5C563', isLight), borderWidth: 1, borderRadius: 10, padding: 10 }}>
                   <Text style={[ui.small, { color: appearanceColor('#F5C563', isLight), fontWeight: '700' }]}>Pending Confirmation</Text>
                   <Text style={[ui.small, { color: isLight ? '#8A6200' : '#D4C9A8' }]}>This transaction has not yet been confirmed by the server.</Text>
@@ -1817,7 +2379,7 @@ export function TransactionsScreen({
                     <TextInput
                       accessibilityLabel="Transaction amount"
                       accessibilityHint="Required"
-                      placeholder="0.00"
+                      placeholder={formatEditableMoney(0, currencyCode)}
                       placeholderTextColor={palette.muted}
                       keyboardType="decimal-pad"
                       editable={canEdit}
@@ -1859,12 +2421,48 @@ export function TransactionsScreen({
               {editCatOption.category === 'payment' && targetEditDebt && (targetEditDebt.category === 'Mortgage' || targetEditDebt.category === 'Auto loan') ? (
                 <View style={groupedCardStyle}>
                   <View style={[rowStyle, rowBorderStyle, { minHeight: 42 }]}>
-                    <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700' }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+                    <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700', flex: 1 }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+                    {canEdit ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Suggest principal and interest split"
+                        onPress={() => {
+                          const parsedAmt = parseMoneyInput(editAmount, currencyCode, false);
+                          const targetAmount = parsedAmt !== null && parsedAmt > 0 ? parsedAmt : targetEditDebt.minimumPayment;
+                          if (!Number.isFinite(targetAmount) || targetAmount <= 0) return;
+                          if (parsedAmt === null || parsedAmt <= 0) {
+                            setEditAmount(formatEditableMoney(targetAmount, currencyCode));
+                          }
+                          const suggestion = suggestLoanPaymentSplit({
+                            balance: targetEditDebt.balance,
+                            aprPercent: targetEditDebt.apr,
+                            paymentAmount: targetAmount,
+                            escrowAmount: targetEditDebt.category === 'Mortgage' ? mortgageEscrowByDebtId[targetEditDebt.id] : undefined,
+                            currencyCode,
+                          });
+                          setEditPrincipal(formatEditableMoney(suggestion.principal, currencyCode));
+                          setEditInterest(formatEditableMoney(suggestion.interest, currencyCode));
+                          if (targetEditDebt.category === 'Mortgage' && suggestion.escrow > 0) {
+                            setEditEscrow(formatEditableMoney(suggestion.escrow, currencyCode));
+                          }
+                        }}
+                        style={{
+                          paddingHorizontal: 10,
+                          paddingVertical: 5,
+                          borderRadius: 999,
+                          borderWidth: 1,
+                          borderColor: palette.brand,
+                          backgroundColor: palette.tint,
+                        }}
+                      >
+                        <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Suggest P/I split</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                   <View style={[rowStyle, rowBorderStyle]}>
                     <Text style={[ui.text, { color: palette.muted }]}>Principal</Text>
                     <TextInput
-                      placeholder="0.00"
+                      placeholder={formatEditableMoney(0, currencyCode)}
                       placeholderTextColor={palette.muted}
                       keyboardType="decimal-pad"
                       editable={canEdit}
@@ -1876,7 +2474,7 @@ export function TransactionsScreen({
                   <View style={[rowStyle, rowBorderStyle]}>
                     <Text style={[ui.text, { color: palette.muted }]}>Interest</Text>
                     <TextInput
-                      placeholder="0.00"
+                      placeholder={formatEditableMoney(0, currencyCode)}
                       placeholderTextColor={palette.muted}
                       keyboardType="decimal-pad"
                       editable={canEdit}
@@ -1889,7 +2487,7 @@ export function TransactionsScreen({
                     <View style={[rowStyle, rowBorderStyle]}>
                       <Text style={[ui.text, { color: palette.muted }]}>Escrow</Text>
                       <TextInput
-                        placeholder="0.00"
+                        placeholder={formatEditableMoney(0, currencyCode)}
                         placeholderTextColor={palette.muted}
                         keyboardType="decimal-pad"
                         editable={canEdit}
@@ -1902,7 +2500,7 @@ export function TransactionsScreen({
                   <View style={rowStyle}>
                     <Text style={[ui.text, { color: palette.muted }]}>Fees</Text>
                     <TextInput
-                      placeholder="0.00"
+                      placeholder={formatEditableMoney(0, currencyCode)}
                       placeholderTextColor={palette.muted}
                       keyboardType="decimal-pad"
                       editable={canEdit}
@@ -1914,24 +2512,22 @@ export function TransactionsScreen({
                 </View>
               ) : null}
 
-              {editingTx ? (
-                <View style={groupedCardStyle}>
-                  {editingTx.appliesToDate ? (
-                    <View style={[rowStyle, rowBorderStyle, { minHeight: 42 }]}>
-                      <Text style={[ui.text, { color: palette.muted }]}>Due cycle</Text>
-                      <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>
-                        {`Applied to ${editingTx.appliesToDate} Due`}
-                      </Text>
-                    </View>
-                  ) : null}
-                  <View style={[rowStyle, { minHeight: 42 }]}>
-                    <Text style={[ui.text, { color: palette.muted }]}>Source</Text>
+              <View style={groupedCardStyle}>
+                {editingTx.appliesToDate ? (
+                  <View style={[rowStyle, rowBorderStyle, { minHeight: 42 }]}>
+                    <Text style={[ui.text, { color: palette.muted }]}>Due cycle</Text>
                     <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>
-                      {formatTransactionSourceLabel(editingTx.source)}
+                      {`Applied to ${editingTx.appliesToDate} Due`}
                     </Text>
                   </View>
+                ) : null}
+                <View style={[rowStyle, { minHeight: 42 }]}>
+                  <Text style={[ui.text, { color: palette.muted }]}>Source</Text>
+                  <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>
+                    {formatTransactionSourceLabel(editingTx.source)}
+                  </Text>
                 </View>
-              ) : null}
+              </View>
 
               <View style={[ui.row, { justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: palette.tint }]}>
                 <View>
@@ -1951,124 +2547,130 @@ export function TransactionsScreen({
               </View>
             </View>
 
-            <AdaptiveModal visible={editPicker !== null} transparent animationType="fade" onRequestClose={() => setEditPicker(null)}>
-              <TouchableWithoutFeedback onPress={() => setEditPicker(null)}>
-                <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
-                  <TouchableWithoutFeedback>
-                    <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
-                        <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
-                          {editPicker === 'category' ? 'Select Transaction Category' : 'Select Target Debt Account'}
-                        </Text>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Close picker"
-                          onPress={() => setEditPicker(null)}
-                          style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
-                        >
-                          <AppIcon name="close" size={20} color={palette.muted} />
-                        </Pressable>
+            {editPicker !== null ? (
+              <AdaptiveModal visible transparent animationType="fade" onRequestClose={() => setEditPicker(null)}>
+                <TouchableWithoutFeedback onPress={() => setEditPicker(null)}>
+                  <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
+                    <TouchableWithoutFeedback>
+                      <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
+                          <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
+                            {editPicker === 'category' ? 'Select Transaction Category' : 'Select Target Debt Account'}
+                          </Text>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Close picker"
+                            onPress={() => setEditPicker(null)}
+                            style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
+                          >
+                            <AppIcon name="close" size={20} color={palette.muted} />
+                          </Pressable>
+                        </View>
+                        <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
+                          {editPicker === 'category'
+                            ? categoryDropdownOptions.map(option => {
+                                const isSelected = option.value === editCategoryIdx;
+                                return (
+                                  <Pressable
+                                    key={String(option.value)}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected: isSelected }}
+                                    onPress={() => { setEditCategoryIdx(option.value); setEditPicker(null); }}
+                                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                                  >
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                      {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
+                                      <View style={{ flex: 1 }}>
+                                        <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                                        {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
+                                      </View>
+                                    </View>
+                                    {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                                  </Pressable>
+                                );
+                              })
+                            : debtAccountDropdownOptions.map(option => {
+                                const isSelected = option.value === (editAccountId || debts[0]?.id || '');
+                                return (
+                                  <Pressable
+                                    key={String(option.value)}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected: isSelected }}
+                                    onPress={() => { setEditAccountId(option.value); setEditPicker(null); }}
+                                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                                  >
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                      {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
+                                      <View style={{ flex: 1 }}>
+                                        <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                                        {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
+                                      </View>
+                                    </View>
+                                    {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                                  </Pressable>
+                                );
+                              })}
+                        </ScrollView>
                       </View>
-                      <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
-                        {editPicker === 'category'
-                          ? categoryDropdownOptions.map(option => {
-                              const isSelected = option.value === editCategoryIdx;
-                              return (
-                                <Pressable
-                                  key={String(option.value)}
-                                  accessibilityRole="button"
-                                  accessibilityState={{ selected: isSelected }}
-                                  onPress={() => { setEditCategoryIdx(option.value); setEditPicker(null); }}
-                                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                                >
-                                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                    {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
-                                    <View style={{ flex: 1 }}>
-                                      <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                      {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
-                                    </View>
-                                  </View>
-                                  {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                                </Pressable>
-                              );
-                            })
-                          : debtAccountDropdownOptions.map(option => {
-                              const isSelected = option.value === (editAccountId || debts[0]?.id || '');
-                              return (
-                                <Pressable
-                                  key={String(option.value)}
-                                  accessibilityRole="button"
-                                  accessibilityState={{ selected: isSelected }}
-                                  onPress={() => { setEditAccountId(option.value); setEditPicker(null); }}
-                                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                                >
-                                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                    {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
-                                    <View style={{ flex: 1 }}>
-                                      <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                      {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
-                                    </View>
-                                  </View>
-                                  {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                                </Pressable>
-                              );
-                            })}
-                      </ScrollView>
-                    </View>
-                  </TouchableWithoutFeedback>
-                </View>
-              </TouchableWithoutFeedback>
-            </AdaptiveModal>
+                    </TouchableWithoutFeedback>
+                  </View>
+                </TouchableWithoutFeedback>
+              </AdaptiveModal>
+            ) : null}
           </SheetModal>
         );
-      })()}
+      })() : null}
 
-      <ConfirmModal
-        visible={confirmDeleteTx !== null}
-        title="Delete transaction?"
-        message={confirmDeleteTx ? `Delete ${confirmDeleteTx.payee || 'this transaction'} dated ${confirmDeleteTx.date}? This removes it from recorded activity and may change the account balance.` : ''}
-        confirmLabel="Delete transaction"
-        busy={deletingTx}
-        onConfirm={() => void handleDeleteTx()}
-        onCancel={() => setConfirmDeleteTx(null)}
-      />
+      {confirmDeleteTx !== null ? (
+        <ConfirmModal
+          visible
+          title="Delete transaction?"
+          message={`Delete ${confirmDeleteTx.payee || 'this transaction'} dated ${confirmDeleteTx.date}? This removes it from recorded activity and may change the account balance.`}
+          confirmLabel="Delete transaction"
+          busy={deletingTx}
+          onConfirm={() => void handleDeleteTx()}
+          onCancel={() => setConfirmDeleteTx(null)}
+        />
+      ) : null}
 
-      <ConfirmModal
-        visible={confirmRemoveSplitRow !== null}
-        title="Return to one monthly payment?"
-        message={confirmRemoveSplitRow ? `Remove the saved split plan for ${normalizeDisplayName(confirmRemoveSplitRow.name.replace(/\s+minimum$/i, ''))}? Its planned installments will be replaced by one monthly payment; the underlying obligation is unchanged.` : ''}
-        confirmLabel="Remove split plan"
-        busy={savingSplitPlan}
-        onCancel={() => setConfirmRemoveSplitRow(null)}
-        onConfirm={() => {
-          const targetRow = confirmRemoveSplitRow;
-          if (!targetRow) return;
-          const isDebt = targetRow.kind === 'debt';
-          const entityId = isDebt ? targetRow.debt?.id : targetRow.bill?.id;
-          if (!entityId) return;
-          void (async () => {
-            setSavingSplitPlan(true);
-            try {
-              if (isDebt) {
-                const plans = { ...(debtPaymentSplitPlansByDebtId ?? {}) };
-                delete plans[entityId];
-                await onSaveDebtPaymentSplitPlans?.(plans);
-              } else {
-                const plans = { ...(billPaymentSplitPlansByBillId ?? {}) };
-                delete plans[entityId];
-                await onSaveBillPaymentSplitPlans?.(plans);
+      {confirmRemoveSplitRow !== null ? (
+        <ConfirmModal
+          visible
+          title="Return to one monthly payment?"
+          message={`Remove the saved split plan for ${normalizeDisplayName(confirmRemoveSplitRow.name.replace(/\s+minimum$/i, ''))}? Its planned installments will be replaced by one monthly payment; the underlying obligation is unchanged.`}
+          confirmLabel="Remove split plan"
+          busy={savingSplitPlan}
+          onCancel={() => setConfirmRemoveSplitRow(null)}
+          onConfirm={() => {
+            const targetRow = confirmRemoveSplitRow;
+            if (!targetRow) return;
+            const isDebt = targetRow.kind === 'debt';
+            const entityId = isDebt ? targetRow.debt?.id : targetRow.bill?.id;
+            if (!entityId) return;
+            void (async () => {
+              setSavingSplitPlan(true);
+              try {
+                if (isDebt) {
+                  const plans = { ...(debtPaymentSplitPlansByDebtId ?? {}) };
+                  delete plans[entityId];
+                  await onSaveDebtPaymentSplitPlans?.(plans);
+                } else {
+                  const plans = { ...(billPaymentSplitPlansByBillId ?? {}) };
+                  delete plans[entityId];
+                  await onSaveBillPaymentSplitPlans?.(plans);
+                }
+                setConfirmRemoveSplitRow(null);
+                setSplitPlanState(null);
+              } catch (error) {
+                setBillError(error instanceof Error ? error.message : 'Unable to remove split plan.');
+                setConfirmRemoveSplitRow(null);
+              } finally {
+                setSavingSplitPlan(false);
               }
-              setConfirmRemoveSplitRow(null);
-              setSplitPlanRow(null);
-            } catch (error) {
-              setBillError(error instanceof Error ? error.message : 'Unable to remove split plan.');
-              setConfirmRemoveSplitRow(null);
-            } finally {
-              setSavingSplitPlan(false);
-            }
-          })();
-        }}
-      />
+            })();
+          }}
+        />
+      ) : null}
     </FinancialScreen>
   );
 }

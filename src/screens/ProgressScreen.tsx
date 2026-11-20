@@ -1,28 +1,23 @@
 import { useState } from 'react';
-import { StyleSheet, type DimensionValue } from 'react-native';
-import Svg, { Circle, Defs, Line, Path, RadialGradient, Stop } from 'react-native-svg';
+import { StyleSheet, useWindowDimensions, type DimensionValue } from 'react-native';
+import Svg, { Circle, Defs, Line, LinearGradient, Path, RadialGradient, Stop } from 'react-native-svg';
 import { AmountText } from '../components/AmountText';
-import { AppIcon, type AppIconName } from '../components/AppIcon';
+import { AccountMark } from '../components/AccountMark';
+import { AppIcon } from '../components/AppIcon';
 import { Bar, Card, FinancialScreen, ui } from '../components/FinancialScreen';
 import { InformationButton as InfoButton } from '../components/InformationSheet';
-import { InspireQuote } from '../components/InspireArt';
+import { InspireCornerArt } from '../components/InspireArt';
+import { PeriodDateSheet } from '../components/PeriodDateSheet';
 import { Pressable, Text, View, appearanceColor, useNativeAppearance } from '../components/NativeAppearance';
 import { currentHouseholdDate, getPreviousMonthString } from '../finance/calendar';
-import { isPaidOffAccountArchived, type LedgerTransaction } from '../finance/ledger';
-import { calculateAccountActivities, calculateActivitySummary, calculateCreditUtilization, calculateMilestones, type ProgressPeriod } from '../finance/progress';
+import { calculateTransactionBalanceDelta, isPaidOffAccountArchived, type LedgerTransaction } from '../finance/ledger';
+import { makeMoney, moneyToMajor } from '../finance/money';
+import { calculateAccountActivities, calculateActivitySummary, calculateCreditUtilization, calculateMilestones, filterTransactionsByPeriod, type ProgressPeriod } from '../finance/progress';
 import { formatCurrency, type DebtItem, type PayoffStrategy } from '../onboarding-domain';
+import { DEFAULT_TAB_UI_PREFERENCES, useTabShell, type TabUiPreferences } from '../components/TabShellContext';
 
-const PERIOD_ITEMS = ['This Month', 'Previous', 'Lifetime'] as const;
-const GAUGE_SEGMENT_COLORS = [
-  '#E67E22',
-  '#F39C12',
-  '#F1C40F',
-  '#A3D944',
-  '#58C46D',
-  '#2E9D68',
-  '#1C6E4D',
-] as const;
-
+const longMonth = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
+const shortMonth = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
 function polarPoint(cx: number, cy: number, radius: number, angleDeg: number) {
   const rad = (angleDeg * Math.PI) / 180;
   return {
@@ -38,51 +33,42 @@ function describeArc(cx: number, cy: number, radius: number, startAngleDeg: numb
 }
 
 function ProgressSpeedometer({ percent }: { percent: number }) {
-  const { palette } = useNativeAppearance();
+  const { isInspire, palette } = useNativeAppearance();
+  const { width } = useWindowDimensions();
+  const gaugeWidth = Math.min(160, Math.round(width * 0.38));
   const clamped = Math.max(0, Math.min(200, percent));
-  const needleAngle = 180 - (clamped / 200) * 180;
+  const needleAngle = 180 - (clamped / 200) * 179.99;
   const cx = 74;
   const cy = 70;
   const radius = 54;
   const tip = polarPoint(cx, cy, 44, needleAngle);
-  const segCount = GAUGE_SEGMENT_COLORS.length;
-  const totalSpan = 180;
-  const gap = 3;
-  const segSpan = (totalSpan - gap * (segCount - 1)) / segCount;
+  const left = polarPoint(cx, cy, 4, needleAngle + 90);
+  const right = polarPoint(cx, cy, 4, needleAngle - 90);
 
   return (
-    <View style={{ width: 148, alignItems: 'center', flexShrink: 0 }}>
-      <Svg width={148} height={82} viewBox="0 0 148 82" accessible={false}>
-        {GAUGE_SEGMENT_COLORS.map((color, idx) => {
-          const start = 180 - idx * (segSpan + gap);
-          const end = start - segSpan;
-          return (
-            <Path
-              key={color}
-              d={describeArc(cx, cy, radius, start, end)}
-              fill="none"
-              stroke={color}
-              strokeWidth={12}
-              strokeLinecap="butt"
-            />
-          );
-        })}
-        <Line
-          x1={cx}
-          y1={cy}
-          x2={tip.x}
-          y2={tip.y}
-          stroke={palette.text}
-          strokeWidth={2.8}
-          strokeLinecap="round"
-        />
-        <Circle cx={cx} cy={cy} r={5} fill={palette.text} />
+    <View style={{ width: gaugeWidth, alignItems: 'center', flexShrink: 0 }}>
+      <Svg width={gaugeWidth} height={Math.round(gaugeWidth * 0.54)} viewBox="0 0 148 80" accessible={false}>
+        <Defs>
+          <LinearGradient id="progressGauge" gradientUnits="userSpaceOnUse" x1={0} y1={0} x2={148} y2={0}>
+            <Stop offset="0%" stopColor="#E99409" />
+            <Stop offset="50%" stopColor="#83E75D" />
+            <Stop offset="100%" stopColor="#28BA63" />
+          </LinearGradient>
+        </Defs>
+        {isInspire ? <Path d={describeArc(cx, cy, radius, 180, 0)} fill="none" stroke={palette.graphOutline} strokeWidth={14} strokeLinecap="round" /> : null}
+        <Path d={describeArc(cx, cy, radius, 180, 0)} fill="none" stroke={palette.raised} strokeWidth={12} strokeLinecap="round" />
+        {isInspire && clamped > 0 ? <Path d={describeArc(cx, cy, radius, 180, needleAngle)} fill="none" stroke={palette.graphOutline} strokeWidth={14} strokeLinecap="round" /> : null}
+        {clamped > 0 ? <Path d={describeArc(cx, cy, radius, 180, needleAngle)} fill="none" stroke="url(#progressGauge)" strokeWidth={12} strokeLinecap="round" /> : null}
+        <Line x1={cx} y1={cy - radius - 7} x2={cx} y2={cy - radius + 7} stroke={palette.text} strokeOpacity={0.4} strokeWidth={1.5} strokeDasharray="2 2" />
+        <Path d={`M ${left.x} ${left.y} L ${tip.x} ${tip.y} L ${right.x} ${right.y} Z`} fill={palette.text} stroke={isInspire ? palette.graphOutline : 'none'} />
+        <Circle cx={cx} cy={cy} r={6} fill={palette.text} />
+        <Circle cx={cx} cy={cy} r={2.3} fill={palette.surface} />
       </Svg>
-      <View style={[ui.row, { width: '100%', justifyContent: 'space-between', paddingHorizontal: 4, marginTop: -4 }]}>
-        <Text style={[ui.small, { fontSize: 12 }]}>0%</Text>
-        <Text style={[ui.small, { fontSize: 12 }]}>200%+</Text>
+      <View style={[ui.row, { width: '100%', justifyContent: 'space-between', alignItems: 'baseline', marginTop: -3 }]}>
+        <Text style={[ui.small, { fontSize: 11, fontWeight: '700' }]}>0%</Text>
+        <Text style={[ui.title, { color: percent >= 100 ? palette.posInk : palette.text, fontSize: 21, fontWeight: '800' }]}>{`${Math.round(percent)}%`}</Text>
+        <Text style={[ui.small, { fontSize: 11, fontWeight: '700' }]}>200%+</Text>
       </View>
-      <Text style={[ui.title, { fontSize: 22, lineHeight: 26, marginTop: -6 }]}>{`${Math.round(percent)}%`}</Text>
     </View>
   );
 }
@@ -176,70 +162,106 @@ export function ProgressScreen({
   onSelectDebt?: (debtId: string) => void;
   onOpenStrategy?: () => void;
 }) {
-  const [tab, setTab] = useState('Overview');
-  const [period, setPeriod] = useState<typeof PERIOD_ITEMS[number]>('This Month');
-  const { isLight, isInspire, palette, accentColor } = useNativeAppearance();
+  const shell = useTabShell();
+  const [localUiPreferences, setLocalUiPreferences] = useState<TabUiPreferences>(DEFAULT_TAB_UI_PREFERENCES);
+  const uiPreferences = shell?.uiPreferences ?? localUiPreferences;
+  const setUiPreferences = shell?.setUiPreferences ?? setLocalUiPreferences;
+  const tab = uiPreferences.progressSection;
+  const setTab = (value: 'Overview' | 'Utilization' | 'Milestones') => setUiPreferences(current => ({ ...current, progressSection: value }));
+  const [period, setPeriod] = useState<ProgressPeriod>('current_month');
+  const [showDate, setShowDate] = useState(false);
+  const { isLight, isInspire, palette } = useNativeAppearance();
 
   const today = currentHouseholdDate(householdTimeZone);
-  const currentMonthStr = today.slice(0, 7);
-  const previousMonthStr = getPreviousMonthString(currentMonthStr);
-  const mappedPeriod: ProgressPeriod =
-    period === 'This Month' ? 'current_month' : period === 'Previous' ? 'previous_month' : 'lifetime';
+  const currentMonth = today.slice(0, 7) as `${number}-${number}`;
+  const currentYear = Number(today.slice(0, 4));
+  const selectedPeriod = period === 'current_month' ? currentMonth
+    : period === 'previous_month' ? getPreviousMonthString(currentMonth) as `${number}-${number}`
+    : period;
+  const lifetime = selectedPeriod === 'lifetime';
+  const selectedDate = selectedPeriod.length === 7 ? new Date(`${selectedPeriod}-01T12:00:00Z`) : null;
+  const dateLabel = lifetime ? 'Lifetime' : selectedDate ? longMonth.format(selectedDate) : selectedPeriod;
+  const periodTag = selectedDate ? shortMonth.format(selectedDate).toLocaleUpperCase() : dateLabel.toLocaleUpperCase();
+  const earliestYear = transactions.reduce((earliest, tx) => {
+    const year = Number(tx.date.slice(0, 4));
+    return tx.deletedAt === null && year >= 1970 ? Math.min(earliest, year) : earliest;
+  }, currentYear);
 
-  const summary = calculateActivitySummary({ transactions, debts, period: mappedPeriod, today, currencyCode });
-  const accountActivities = calculateAccountActivities({ transactions, debts, period: mappedPeriod, today, currencyCode });
-  const activeProgressDebts = debts.filter(debt => !isPaidOffAccountArchived(debt, archivedPaidOffDebtIds));
+  const overviewDebts = debts.filter(debt => debt.category === 'Credit card' || debt.category === 'Personal loan');
+  const overviewDebtById = new Map(overviewDebts.map(debt => [debt.id, debt]));
+  const activeProgressDebts = overviewDebts.filter(debt => !isPaidOffAccountArchived(debt, archivedPaidOffDebtIds));
+  const overviewTransactions = transactions.filter(
+    tx => tx.accountId !== null && overviewDebtById.has(tx.accountId),
+  );
+  const summary = calculateActivitySummary({
+    transactions: overviewTransactions,
+    debts: overviewDebts,
+    period: selectedPeriod,
+    today,
+    currencyCode,
+  });
+  const movements = { payments: 0, spending: 0, interest: 0, refunds: 0, adjustments: 0, other: 0 };
+  for (const tx of filterTransactionsByPeriod(overviewTransactions, selectedPeriod, today)) {
+    const debt = tx.accountId === null ? undefined : overviewDebtById.get(tx.accountId);
+    if (!debt || tx.isPending || tx.amount.currency !== currencyCode) continue;
+    const key = tx.source === 'reconciliation' || ['interest_adjustment', 'balance_adjustment', 'credit_adjustment'].includes(tx.category)
+      ? 'adjustments' : tx.category === 'payment' ? 'payments' : tx.category === 'refund' ? 'refunds'
+      : ['interest', 'fee', 'annual_fee'].includes(tx.category) ? 'interest'
+      : ['purchase', 'subscription', 'utilities'].includes(tx.category) ? 'spending' : 'other';
+    movements[key] += calculateTransactionBalanceDelta(tx, debt.category).minorUnits;
+  }
+  const movementTotal = moneyToMajor(makeMoney(currencyCode, Object.values(movements).reduce((sum, value) => sum + value, 0)));
+  const signedAmount = (value: number) => `${value > 0 ? '+' : value < 0 ? '-' : ''}${formatCurrency(Math.abs(value), currencySymbol)}`;
+  const accountActivities = calculateAccountActivities({
+    transactions: overviewTransactions,
+    debts: activeProgressDebts,
+    period: selectedPeriod,
+    today,
+    currencyCode,
+  });
   const archivedUtilizationDebtIds = debts
     .filter(debt => isPaidOffAccountArchived(debt, archivedPaidOffDebtIds))
     .map(debt => debt.id);
+  const paidOffDebts = debts.filter(debt => isPaidOffAccountArchived(debt, archivedPaidOffDebtIds));
   const utilization = calculateCreditUtilization(activeProgressDebts, currencyCode);
   const milestones = calculateMilestones({
     debts,
     transactions,
     currencyCode,
     excludedUtilizationDebtIds: archivedUtilizationDebtIds,
+    archivedPaidOffDebtIds,
   });
-  const hasPending = transactions.some(tx => tx.isPending && tx.deletedAt === null && tx.accountId !== null);
-
-  const monthHeading = (monthStr: string) =>
-    `${new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(
-      new Date(`${monthStr}-01T12:00:00Z`),
-    )} progress`;
-
-  const progressHeading =
-    period === 'This Month'
-      ? monthHeading(currentMonthStr)
-      : period === 'Previous'
-      ? monthHeading(previousMonthStr)
-      : 'Lifetime progress';
+  const hasPending = overviewTransactions.some(tx => tx.isPending && tx.deletedAt === null);
 
   const fallbackPlanned = activeProgressDebts
     .filter(d => d.balance > 0)
     .reduce((sum, d) => sum + Math.max(0, d.minimumPayment), 0);
-  const plannedForPeriod =
-    period === 'Lifetime' ? 0 : Math.max(0, plannedMonthlyPayment ?? fallbackPlanned);
+  const monthsInPeriod = lifetime ? 0 : selectedDate ? 1
+    : Number(selectedPeriod) === currentYear ? Number(currentMonth.slice(5)) : 12;
+  const plannedForPeriod = monthsInPeriod * Math.max(0, plannedMonthlyPayment ?? fallbackPlanned);
 
+  const planPaymentsForTarget = summary.totalPayments;
   const gaugePercent =
-    period === 'Lifetime'
+    lifetime
       ? summary.totalPayments > 0
         ? 100
         : 0
       : plannedForPeriod > 0
-      ? Math.round((summary.totalPayments / plannedForPeriod) * 100)
-      : summary.totalPayments > 0
+      ? Math.round((planPaymentsForTarget / plannedForPeriod) * 100)
+      : planPaymentsForTarget > 0
       ? 100
       : 0;
 
-  const planDelta = summary.totalPayments - plannedForPeriod;
-  const isAhead = period !== 'Lifetime' && plannedForPeriod > 0 && planDelta >= 0;
-  const isBehind = period !== 'Lifetime' && plannedForPeriod > 0 && planDelta < 0;
+  const planDelta = planPaymentsForTarget - plannedForPeriod;
+  const isAhead = plannedForPeriod > 0 && planDelta >= 0;
+  const isBehind = plannedForPeriod > 0 && planDelta < 0;
 
   const statusMeta =
-    period === 'Lifetime'
+    lifetime
       ? {
           title: 'Lifetime total',
           subtitle: `${summary.transactionsCount} confirmed ${summary.transactionsCount === 1 ? 'entry' : 'entries'}`,
-          pill: `${formatCurrency(summary.principalReduction, currencySymbol)} principal paid`,
+          pill: `${formatCurrency(summary.totalPayments, currencySymbol)} paid`,
           bannerBg: isLight ? '#EDF7F1' : 'rgba(118, 220, 185, 0.12)',
           pillBg: isLight ? '#DCF0E5' : 'rgba(118, 220, 185, 0.2)',
           accent: isLight ? '#087D42' : '#76DCB9',
@@ -280,7 +302,7 @@ export function ProgressScreen({
             plannedForPeriod > 0
               ? `${formatCurrency(Math.abs(planDelta), currencySymbol)} left to reach plan`
               : 'Record payments to track progress',
-          pill: `${gaugePercent}% of target`,
+          pill: plannedForPeriod > 0 ? `${gaugePercent}% of target` : 'No payment target',
           bannerBg: isLight ? '#FFF8E8' : 'rgba(245, 197, 99, 0.12)',
           pillBg: isLight ? '#FBECC8' : 'rgba(245, 197, 99, 0.2)',
           accent: appearanceColor('#F5C563', isLight),
@@ -307,91 +329,48 @@ export function ProgressScreen({
       : utilization.statusBand === 'high'
       ? 'High'
       : 'Unavailable';
-  const usedArcColor = appearanceColor('#76DCB9', isLight, accentColor);
-  const availTrackColor = isLight ? '#E6ECF4' : palette.raised;
+  const usedArcColor = utilizationBadgeColors(utilization.statusBand, isLight, palette.muted, palette.raised, palette.border).barColor;
+  const availTrackColor = palette.raised;
   const donutCircumference = 2 * Math.PI * 55;
   const donutPercent = Math.max(0, Math.min(100, utilization.utilizationPercent));
 
+  const pendingNotice = hasPending ? (
+    <View style={ui.row}>
+      <Text style={[ui.small, { color: appearanceColor('#F5C563', isLight), flex: 1 }]}>
+        Balances provisional - payments pending
+      </Text>
+      <InfoButton
+        label="Pending changes"
+        detail="Displayed balances are provisional while debt changes await confirmation. Unconfirmed payments are excluded from recorded activity and payment milestones."
+      />
+    </View>
+  ) : null;
+
   return (
+    <>
     <FinancialScreen
       title="Progress"
       segments={['Overview', 'Utilization', 'Milestones']}
       selected={tab}
-      onSelect={setTab}
+      onSelect={value => setTab(value === 'Utilization' || value === 'Milestones' ? value : 'Overview')}
       onSettings={onSettings}
-    >
-      {hasPending ? (
-        <View style={ui.row}>
-          <Text style={[ui.small, { color: appearanceColor('#F5C563', isLight), flex: 1 }]}>
-            Balances provisional · payments pending
-          </Text>
-          <InfoButton
-            label="Pending changes"
-            detail="Displayed balances are provisional while debt changes await confirmation. Unconfirmed payments are excluded from recorded activity and payment milestones."
-          />
-        </View>
-      ) : null}
-
-      {tab === 'Overview' ? (
+      renderSegment={segment => (
+        <>
+          {pendingNotice}
+          {segment === 'Overview' ? (
         <View style={{ gap: 12 }}>
-          <Card style={{ padding: 16, borderRadius: 20, gap: 16 }}>
-            <Text accessibilityRole="header" style={[ui.title, { fontSize: 22 }]}>
-              {progressHeading}
-            </Text>
-
-            <View
-              style={{
-                flexDirection: 'row',
-                backgroundColor: isInspire ? palette.tint : isLight ? '#EEF2F7' : '#181A1F',
-                borderRadius: 14,
-                padding: 4,
-                gap: 4,
-                borderWidth: 1,
-                borderColor: palette.border,
-              }}
-            >
-              {PERIOD_ITEMS.map(item => {
-                const active = period === item;
-                const activeBg = isLight ? palette.brand : accentColor === 'Cobalt' ? '#70CEFF' : palette.brand;
-                return (
-                  <Pressable
-                    key={item}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: active }}
-                    onPress={() => setPeriod(item)}
-                    style={{
-                      flex: 1,
-                      minHeight: 42,
-                      borderRadius: 10,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      paddingHorizontal: 6,
-                      backgroundColor: active ? activeBg : 'transparent',
-                    }}
-                  >
-                    <Text
-                      numberOfLines={1}
-                      adjustsFontSizeToFit
-                      minimumFontScale={0.85}
-                      style={{
-                        color: active ? palette.onBrand : palette.muted,
-                        fontSize: 15,
-                        fontWeight: active ? '800' : '700',
-                      }}
-                    >
-                      {item}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+          <Card style={{ padding: 14, borderRadius: 20, gap: 10 }}>
+            <InspireCornerArt kind="hero-overview" borderRadius={20} />
+            <View style={[ui.row, { justifyContent: 'space-between', gap: 8 }]}>
+              <Text accessibilityRole="header" style={{ color: palette.text, fontSize: 14, fontWeight: '800', letterSpacing: 0.5 }}>{periodTag}</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel={`Date, ${dateLabel}`} accessibilityState={{ expanded: showDate }} onPress={() => setShowDate(true)}
+                hitSlop={5} style={[ui.row, { minHeight: 34, borderRadius: 22, paddingHorizontal: 12, gap: 8, backgroundColor: palette.raised, borderColor: palette.cardBorder, borderWidth: isInspire ? 1.5 : 1 }]}>
+                <Text style={[ui.small, { color: palette.text, fontWeight: '700' }]}>{dateLabel}</Text>
+                <AppIcon name="chevronDown" size={12} color={palette.text} />
+              </Pressable>
             </View>
-
-            <View
-              style={{
-                backgroundColor: statusMeta.bannerBg,
-                borderRadius: 16,
-                paddingHorizontal: 14,
-                paddingVertical: 14,
+            <View style={{
+                paddingVertical: 6,
                 flexDirection: 'row',
                 alignItems: 'center',
                 justifyContent: 'space-between',
@@ -399,9 +378,9 @@ export function ProgressScreen({
               }}
             >
               <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
-                <Text style={[ui.title, { fontSize: 22, letterSpacing: -0.4 }]}>{statusMeta.title}</Text>
-                <Text style={{ color: statusMeta.accent, fontSize: 14, fontWeight: '600' }}>
-                  {statusMeta.subtitle}
+                <Text style={[ui.title, { fontSize: 26, fontWeight: '800', letterSpacing: -0.45 }]}>{statusMeta.title}</Text>
+                <Text style={{ color: palette.text, fontSize: 14, fontWeight: '600' }}>
+                  {isAhead && planDelta > 0 ? <><Text style={{ color: palette.posInk }}>{formatCurrency(planDelta, currencySymbol)}</Text> above your plan</> : statusMeta.subtitle}
                 </Text>
                 <View
                   style={{
@@ -412,120 +391,52 @@ export function ProgressScreen({
                     paddingHorizontal: 10,
                     paddingVertical: 5,
                     borderRadius: 999,
-                    backgroundColor: statusMeta.pillBg,
+                    backgroundColor: isInspire ? palette.selection : statusMeta.pillBg,
+                    borderWidth: isInspire ? 1.5 : 0,
+                    borderColor: palette.cardBorder,
                     marginTop: 2,
                   }}
                 >
                   <AppIcon name="brandRise" size={14} color={statusMeta.accent} />
-                  <Text style={{ color: palette.muted, fontSize: 13, fontWeight: '600' }}>{statusMeta.pill}</Text>
+                  <Text style={{ color: palette.text, fontSize: 12, fontWeight: '700' }}>{statusMeta.pill}</Text>
                 </View>
               </View>
-              <ProgressSpeedometer percent={gaugePercent} />
+              {!lifetime && plannedForPeriod > 0 ? <ProgressSpeedometer percent={gaugePercent} /> : null}
             </View>
 
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-              <View style={{ gap: 2, flex: 1 }}>
-                <View style={[ui.row, { gap: 4 }]}>
-                  <Text style={[ui.small, { fontSize: 14 }]}>Recorded</Text>
-                  <View style={{ marginVertical: -12 }}>
-                    <InfoButton
-                      color={palette.muted}
-                      label="Recorded activity"
-                      detail={
-                        'History coverage\nRecorded history may be incomplete. Recorded account payoff events are unavailable.\n\nPayment amounts\nTotal payments and balance reduction are different. Loan payments without a principal allocation may not reduce the balance.\n\nBalance changes\nNet change can include spending, refunds, fees and adjustments; not every component is shown as a separate row.'
-                      }
-                    />
-                  </View>
-                </View>
-                <AmountText
-                  style={[ui.title, { fontSize: 32, letterSpacing: -0.8, color: isLight ? '#087D42' : '#76DCB9' }]}
-                  value={formatCurrency(summary.totalPayments, currencySymbol)}
-                />
-                <Text style={[ui.small, { fontSize: 15 }]}>
-                  {period !== 'Lifetime' && plannedForPeriod > 0
-                    ? `${formatCurrency(plannedForPeriod, currencySymbol)} planned`
-                    : `${summary.transactionsCount} confirmed ${summary.transactionsCount === 1 ? 'entry' : 'entries'}`}
-                </Text>
-              </View>
-              <InspireQuote
-                slot="progressRecorded"
-                tiltDeg={-3}
-                color="#0B89A8"
-                style={{ maxWidth: 135, textAlign: 'right' }}
-              />
-            </View>
-
-            <View style={[ui.row, { gap: 10, alignItems: 'stretch' }]}>
-              <Card style={{ flex: 1, padding: 14, borderRadius: 14, gap: 8, shadowOpacity: 0, elevation: 0 }}>
-                <View
-                  style={{
-                    width: 30,
-                    height: 30,
-                    borderRadius: 15,
-                    backgroundColor: isLight ? '#F3EEFC' : 'rgba(167, 139, 250, 0.16)',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <AppIcon name="progress" size={15} color={appearanceColor('#A78BFA', isLight)} />
-                </View>
-                <Text style={[ui.small, { fontSize: 13, lineHeight: 17 }]}>Interest & Fees recorded</Text>
-                <AmountText
-                  style={[ui.heading, { fontSize: 18 }]}
-                  value={formatCurrency(summary.totalInterestAndFees, currencySymbol)}
-                />
+          </Card>
+          <View style={[ui.row, { gap: 8, alignItems: 'stretch' }]}>
+            {[
+              { label: 'Payments', amount: summary.totalPayments, color: palette.posInk },
+              { label: 'Budgeted', amount: lifetime ? null : plannedForPeriod, color: palette.text },
+              { label: 'Charges', amount: summary.newSpending + summary.totalInterestAndFees, color: palette.neg },
+            ].map(metric => (
+              <Card key={metric.label} style={{ flex: 1, minWidth: 0, padding: 10, gap: 5 }}>
+                 <Text style={[ui.small, { fontWeight: '700' }]}>{metric.label}</Text>
+                 <AmountText style={[ui.heading, { color: metric.color, fontSize: 19, fontWeight: '800' }]}
+                  value={metric.amount === null ? '—' : formatCurrency(metric.amount, currencySymbol)} />
               </Card>
-              <Card style={{ flex: 1, padding: 14, borderRadius: 14, gap: 8, shadowOpacity: 0, elevation: 0 }}>
-                <View
-                  style={{
-                    width: 30,
-                    height: 30,
-                    borderRadius: 15,
-                    backgroundColor: isLight ? '#EBF7F1' : 'rgba(118, 220, 185, 0.16)',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <AppIcon name="trendDown" size={15} color={appearanceColor('#76DCB9', isLight)} />
-                </View>
-                <Text style={[ui.small, { fontSize: 13, lineHeight: 17 }]}>Recorded balance change</Text>
-                <AmountText
-                  style={[ui.heading, { fontSize: 18 }]}
-                  value={
-                    (summary.netBalanceChange > 0 ? '+' : summary.netBalanceChange < 0 ? '−' : '') +
-                    formatCurrency(Math.abs(summary.netBalanceChange), currencySymbol)
-                  }
-                />
-              </Card>
+            ))}
+          </View>
+          <Card style={[ui.row, { padding: 14, gap: 10, justifyContent: 'space-between' }]}>
+            <View style={{ flex: 1, gap: 3 }}>
+              <Text style={ui.heading}>Net balance change</Text>
+              <Text style={ui.small}>{movementTotal < 0 ? 'Net debt reduction' : movementTotal > 0 ? 'Net debt increase' : 'No net change'}</Text>
             </View>
-
-            <View style={{ paddingTop: 4, gap: 6 }}>
-              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'baseline', paddingBottom: 6 }]}>
-                <Text style={[ui.heading, { fontSize: 17 }]}>Activity by account</Text>
-                <Text style={[ui.small, { fontSize: 13 }]}>
+             <AmountText style={[ui.heading, { fontSize: 23, fontWeight: '800', color: movementTotal < 0 ? palette.posInk : movementTotal > 0 ? palette.neg : palette.text }]}
+              value={`${movementTotal < 0 ? '↓ ' : movementTotal > 0 ? '↑ ' : ''}${signedAmount(movementTotal)}`} />
+          </Card>
+          <View style={{ gap: 8 }}>
+              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'baseline', paddingHorizontal: 2 }]}>
+                <Text style={[ui.heading, { fontSize: 17 }]}>Balance activity</Text>
+                <Text style={[ui.small, { fontSize: 13, color: palette.posInk, fontWeight: '700' }]}>
                   {accountActivities.length + (accountActivities.length === 1 ? ' account' : ' accounts')}
                 </Text>
               </View>
+            <Card style={{ gap: 10 }}>
               {accountActivities.length ? (
                 <View>
                   {accountActivities.map((item, idx) => {
-                    const debt = debts.find(d => d.id === item.accountId);
-                    const catColor =
-                      debt?.category === 'Credit card'
-                        ? appearanceColor('#76DCB9', isLight)
-                        : debt?.category === 'Auto loan'
-                        ? appearanceColor('#60A5FA', isLight)
-                        : debt?.category === 'Student loan'
-                        ? appearanceColor('#F5C563', isLight)
-                        : appearanceColor('#60A5FA', isLight);
-                    const catIcon: AppIconName =
-                      debt?.category === 'Credit card'
-                        ? 'creditCard'
-                        : debt?.category === 'Auto loan'
-                        ? 'auto'
-                        : debt?.category === 'Student loan'
-                        ? 'bolt'
-                        : 'homeLoan';
                     const netChange = item.netChange === 0 ? 0 : item.netChange;
                     return (
                       <View
@@ -535,25 +446,13 @@ export function ProgressScreen({
                           {
                             minHeight: 56,
                             paddingVertical: 8,
-                            borderTopWidth: idx === 0 ? StyleSheet.hairlineWidth : 0,
                             borderBottomWidth: idx < accountActivities.length - 1 ? StyleSheet.hairlineWidth : 0,
                             borderColor: palette.border,
                             gap: 12,
                           },
                         ]}
                       >
-                        <View
-                          style={{
-                            width: 38,
-                            height: 38,
-                            borderRadius: 19,
-                            backgroundColor: catColor + '18',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <AppIcon name={catIcon} size={18} color={catColor} />
-                        </View>
+                        <AccountMark name={item.accountName} category={item.category} />
                         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                           <Text numberOfLines={1} style={[ui.heading, { fontSize: 16 }]}>
                             {item.accountName}
@@ -578,7 +477,7 @@ export function ProgressScreen({
                                   : palette.text,
                             },
                           ]}
-                          value={(netChange > 0 ? '+' : netChange < 0 ? '−' : '') + formatCurrency(Math.abs(netChange), currencySymbol)}
+                          value={(netChange > 0 ? '↑ +' : netChange < 0 ? '↓ −' : '') + formatCurrency(Math.abs(netChange), currencySymbol)}
                         />
                       </View>
                     );
@@ -587,12 +486,13 @@ export function ProgressScreen({
               ) : (
                 <Text style={[ui.text, { paddingVertical: 10 }]}>No accounts tracked.</Text>
               )}
-            </View>
-          </Card>
+            </Card>
+          </View>
         </View>
-      ) : tab === 'Utilization' ? (
+      ) : segment === 'Utilization' ? (
         <View style={{ gap: 12 }}>
           <Card style={{ padding: 18, borderRadius: 20, gap: 10 }}>
+            <InspireCornerArt kind="hero-utilization" borderRadius={20} />
             {utilization.trackedCardsCount ? (
               <View style={[ui.row, { gap: 16, alignItems: 'center', justifyContent: 'space-between' }]}>
                 <View style={{ flex: 1, minWidth: 0 }}>
@@ -631,7 +531,12 @@ export function ProgressScreen({
                     style={{ width: 142, height: 142, alignItems: 'center', justifyContent: 'center' }}
                   >
                     <Svg width={142} height={142} viewBox="0 0 142 142" style={{ position: 'absolute' }}>
+                      {isInspire ? <Circle cx={71} cy={71} r={55} stroke={palette.graphOutline} strokeWidth={19} fill="none" /> : null}
                       <Circle cx={71} cy={71} r={55} stroke={availTrackColor} strokeWidth={16} fill="none" />
+                      {isInspire && donutPercent > 0 ? (
+                        <Circle cx={71} cy={71} r={55} stroke={palette.graphOutline} strokeWidth={19} strokeLinecap="round"
+                          fill="none" strokeDasharray={`${(donutCircumference * donutPercent) / 100} ${donutCircumference}`} rotation={-90} origin="71, 71" />
+                      ) : null}
                       {donutPercent > 0 ? (
                         <Circle
                           cx={71}
@@ -672,13 +577,12 @@ export function ProgressScreen({
 
           <View style={[ui.row, { gap: 10 }]}>
             <Card style={{ flex: 1, padding: 14, borderRadius: 16, gap: 6 }}>
-              <Text style={[ui.small, { fontSize: 13 }]}>Available credit</Text>
-              <AmountText
-                style={[ui.heading, { fontSize: 19 }]}
-                value={formatCurrency(utilization.availableCredit, currencySymbol)}
-              />
+              <InspireCornerArt kind="corner-wave" />
+              <Text style={[ui.small, { fontSize: 13 }]}>Missing credit limits</Text>
+              <Text style={[ui.heading, { fontSize: 19 }]}>{creditCards.length - utilization.trackedCardsCount}</Text>
             </Card>
             <Card style={{ flex: 1, padding: 14, borderRadius: 16, gap: 6 }}>
+              <InspireCornerArt kind="corner-ridge" />
               <Text style={[ui.small, { fontSize: 13 }]}>Cards tracked</Text>
               <Text style={[ui.heading, { fontSize: 19 }]}>{utilization.trackedCardsCount}</Text>
             </Card>
@@ -686,7 +590,7 @@ export function ProgressScreen({
 
           {creditCards.length ? (
             <View style={{ gap: 12 }}>
-              {creditCards.map((debt, index) => {
+              {creditCards.map(debt => {
                 const card = calculateCreditUtilization([debt], currencyCode);
                 const known = card.trackedCardsCount > 0;
                 const paydown = known ? Math.max(0, Math.max(0, debt.balance) - (debt.creditLimit ?? 0) * 0.3) : 0;
@@ -697,7 +601,6 @@ export function ProgressScreen({
                   palette.raised,
                   palette.border,
                 );
-                const iconColor = index % 2 === 0 ? appearanceColor('#60A5FA', isLight) : appearanceColor('#76DCB9', isLight);
                 const fillWidth = `${Math.max(0, Math.min(100, card.utilizationPercent))}%` as DimensionValue;
 
                 return (
@@ -720,18 +623,7 @@ export function ProgressScreen({
                     <Card style={{ padding: 16, borderRadius: 18, gap: 12 }}>
                       <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 10 }]}>
                         <View style={[ui.row, { flex: 1, minWidth: 0, gap: 10 }]}>
-                          <View
-                            style={{
-                              width: 38,
-                              height: 38,
-                              borderRadius: 19,
-                              backgroundColor: iconColor + '18',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                            }}
-                          >
-                            <AppIcon name="creditCard" size={19} color={iconColor} />
-                          </View>
+                          <AccountMark name={debt.name} category={debt.category} />
                           <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                             <Text numberOfLines={1} style={[ui.heading, { fontSize: 16 }]}>
                               {debt.name}
@@ -772,7 +664,9 @@ export function ProgressScreen({
                           style={{
                             height: 12,
                             borderRadius: 6,
-                            backgroundColor: isLight ? '#E8EEF5' : palette.raised,
+                            backgroundColor: palette.raised,
+                            borderWidth: isInspire ? 1 : 0,
+                            borderColor: palette.graphOutline,
                             position: 'relative',
                           }}
                         >
@@ -780,9 +674,11 @@ export function ProgressScreen({
                             <View
                               style={{
                                 width: fillWidth,
-                                height: 12,
+                                height: '100%',
                                 borderRadius: 6,
                                 backgroundColor: cardColors.barColor,
+                                borderWidth: isInspire ? 1 : 0,
+                                borderColor: palette.graphOutline,
                               }}
                             />
                           ) : null}
@@ -889,6 +785,7 @@ export function ProgressScreen({
       ) : (
         <View style={{ gap: 10 }}>
           <Card style={{ paddingHorizontal: 16, paddingVertical: 14, borderRadius: 18, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <InspireCornerArt kind="hero-milestones" borderRadius={18} />
             <AwardSeal earned={earnedCount > 0} size={68} />
             <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
               <Text style={[ui.small, { fontSize: 12, fontWeight: '700', letterSpacing: 0.5 }]}>YOUR PROGRESS</Text>
@@ -896,8 +793,30 @@ export function ProgressScreen({
                 {`${earnedCount} `}
                 <Text style={{ fontSize: 17, fontWeight: '500' }}>{earnedCount === 1 ? 'achievement' : 'achievements'}</Text>
               </Text>
-              <Text style={ui.small}>{inProgressCount + ' in progress · ' + lockedCount + ' locked'}</Text>
+              <Text style={ui.small}>{inProgressCount + ' in progress - ' + lockedCount + ' locked'}</Text>
             </View>
+          </Card>
+
+          <Card style={{ padding: 14, gap: 10 }}>
+            <InspireCornerArt kind="hero-paid" />
+            <View style={[ui.row, { justifyContent: 'space-between', gap: 8 }]}>
+              <Text accessibilityRole="header" style={[ui.heading, { flex: 1 }]}>Paid Off Accounts</Text>
+              <View style={{ borderRadius: 20, paddingHorizontal: 9, paddingVertical: 5, backgroundColor: palette.posSoft, borderWidth: isInspire ? 1.5 : 0, borderColor: palette.cardBorder }}>
+                <Text style={{ color: palette.posInk, fontWeight: '700' }}>{paidOffDebts.length} Paid Off</Text>
+              </View>
+            </View>
+            {paidOffDebts.length ? paidOffDebts.map(debt => (
+              <View key={debt.id} style={[ui.row, { gap: 9 }]}>
+                <AccountMark name={debt.name} category={debt.category} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={ui.heading}>{debt.name}</Text>
+                  {debt.originalBalance !== null && debt.originalBalance > 0 ? (
+                    <Text style={ui.small}>{formatCurrency(debt.originalBalance, currencySymbol)} original balance</Text>
+                  ) : null}
+                </View>
+                <AmountText style={[ui.heading, { color: palette.posInk }]} value={formatCurrency(debt.balance, currencySymbol)} />
+              </View>
+            )) : <Text style={ui.small}>No accounts marked paid off.</Text>}
           </Card>
 
           <Card style={{ padding: 16, borderRadius: 18, gap: 12 }}>
@@ -959,12 +878,12 @@ export function ProgressScreen({
                       </View>
                       <Text style={ui.small}>
                         {item.status === 'completed'
-                          ? 'Recorded' + (item.earnedDate ? ' · ' + item.earnedDate : '')
+                          ? 'Recorded' + (item.earnedDate ? ' - ' + item.earnedDate : '')
                           : item.id === 'first_1000'
                           ? formatCurrency(item.currentValue, currencySymbol) +
                             ' of ' +
                             formatCurrency(item.targetValue, currencySymbol) +
-                            ' · ' +
+                            ' - ' +
                             Math.max(0, item.percent) +
                             '%'
                           : 'Record your first payment'}
@@ -1016,7 +935,7 @@ export function ProgressScreen({
                   <Card style={{ padding: 14, borderRadius: 16, gap: 4 }}>
                     <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
                       <Text style={[ui.small, { fontSize: 12, fontWeight: '700', letterSpacing: 0.4 }]}>
-                        {nextUnlock?.id === currentGoal.id ? 'NEXT UNLOCK · CURRENT GOAL' : 'CURRENT GOAL'}
+                        {nextUnlock?.id === currentGoal.id ? 'NEXT UNLOCK - CURRENT GOAL' : 'CURRENT GOAL'}
                       </Text>
                       <View
                         style={{
@@ -1034,7 +953,7 @@ export function ProgressScreen({
                       </View>
                     </View>
                     <Text style={[ui.heading, { fontSize: 16 }]}>Credit utilization ≤ 30%</Text>
-                    <Text style={ui.small}>Current state · not a historical award</Text>
+                    <Text style={ui.small}>Current state - not a historical award</Text>
                   </Card>
                 );
               })()
@@ -1043,7 +962,7 @@ export function ProgressScreen({
           <Card style={{ padding: 14, borderRadius: 16, gap: 6 }}>
             <View style={{ gap: 2 }}>
               <Text style={[ui.heading, { fontSize: 16 }]}>Payoff milestones</Text>
-              <Text style={ui.small}>Locked · complete history needed</Text>
+              <Text style={ui.small}>Locked - complete history needed</Text>
             </View>
             {lockedHistory.map((item, idx) => (
               <View
@@ -1069,6 +988,11 @@ export function ProgressScreen({
           </Card>
         </View>
       )}
-    </FinancialScreen>
+        </>
+      )}
+    />
+    {showDate ? <PeriodDateSheet value={selectedPeriod} currentYear={currentYear} earliestYear={earliestYear}
+      onSelect={setPeriod} onClose={() => setShowDate(false)} /> : null}
+    </>
   );
 }

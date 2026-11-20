@@ -20,9 +20,10 @@ import {
   PAY_FREQUENCY_OPTIONS,
   REFERRAL_SOURCES,
   SIGNUP_GOALS,
-  calculatePayoffPlan,
   calculateTotalMonthlyIncome,
+  comparePayoffStrategies,
   formatCurrency,
+  homeDebtFreeEstimateDate,
   normalizeMonthlyIncome,
   parseMoneyInput,
   validateDebtDraft,
@@ -37,6 +38,7 @@ import {
   type DebtCategory,
   type DebtItem,
   type FlowStage,
+  type HomeOwnershipStatus,
   type PayFrequency,
   type PayoffStrategy,
   type UserOnboardingData,
@@ -71,6 +73,7 @@ import { prepareUnifiedLoanSettings } from './finance/unified-loan';
 import { parseMoney, type Money } from './finance/money';
 import { type DateOnly, currentHouseholdDate } from './finance/calendar';
 import {
+  chooseObligationDueDateEdit,
   confirmObligationPaidToday,
   obligationFirstDueDate,
   prepareObligationEditorSchedule,
@@ -228,7 +231,7 @@ const DEBT_CATEGORY_DROPDOWN_OPTIONS: readonly DropdownOption<DebtCategory>[] = 
 }));
 
 export function DebtFreeFlow(props: Props) {
-  return <NativeAppearanceProvider themePreference="System" userId={props.session?.user.id}><DebtFreeFlowContent {...props} /></NativeAppearanceProvider>;
+  return <NativeAppearanceProvider userId={props.session?.user.id}><DebtFreeFlowContent {...props} /></NativeAppearanceProvider>;
 }
 
 function DebtFreeFlowContent({
@@ -832,14 +835,16 @@ function DebtFreeFlowContent({
     }
   };
 
-  const payoffPlan = useMemo(() => {
-    if (!onboardingData) return null;
+  const { payoffPlan, strategyComparison } = useMemo(() => {
+    if (!onboardingData) return { payoffPlan: null, strategyComparison: null };
     const parsedExtra = parseMoneyInput(extraPaymentInput, currencyCode);
     const effectiveExtra =
       stage === 'onboard_4' && parsedExtra !== null
         ? parsedExtra
         : onboardingData.extraMonthlyPayment;
-    return calculatePayoffPlan(onboardingData.debts, onboardingData.strategy, effectiveExtra, new Date(), currencyCode, onboardingData.householdTimeZone ?? 'UTC', onboardingData.archivedPaidOffDebtIds);
+    const tz = onboardingData.householdTimeZone ?? 'UTC';
+    const comparison = comparePayoffStrategies(onboardingData.debts, onboardingData.strategy, effectiveExtra, new Date(), currencyCode, tz, onboardingData.archivedPaidOffDebtIds);
+    return { payoffPlan: comparison.activePlan, strategyComparison: comparison };
   }, [onboardingData, extraPaymentInput, stage, currencyCode]);
 
   const clearErrors = () => {
@@ -987,6 +992,9 @@ function DebtFreeFlowContent({
         draftDebtPaidTodayRef.current[debtId] = answer;
       }
 
+      const dateEdit = existingDebt && dueDay !== null ? await chooseObligationDueDateEdit({
+        current: onboardingData, today, dueDay, currencyCode, transactions, recurringBills, debt: existingDebt,
+      }) : undefined;
       const debtUnchanged = Boolean(existingDebt && existingDebt.name === validation.debt.name &&
         existingDebt.category === validation.debt.category && existingDebt.balance === validation.debt.balance &&
         existingDebt.originalBalance === validation.debt.originalBalance && existingDebt.apr === validation.debt.apr &&
@@ -1005,6 +1013,7 @@ function DebtFreeFlowContent({
         today,
         currency: currencyCode,
         paidToday,
+        dateEdit,
       }) : undefined;
       const updated = !unified && debtUnchanged ? onboardingData : await upsertUserDebt(onboardingData, debtInput, loanSettings, recurringBills.find(bill => bill.id === onboardingData.loanBillPairingByDebtId?.[debtId]?.billId));
       onUpdateOnboardingData(updated);
@@ -1032,7 +1041,7 @@ function DebtFreeFlowContent({
             ? parseMoney(String(existingDebt.minimumPayment), currencyCode)
             : undefined,
           createdAt: existingDebt?.createdAt ?? settingsData.debts.find(d => d.id === debtId)?.createdAt ?? new Date().toISOString(),
-          isNew: isDraftDebt, paidToday, existing: priorSchedule,
+          isNew: isDraftDebt, paidToday, existing: priorSchedule, ...dateEdit,
         });
         const settings = await saveObligationEditorSchedule({ current: settingsData, key, schedule, session });
         settingsData = settings;
@@ -1756,7 +1765,7 @@ function DebtFreeFlowContent({
 
           <View style={[styles.calloutTeal, { marginTop: 28 }]}>
             <Text style={styles.calloutTealText}>
-              Next, we’ll personalize your debt payoff plan in five short steps.
+              Next, we’ll personalize your debt payoff plan in four short steps.
             </Text>
           </View>
 
@@ -1887,7 +1896,15 @@ function DebtFreeFlowContent({
               </Text>
             </View>
 
-            <Text style={styles.fieldLabel}>Monthly take-home income *</Text>
+            <Text style={styles.fieldLabel}>
+              {onboardingData.primaryPayFrequency === 'weekly'
+                ? 'Weekly take-home income *'
+                : onboardingData.primaryPayFrequency === 'biweekly'
+                  ? 'Biweekly take-home income *'
+                  : onboardingData.primaryPayFrequency === 'twice_monthly'
+                    ? 'Twice-monthly take-home income *'
+                    : 'Monthly take-home income *'}
+            </Text>
             <View style={styles.bigFieldBox}>
               <Text style={styles.bigFieldPrefix}>{currencySymbol}</Text>
               <TextInput
@@ -2161,7 +2178,24 @@ function DebtFreeFlowContent({
               </Text>
             </View>
 
-            <Text style={styles.splitLabel}>Your vehicle</Text>
+            <Text style={styles.splitLabel}>Your home</Text>
+            <View style={styles.splitGrid3}>
+              {(['Own', 'Rent', 'Other'] as HomeOwnershipStatus[]).map(status => (
+                <ChoiceButton
+                  key={status}
+                  label={status}
+                  compact
+                  flex
+                  selected={onboardingData.homeStatus === status}
+                  onPress={() => {
+                    clearErrors();
+                    onUpdateOnboardingData({ ...onboardingData, homeStatus: status });
+                  }}
+                />
+              ))}
+            </View>
+
+            <Text style={[styles.splitLabel, { marginTop: 14 }]}>Your vehicle</Text>
             <View style={styles.splitGrid4}>
               {(['Finance', 'Lease', 'Own', 'None'] as VehicleOwnershipStatus[]).map(status => (
                 <ChoiceButton
@@ -2346,6 +2380,19 @@ function DebtFreeFlowContent({
                   <Text style={styles.fieldLabelSmall}>{`First due date: ${obligationFirstDueDate(Number(debtDueDay), currentHouseholdDate(onboardingData.householdTimeZone), currencyCode)}`}</Text>
                 ) : null}
 
+                <Text style={styles.fieldLabelSmall}>
+                  Original balance ({currencySymbol}, optional)
+                </Text>
+                <TextInput
+                  accessibilityLabel="Original balance"
+                  style={styles.textInputField}
+                  keyboardType="decimal-pad"
+                  value={debtOriginalBalance}
+                  onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                  placeholder="25000.00"
+                  placeholderTextColor={palette.muted}
+                />
+
                 {debtCategory === 'Credit card' ? (
                   <>
                     <Text style={styles.fieldLabelSmall}>Credit limit ({currencySymbol}, optional)</Text>
@@ -2359,22 +2406,7 @@ function DebtFreeFlowContent({
                       placeholderTextColor={palette.muted}
                     />
                   </>
-                ) : (
-                  <>
-                    <Text style={styles.fieldLabelSmall}>
-                      Original loan balance ({currencySymbol}, optional)
-                    </Text>
-                    <TextInput
-                      accessibilityLabel="Original loan balance"
-                      style={styles.textInputField}
-                      keyboardType="decimal-pad"
-                      value={debtOriginalBalance}
-                      onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                      placeholder="25000.00"
-                      placeholderTextColor={palette.muted}
-                    />
-                  </>
-                )}
+                ) : null}
 
                 <View style={[styles.choiceGrid2, { marginTop: 14 }]}>
                   <Pressable
@@ -2702,8 +2734,70 @@ function DebtFreeFlowContent({
         <ProgressHeader label="Setup" step={4} total={4} onBack={() => onChangeStage('onboard_4')} />
         <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
           <View style={[styles.introBox, styles.introCompact]}>
-            <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">You’re ready to get started</Text>
-            <Text style={styles.introSubtitle}>Upcoming bills and account status are available in the app. Background notifications are not available yet.</Text>
+            <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">Your payoff plan is ready</Text>
+            <Text style={styles.introSubtitle}>Review your tracked-account forecast below. You can adjust accounts or extra payments anytime.</Text>
+          </View>
+
+          {payoffPlan && strategyComparison ? (
+            <View style={{ gap: 10 }}>
+              <View style={styles.strategyPreviewCard}>
+                <Text style={styles.strategyPreviewHeading}>
+                  {`Payoff Plan Summary · ${onboardingData.strategy === 'avalanche' ? 'Avalanche' : 'Snowball'}`}
+                </Text>
+                <View style={styles.summaryRowBox}>
+                  <Text style={styles.summaryRowLabel}>Estimated payoff</Text>
+                  <Text style={styles.summaryRowValue}>
+                    {payoffPlan.monthsToPayoff === null
+                      ? payoffPlan.debtFreeDateLabel
+                      : `${homeDebtFreeEstimateDate(payoffPlan.debtFreeDateLabel)} (${payoffPlan.monthsToPayoff} mo)`}
+                  </Text>
+                </View>
+                <View style={styles.summaryRowBox}>
+                  <Text style={styles.summaryRowLabel}>Monthly commitment</Text>
+                  <Text style={styles.summaryRowValue}>
+                    {`${formatCurrency(payoffPlan.monthlyTotalPayment, currencyCode)}/mo`}
+                  </Text>
+                </View>
+                {strategyComparison.interestSavedVsMinimums !== null && (strategyComparison.interestSavedVsMinimums > 0 || (strategyComparison.monthsSavedVsMinimums ?? 0) > 0) ? (
+                  <View style={[styles.calloutTeal, { marginTop: 10 }]}>
+                    <Text style={styles.calloutTealText}>
+                      {`Saves ${formatCurrency(strategyComparison.interestSavedVsMinimums, currencyCode)} in interest and ${strategyComparison.monthsSavedVsMinimums ?? 0} months vs. minimums only.`}
+                    </Text>
+                  </View>
+                ) : strategyComparison.minimumsOnly.stalled && !payoffPlan.stalled ? (
+                  <View style={[styles.calloutTeal, { marginTop: 10 }]}>
+                    <Text style={styles.calloutTealText}>
+                      Minimum payments alone would not clear these balances — your extra monthly commitment puts you on track for payoff.
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {payoffPlan.payoffOrder.length > 1 ? (
+                <View style={styles.strategyPreviewCard}>
+                  <Text style={styles.strategyPreviewHeading}>SNOWBALL VS. AVALANCHE</Text>
+                  <Text style={styles.strategyPreviewLine}>
+                    {`Snowball: ${strategyComparison.snowball.monthsToPayoff ?? '—'} mo · ${formatCurrency(strategyComparison.snowball.totalInterest, currencyCode)} interest`}
+                  </Text>
+                  <Text style={styles.strategyPreviewLine}>
+                    {`Avalanche: ${strategyComparison.avalanche.monthsToPayoff ?? '—'} mo · ${formatCurrency(strategyComparison.avalanche.totalInterest, currencyCode)} interest`}
+                  </Text>
+                  {strategyComparison.avalancheInterestSavingsVsSnowball !== null ? (
+                    <Text style={[styles.strategyPreviewLine, { marginTop: 4, fontWeight: '700' }]}>
+                      {strategyComparison.avalancheInterestSavingsVsSnowball > 0
+                        ? `Avalanche saves ${formatCurrency(strategyComparison.avalancheInterestSavingsVsSnowball, currencyCode)} more interest${strategyComparison.avalancheMonthsSavedVsSnowball ? ` (${strategyComparison.avalancheMonthsSavedVsSnowball} mo faster)` : ''}.`
+                        : 'Both methods result in the same total interest for your accounts.'}
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          <View style={[styles.calloutTeal, { marginTop: 14 }]}>
+            <Text style={styles.calloutTealText}>
+              Upcoming bills and account status are available in the app. Background notifications are not available yet.
+            </Text>
           </View>
           {!!localError ? <Text style={styles.errorText} accessibilityRole="alert">{localError}</Text> : null}
         </ScrollView>

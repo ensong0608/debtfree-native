@@ -66,3 +66,12 @@ Per [`AGENTS.md`](file:///C:/Users/lawre/OneDrive/Desktop/DF_App_Development/deb
 1. **Strictly Confine Edits**: Only modify files explicitly listed in the task definition. Do not refactor adjacent files or "clean up" unrelated formatting.
 2. **No Unnecessary Testing**: Do NOT execute full test suites (`npm test`), boot up Android emulators, or trigger full APK builds unless the task specifically requires it. Run only the targeted unit test or `npm run typecheck`.
 3. **Fail-Closed on Blockers**: If authentication, OAuth credentials, or missing third-party keys block progress, immediately stop, mark `TRACKER.md` as `BLOCKED`, and request user intervention.
+
+---
+
+## 5. Memory, CBM & Strict Read Budget (Mandatory for All Managers & Workers)
+
+1. Read `C:\Development\AI-Infrastructure\memory\debtfree-native\{PROJECT_OVERVIEW.md,CURRENT_TASK.md,HANDOFF.md,KNOWN_ISSUES.md}` before scanning code.
+2. NEVER chunk-read files `>200` lines (`0..799`) or run `Get-ChildItem -Recurse`. Use `cbm <search_graph|get_file_outline|get_code_snippet|trace_path> --project "C-Users-lawre-OneDrive-Desktop-DF_App_Development-debtfree-native"` first, then `Read` `<=120`-line slices only.
+3. Managers delegating to Workers MUST split module scope and include `cbm` + `<=120`-line limits in every `delegate_task` prompt.
+4. Update `CURRENT_TASK.md`, `HANDOFF.md` (`End-of-Session Self-Check`), and `KNOWN_ISSUES.md` (`Recurring Pitfalls`, cap `<=10`) before closing.

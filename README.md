@@ -2,6 +2,8 @@
 
 Native Android and iOS app. The first section is sign-in. This repository is independent from the DebtFree web application.
 
+See [BitLess app capabilities](APP_CAPABILITIES.md) for what users can do today and the current limits for comparing BitLess with other apps.
+
 ## Status
 
 **Draft. Google PKCE sign-in, chunked SecureStore persistence, server-verified session restoration, background/foreground re-validation, offline recovery, sign-out, Sign-Up (Steps 1–4), Onboarding (Setup Steps 1–5), sandbox Supabase `public.debts` + `user_metadata` persistence, and the Home Dashboard are verified on Android (`DebtFree_Pixel_API_36`) against the designated sandbox Supabase project (`bitepxsdujceoszbldhd`). Native Apple sign-in on iOS remains unverified.** Do not use the existing web production project or any real household data. No app store deployment is configured.

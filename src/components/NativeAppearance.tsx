@@ -2,69 +2,129 @@ import React, { createContext, forwardRef, useContext, useEffect, useRef, useSta
 import { Pressable as NativePressable, ScrollView as NativeScrollView, StyleSheet, Switch as NativeSwitch, Text as NativeText, TextInput as NativeTextInput, View as NativeView, useColorScheme, type PressableProps, type ScrollViewProps, type SwitchProps, type TextInputProps, type TextProps, type ViewProps } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
-import { palettes, defaultAccentColor, accentActionColors, type AccentColor, type AppearancePalette, type ThemePreference } from './appearance-theme';
-export type { AccentColor, AppearancePalette, ThemePreference } from './appearance-theme';
+import {
+  appearanceStorageKeys, DEFAULT_APPEARANCE, defaultAccentColor, getAppearancePalette,
+  isLightMode, resolveAppearancePreferences, type AccentColor, type AppearancePalette,
+  type AppearancePreferences, type ThemeMode, type ThemeStyle,
+} from './appearance-theme';
+export type { AccentColor, AppearancePalette, ThemeMode, ThemeStyle } from './appearance-theme';
 
-type Appearance = { isLight: boolean; isInspire: boolean; textScaling: boolean; setTextScaling: (enabled: boolean) => void; appearanceError: string | null; palette: AppearancePalette; accentColor: AccentColor; setAccentColor: (color: AccentColor) => Promise<void>; ctaBg: string; ctaFg: string };
-const AppearanceContext = createContext<Appearance>({ isLight: false, isInspire: false, textScaling: true, setTextScaling: () => {}, appearanceError: null, palette: palettes[defaultAccentColor].dark, accentColor: defaultAccentColor, setAccentColor: async () => {}, ctaBg: '#0051FB', ctaFg: '#FFFFFF' });
+type Appearance = {
+  isLight: boolean; isInspire: boolean; textScaling: boolean; setTextScaling: (enabled: boolean) => void;
+  appearanceError: string | null; palette: AppearancePalette; themeStyle: ThemeStyle; themeMode: ThemeMode;
+  accentColor: AccentColor; setAccentColor: (color: AccentColor) => Promise<void>;
+  setThemeStyle: (style: ThemeStyle) => Promise<void>; setThemeMode: (mode: ThemeMode) => Promise<void>;
+  ctaBg: string; ctaFg: string;
+};
+const initialPalette = getAppearancePalette('Fresh', defaultAccentColor, false);
+const AppearanceContext = createContext<Appearance>({
+  isLight: false, isInspire: false, textScaling: true, setTextScaling: () => {}, appearanceError: null,
+  palette: initialPalette, themeStyle: 'Fresh', themeMode: 'System', accentColor: defaultAccentColor,
+  setAccentColor: async () => {}, setThemeStyle: async () => {}, setThemeMode: async () => {},
+  ctaBg: initialPalette.brand, ctaFg: initialPalette.onBrand,
+});
 export const useNativeAppearance = () => useContext(AppearanceContext);
 const scalingKey = (id: string) => `debtfree-pref-text-scaling.${id.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+const preferenceWrites = new Map<string, Promise<AppearancePreferences>>();
+const secureOptions = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
 
-const accentKey = (id: string) => `debtfree-pref-accent.${Array.from(id).map(c => c.codePointAt(0)!.toString(16)).join('-')}`;
-const accentWrites = new Map<string, Promise<void>>();
+async function loadAppearance(userId: string) {
+  const keys = appearanceStorageKeys(userId);
+  const [stored, legacyTheme, legacyAccent] = await Promise.all([
+    SecureStore.getItemAsync(keys.preferences),
+    SecureStore.getItemAsync(keys.legacyTheme),
+    SecureStore.getItemAsync(keys.legacyAccent),
+  ]);
+  const fallbackAccent = legacyAccent ?? await SecureStore.getItemAsync(keys.legacyPlainAccent);
+  return resolveAppearancePreferences(stored, legacyTheme, fallbackAccent);
+}
 
-export function NativeAppearanceProvider({ themePreference, userId, children }: { themePreference: ThemePreference; userId?: string; children: React.ReactNode }) {
+export function NativeAppearanceProvider({ userId, children }: { userId?: string; children: React.ReactNode }) {
   const scheme = useColorScheme();
   const [scalingState, setScalingState] = useState<{ userId?: string; enabled: boolean }>({ userId, enabled: true });
-  const revision = useRef(0);
-  const [accentState, setAccentState] = useState<{ userId?: string; color: AccentColor }>({ userId, color: defaultAccentColor });
-  const accentRevision = useRef(0);
-  const [appearanceErrorState, setAppearanceErrorState] = useState<{ userId?: string; message: string | null }>({ userId, message: null });
+  const scalingRevision = useRef(0);
+  const [state, setState] = useState<{ userId?: string; preferences: AppearancePreferences }>({ userId, preferences: DEFAULT_APPEARANCE });
+  const [errorState, setErrorState] = useState<{ userId?: string; message: string | null }>({ userId, message: null });
+  const activeUser = useRef(userId);
+  const preferenceRevision = useRef(0);
+
   useEffect(() => {
-    const current = ++accentRevision.current;
+    activeUser.current = userId;
     let active = true;
+    const revision = ++preferenceRevision.current;
     if (userId) void (async () => {
-      await accentWrites.get(userId)?.catch(() => {});
-      const value = await SecureStore.getItemAsync(accentKey(userId));
-      if (active && accentRevision.current === current && (value === 'Indigo' || value === 'Cobalt')) setAccentState({ userId, color: value });
-    })().catch(() => { if (active && accentRevision.current === current) setAppearanceErrorState({ userId, message: 'Unable to load accent color.' }); });
-    return () => { active = false; };
+      await preferenceWrites.get(userId)?.catch(() => {});
+      const preferences = await loadAppearance(userId);
+      if (active && revision === preferenceRevision.current) setState({ userId, preferences });
+    })().catch(() => {
+      if (active && revision === preferenceRevision.current) setErrorState({ userId, message: 'Unable to load appearance settings.' });
+    });
+    return () => {
+      active = false;
+      activeUser.current = undefined;
+    };
   }, [userId]);
-  const setAccentColor = async (color: AccentColor) => {
-    if (!userId) throw new Error('Sign in to save an accent color.');
-    const current = ++accentRevision.current;
-    const previous = accentWrites.get(userId) ?? Promise.resolve();
-    const write = previous.catch(() => {}).then(() => SecureStore.setItemAsync(accentKey(userId), color, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }));
-    accentWrites.set(userId, write);
+
+  const updatePreferences = async (change: Partial<AppearancePreferences>) => {
+    if (!userId) throw new Error('Sign in to save appearance settings.');
+    const revision = ++preferenceRevision.current;
+    const queued = preferenceWrites.get(userId);
+    const write = (async () => {
+      const previous = await queued?.catch(() => null) ?? await loadAppearance(userId);
+      const preferences = { ...previous, ...change };
+      await SecureStore.setItemAsync(appearanceStorageKeys(userId).preferences, JSON.stringify(preferences), secureOptions);
+      return preferences;
+    })();
+    preferenceWrites.set(userId, write);
     try {
-      await write;
-      if (accentRevision.current === current) {
-        setAccentState({ userId, color });
-        setAppearanceErrorState({ userId, message: null });
+      const preferences = await write;
+      if (activeUser.current === userId && revision === preferenceRevision.current) {
+        setState({ userId, preferences });
+        setErrorState({ userId, message: null });
       }
-    } finally { if (accentWrites.get(userId) === write) accentWrites.delete(userId); }
+    } catch (error) {
+      if (activeUser.current === userId && revision === preferenceRevision.current) {
+        const lastSaved = await loadAppearance(userId).catch(() => null);
+        if (activeUser.current === userId && revision === preferenceRevision.current) {
+          if (lastSaved) setState({ userId, preferences: lastSaved });
+          setErrorState({ userId, message: 'Unable to save appearance settings.' });
+        }
+      }
+      throw error;
+    } finally {
+      if (preferenceWrites.get(userId) === write) preferenceWrites.delete(userId);
+    }
   };
+
   useEffect(() => {
-    const current = ++revision.current;
+    const revision = ++scalingRevision.current;
     let active = true;
     if (userId) void SecureStore.getItemAsync(scalingKey(userId)).then(value => {
-      if (active && revision.current === current && value !== null) setScalingState({ userId, enabled: value !== 'false' });
+      if (active && scalingRevision.current === revision) setScalingState({ userId, enabled: value !== 'false' });
     }).catch(() => {});
     return () => { active = false; };
   }, [userId]);
   const setTextScaling = (enabled: boolean) => {
-    revision.current++;
+    scalingRevision.current++;
     setScalingState({ userId, enabled });
-    if (userId) void SecureStore.setItemAsync(scalingKey(userId), String(enabled), { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }).catch(() => {});
+    if (userId) void SecureStore.setItemAsync(scalingKey(userId), String(enabled), secureOptions).catch(() => {});
   };
-  const isInspire = themePreference === 'Inspire';
-  const isLight = isInspire || themePreference === 'Light' || (themePreference === 'System' && scheme === 'light');
-  const textScaling = scalingState.userId === userId ? scalingState.enabled : true;
-  const accentColor = accentState.userId === userId ? accentState.color : defaultAccentColor;
-  const appearanceError = appearanceErrorState.userId === userId ? appearanceErrorState.message : null;
-  const palette = palettes[accentColor][isInspire ? 'inspire' : isLight ? 'light' : 'dark'];
-  const { bg: ctaBg, fg: ctaFg } = accentActionColors(accentColor, palette, isInspire);
-  return <AppearanceContext.Provider value={{ isLight, isInspire, textScaling, setTextScaling, appearanceError, palette, accentColor, setAccentColor, ctaBg, ctaFg }}><StatusBar style={isLight ? 'dark' : 'light'} />{children}</AppearanceContext.Provider>;
+
+  const { style: themeStyle, mode: themeMode, accent: accentColor } = state.userId === userId ? state.preferences : DEFAULT_APPEARANCE;
+  const isInspire = themeStyle === 'Inspire';
+  const isLight = isLightMode(themeMode, scheme);
+  const palette = getAppearancePalette(themeStyle, accentColor, isLight);
+  const appearance: Appearance = {
+    themeStyle, themeMode, accentColor, isInspire, isLight, palette,
+    appearanceError: errorState.userId === userId ? errorState.message : null,
+    textScaling: scalingState.userId === userId ? scalingState.enabled : true,
+    setTextScaling,
+    setThemeStyle: style => updatePreferences({ style }),
+    setThemeMode: mode => updatePreferences({ mode }),
+    setAccentColor: accent => updatePreferences({ accent }),
+    ctaBg: palette.brand, ctaFg: palette.onBrand,
+  };
+  return <AppearanceContext.Provider value={appearance}><StatusBar style={isLight ? 'dark' : 'light'} />{children}</AppearanceContext.Provider>;
 }
 
 // Explicit mappings keep brand and status hues meaningful while translating the dark surface palette.
@@ -85,10 +145,6 @@ const lightColors: Record<string, string> = {
   '#f9f9f6':'#182820', '#d8dfda':'#263b31', '#d4dbd7':'#263b31', '#d5ddd8':'#263b31', '#aab3ad':'#53665b', '#b5bdb7':'#53665b', '#8a9690':'#596d62', '#8e9992':'#596d62', '#7e8982':'#596d62', '#6e7571':'#596d62',
   '#81dfd2':'#087d6f', '#73d9c6':'#087d6f', '#f2c94c':'#8a6200', '#e5a93c':'#8a6200', '#e3a088':'#a34029', '#ff9367':'#a34029', '#ff7a59':'#a34029', '#ff9b82':'#a34029',
 };
-const inspireColors: Record<string, string> = {
-  ...lightColors,
-  '#76dcb9':'#149E75', '#86e3b8':'#149E75', '#60a5fa':'#0A85A5', '#2dd4bf':'#0EA5C6', '#a78bfa':'#7B5CE5', '#f5c563':'#C6840C', '#f08b78':'#D9534F',
-};
 const neutralTokens: Record<string, keyof AppearancePalette> = {};
 for (const color of ['#0c0e0d', '#1f201f', '#1b1e1c']) neutralTokens[color] = 'canvas';
 for (const color of ['#141816', '#121614', '#191e1b', '#191f1c', '#1e2522', '#242926', '#222724', '#252a27', '#262927', '#272d2a', '#292d2b', '#232c28', '#212623']) neutralTokens[color] = 'surface';
@@ -102,8 +158,10 @@ for (const color of ['#a6b2aa', '#728078', '#77847d', '#aab3ad', '#b5bdb7', '#8a
 export function appearanceColor(color: string, isLight: boolean, accentColor: AccentColor = defaultAccentColor, isInspire = false): string {
   const key = color.toLowerCase();
   const token = neutralTokens[key];
-  if (token) return palettes[accentColor][isInspire ? 'inspire' : isLight ? 'light' : 'dark'][token];
-  if (isInspire) return inspireColors[key] ?? color;
+  const palette = getAppearancePalette(isInspire ? 'Inspire' : 'Fresh', accentColor, isLight);
+  if (token) return palette[token];
+  if (key === '#86e3b8') return palette.posInk;
+  if (key === '#f08b78') return palette.neg;
   return isLight ? lightColors[key] ?? color : color;
 }
 function mapStyle<T>(style: T, isLight: boolean, accentColor: AccentColor, isInspire: boolean): T {
@@ -119,14 +177,34 @@ function mapStyle<T>(style: T, isLight: boolean, accentColor: AccentColor, isIns
 }
 export const View = forwardRef<React.ComponentRef<typeof NativeView>, ViewProps>(({ style, ...props }, ref) => { const { isLight, isInspire, accentColor } = useNativeAppearance(); return <NativeView ref={ref} {...props} style={mapStyle(style, isLight, accentColor, isInspire)} />; });
 View.displayName = 'NativeAppearanceView';
-export const Text = forwardRef<React.ComponentRef<typeof NativeText>, TextProps>(({ style, ...props }, ref) => { const { isLight, isInspire, textScaling, accentColor } = useNativeAppearance(); return <NativeText ref={ref} {...props} allowFontScaling={textScaling} style={mapStyle(style, isLight, accentColor, isInspire)} />; });
+type FontWeight = 'regular' | 'medium' | 'bold';
+const InheritedFontWeight = createContext<FontWeight>('regular');
+function montserratStyle(style: TextProps['style'], inherited: FontWeight) {
+  const flattened = StyleSheet.flatten(style);
+  const weight = flattened?.fontWeight;
+  const numeric = weight === 'bold' ? 700 : weight === 'normal' ? 400 : Number(weight);
+  const resolved: FontWeight = weight == null ? inherited : numeric >= 600 ? 'bold' : numeric >= 500 ? 'medium' : 'regular';
+  const family = resolved === 'bold' ? 'Montserrat_700Bold' : resolved === 'medium' ? 'Montserrat_500Medium' : 'Montserrat_400Regular';
+  return { resolved, style: flattened?.fontFamily ? { fontFamily: flattened.fontFamily, fontWeight: weight } : { fontFamily: family, fontWeight: 'normal' as const } };
+}
+export const FontText = forwardRef<React.ComponentRef<typeof NativeText>, TextProps>(({ style, children, ...props }, ref) => {
+  const inherited = useContext(InheritedFontWeight);
+  const font = montserratStyle(style, inherited);
+  return <NativeText ref={ref} {...props} style={[style, font.style]}><InheritedFontWeight.Provider value={font.resolved}>{children}</InheritedFontWeight.Provider></NativeText>;
+});
+FontText.displayName = 'MontserratText';
+export const Text = forwardRef<React.ComponentRef<typeof NativeText>, TextProps>(({ style, ...props }, ref) => {
+  const { isLight, isInspire, textScaling, accentColor } = useNativeAppearance();
+  return <FontText ref={ref} {...props} allowFontScaling={textScaling} style={mapStyle(style, isLight, accentColor, isInspire)} />;
+});
 Text.displayName = 'NativeAppearanceText';
 export const TextInput = forwardRef<React.ComponentRef<typeof NativeTextInput>, TextInputProps>(({ style, placeholderTextColor, ...props }, ref) => {
   const { isLight, isInspire, textScaling, accentColor, palette } = useNativeAppearance();
   const color = typeof placeholderTextColor === 'string' ? appearanceColor(placeholderTextColor, isLight, accentColor, isInspire) : placeholderTextColor;
   const border = StyleSheet.flatten(style)?.borderColor;
   const neutralBorder = typeof border === 'string' && Boolean(neutralTokens[border.toLowerCase()]);
-  return <NativeTextInput ref={ref} {...props} allowFontScaling={textScaling} placeholderTextColor={color} style={[mapStyle(style, isLight, accentColor, isInspire), neutralBorder && { borderColor: palette.inputBorder }]} />;
+  const font = montserratStyle(style, 'regular');
+  return <NativeTextInput ref={ref} {...props} allowFontScaling={textScaling} placeholderTextColor={color} style={[mapStyle(style, isLight, accentColor, isInspire), neutralBorder && { borderColor: palette.inputBorder }, font.style]} />;
 });
 TextInput.displayName = 'NativeAppearanceTextInput';
 export const Pressable = forwardRef<React.ComponentRef<typeof NativePressable>, PressableProps>(({ style, ...props }, ref) => { const { isLight, isInspire, accentColor } = useNativeAppearance(); return <NativePressable ref={ref} {...props} style={typeof style === 'function' ? state => mapStyle(style(state), isLight, accentColor, isInspire) : mapStyle(style, isLight, accentColor, isInspire)} />; });

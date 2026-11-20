@@ -217,7 +217,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     borderColor: '#353D38',
     borderRadius: 9,
-    minHeight: 44,
+    minHeight: 36,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },

@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Modal, StyleSheet, type ModalProps } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, StyleSheet, type ModalProps } from 'react-native';
 import { View } from './NativeAppearance';
 
 type OverlayEntry = {
@@ -154,10 +154,12 @@ export function AdaptiveModal({
       }}
     >
       <ModalOverlayContext.Provider value={store}>
-        <View style={{ flex: 1 }}>
-          {children}
-          <OverlayOutlet store={store} />
-        </View>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <View style={{ flex: 1 }}>
+            {children}
+            <OverlayOutlet store={store} />
+          </View>
+        </KeyboardAvoidingView>
       </ModalOverlayContext.Provider>
     </Modal>
   );

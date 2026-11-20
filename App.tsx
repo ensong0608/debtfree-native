@@ -7,10 +7,10 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { useFonts, Montserrat_400Regular, Montserrat_500Medium, Montserrat_700Bold } from '@expo-google-fonts/montserrat';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as SecureStore from 'expo-secure-store';
@@ -50,7 +50,7 @@ import {
 } from './src/household-collaboration';
 import { recoveryFailure, resolveRecoverySourceContext } from './src/recovery-domain';
 import { AccountRecoveryScreen } from './src/screens/AccountRecoveryScreen';
-import { NativeAppearanceProvider } from './src/components/NativeAppearance';
+import { FontText as Text, NativeAppearanceProvider } from './src/components/NativeAppearance';
 import { repairDebtCategory } from './src/debt-category-repair';
 import { getPendingFinanceSummary } from './src/finance-storage';
 import { AppIcon } from './src/components/AppIcon';
@@ -136,6 +136,7 @@ function RootApp() {
 
   const [recoveryIssue, setRecoveryIssue] = useState<HouseholdDataUnavailableError | null>(null);
   const recoveryContextRef = useRef<HouseholdContext | null>(null);
+  const onboardingDataRef = useRef<UserOnboardingData | null>(null);
   const sourceContext = async (currentSession: Session): Promise<HouseholdContext | null> => {
     const known = onboardingDataRef.current?.householdContext ?? recoveryContextRef.current;
     return resolveRecoverySourceContext(currentSession.user.id, known,
@@ -149,10 +150,6 @@ function RootApp() {
   const authStateRef = useRef<AuthScreenState>('checking');
   const sessionRef = useRef<Session | null>(null);
   const stageRef = useRef<FlowStage>('welcome');
-  const onboardingDataRef = useRef<UserOnboardingData | null>(onboardingData);
-  useEffect(() => {
-    onboardingDataRef.current = onboardingData;
-  }, [onboardingData]);
   const [pendingInvite, setPendingInvite] = useState<InvitationIntent | null>(null);
   const pendingInviteRef = useRef<InvitationIntent | null>(null);
   const deferredInviteRef = useRef<string | null>(null);
@@ -173,6 +170,10 @@ function RootApp() {
     authStateRef.current = next;
     setAuthState(next);
   }, []);
+
+  useEffect(() => {
+    onboardingDataRef.current = onboardingData;
+  }, [onboardingData]);
 
   const refreshHouseholdContexts = useCallback(async (): Promise<HouseholdMembershipSummary[]> => {
     const currentSession = sessionRef.current;
@@ -854,7 +855,7 @@ function RootApp() {
   }
 
   if (authState === 'recovery' && session) {
-    return <NativeAppearanceProvider themePreference="System" userId={session.user.id}><SafeAreaView style={{ flex: 1 }}><AccountRecoveryScreen email={session.user.email ?? 'Signed in'} issue={error || 'Your household could not be loaded. Refresh to try again.'} diagnostics={recoveryIssue?.diagnostics ?? []} households={householdSummaries} currentId={recoveryContextRef.current?.householdId} currentRole={recoveryContextRef.current?.role} actionBusy={busy} onRepair={handleRepairDebtCategory} onSwitch={handleSwitchHousehold} onJoin={handleAcceptHouseholdInvite} onRefresh={retry} onSignOut={() => void logout()} /></SafeAreaView></NativeAppearanceProvider>;
+    return <NativeAppearanceProvider userId={session.user.id}><SafeAreaView style={{ flex: 1 }}><AccountRecoveryScreen email={session.user.email ?? 'Signed in'} issue={error || 'Your household could not be loaded. Refresh to try again.'} diagnostics={recoveryIssue?.diagnostics ?? []} households={householdSummaries} currentId={recoveryIssue?.context?.householdId} currentRole={recoveryIssue?.context?.role} actionBusy={busy} onRepair={handleRepairDebtCategory} onSwitch={handleSwitchHousehold} onJoin={handleAcceptHouseholdInvite} onRefresh={retry} onSignOut={() => void logout()} /></SafeAreaView></NativeAppearanceProvider>;
   }
 
   if (authState === 'checking') {
@@ -1007,6 +1008,8 @@ function RootApp() {
 }
 
 export default function App() {
+  const [fontsLoaded, fontError] = useFonts({ Montserrat_400Regular, Montserrat_500Medium, Montserrat_700Bold });
+  if (!fontsLoaded && !fontError) return null;
   if (isLocalAcceptanceEnabled()) {
     return <SafeAreaProvider initialMetrics={initialWindowMetrics}><LocalAcceptanceEntry /></SafeAreaProvider>;
   }

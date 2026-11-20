@@ -1,5 +1,5 @@
 // @ts-ignore TS5097
-import { getObligationCycle, obligationScheduleKey, type ObligationSchedule, type ObligationSchedules } from './obligation-schedule.ts';
+import { getObligationCycle, obligationScheduleKey, type ObligationSchedule, type ObligationScheduleKey, type ObligationSchedules } from './obligation-schedule.ts';
 // Node's direct TypeScript loader requires the extension; Expo resolves it as well.
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { type DateOnly, getNextMonthString } from './calendar.ts';
@@ -92,6 +92,128 @@ export type OverdueObligationItem = Readonly<{
   match: ObligationMatchResult;
   matchResult: ObligationMatchResult;
 }>;
+
+const EMPTY_TX_LIST: readonly LedgerTransaction[] = [];
+
+type TransactionObligationIndex = Readonly<{
+  length: number;
+  firstTx: LedgerTransaction | undefined;
+  lastTx: LedgerTransaction | undefined;
+  byMonthAndAccount: Map<string, LedgerTransaction[]>;
+  byMonthAndBillId: Map<string, LedgerTransaction[]>;
+}>;
+
+const obligationIndexCache = new WeakMap<readonly LedgerTransaction[], TransactionObligationIndex>();
+
+function pushBucket(map: Map<string, LedgerTransaction[]>, key: string, tx: LedgerTransaction): void {
+  const bucket = map.get(key);
+  if (bucket) {
+    bucket.push(tx);
+  } else {
+    map.set(key, [tx]);
+  }
+}
+
+export function buildTransactionObligationIndex(
+  transactions: readonly LedgerTransaction[],
+): TransactionObligationIndex {
+  const cached = obligationIndexCache.get(transactions);
+  const len = transactions.length;
+  const first = len > 0 ? transactions[0] : undefined;
+  const last = len > 0 ? transactions[len - 1] : undefined;
+  if (cached && cached.length === len && cached.firstTx === first && cached.lastTx === last) {
+    return cached;
+  }
+
+  const byMonthAndAccount = new Map<string, LedgerTransaction[]>();
+  const byMonthAndBillId = new Map<string, LedgerTransaction[]>();
+
+  for (let i = 0; i < len; i += 1) {
+    const tx = transactions[i];
+    if (tx.deletedAt !== null) continue;
+    const cycleMonth = tx.appliesToDate ? tx.appliesToDate.slice(0, 7) : tx.date.slice(0, 7);
+    if (tx.accountId) {
+      pushBucket(byMonthAndAccount, `${cycleMonth}|${tx.accountId}`, tx);
+    }
+    const txBillIdFromId = extractBillIdFromTxId(tx.id);
+    if (txBillIdFromId) {
+      pushBucket(byMonthAndBillId, `${cycleMonth}|${txBillIdFromId}`, tx);
+    }
+    if (tx.memo && tx.memo.includes('bill:')) {
+      const memoBillIds = extractBillIdsFromMemo(tx.memo);
+      for (const memoBillId of memoBillIds) {
+        if (memoBillId !== txBillIdFromId) {
+          pushBucket(byMonthAndBillId, `${cycleMonth}|${memoBillId}`, tx);
+        }
+      }
+    }
+  }
+
+  const index: TransactionObligationIndex = {
+    length: len,
+    firstTx: first,
+    lastTx: last,
+    byMonthAndAccount,
+    byMonthAndBillId,
+  };
+  obligationIndexCache.set(transactions, index);
+  return index;
+}
+
+function getCandidateTransactionsForObligation(
+  index: TransactionObligationIndex,
+  target: PaymentObligation,
+): readonly LedgerTransaction[] {
+  const targetCycleMonth = target.dueCycleMonth || target.dueDate.slice(0, 7);
+
+  if (target.kind === 'bill') {
+    if (!target.billId) return EMPTY_TX_LIST;
+    const billMatches = index.byMonthAndBillId.get(`${targetCycleMonth}|${target.billId}`);
+    const linkedMatches = target.linkedDebtId
+      ? index.byMonthAndAccount.get(`${targetCycleMonth}|${target.linkedDebtId}`)
+      : undefined;
+    if (!linkedMatches || linkedMatches.length === 0) {
+      return billMatches ?? EMPTY_TX_LIST;
+    }
+    if (!billMatches || billMatches.length === 0) {
+      return linkedMatches;
+    }
+    const deduped = new Set<LedgerTransaction>(billMatches);
+    for (let i = 0; i < linkedMatches.length; i += 1) {
+      deduped.add(linkedMatches[i]);
+    }
+    return [...deduped];
+  }
+
+  const accountMatches = target.accountId
+    ? index.byMonthAndAccount.get(`${targetCycleMonth}|${target.accountId}`)
+    : undefined;
+  const historicalBillIds = target.historicalBillIds;
+  if (!historicalBillIds || historicalBillIds.length === 0) {
+    return accountMatches ?? EMPTY_TX_LIST;
+  }
+
+  let singleList: readonly LedgerTransaction[] | undefined = accountMatches && accountMatches.length > 0 ? accountMatches : undefined;
+  let deduped: Set<LedgerTransaction> | null = null;
+
+  for (let i = 0; i < historicalBillIds.length; i += 1) {
+    const histMatches = index.byMonthAndBillId.get(`${targetCycleMonth}|${historicalBillIds[i]}`);
+    if (!histMatches || histMatches.length === 0) continue;
+    if (!singleList && !deduped) {
+      singleList = histMatches;
+    } else {
+      if (!deduped) {
+        deduped = new Set<LedgerTransaction>(singleList);
+      }
+      for (let j = 0; j < histMatches.length; j += 1) {
+        deduped.add(histMatches[j]);
+      }
+    }
+  }
+
+  if (deduped) return [...deduped];
+  return singleList ?? EMPTY_TX_LIST;
+}
 
 /**
  * Strict obligation identity matching.
@@ -268,21 +390,16 @@ export function matchPaymentsToObligation(
   };
 }
 
-/**
- * Shared settlement view for Home, Budget and Transactions. Pending transactions
- * remain excluded from confirmed paid totals, but prevent another payment from
- * being recorded while their confirmation is unresolved.
- */
-export function getObligationPaymentState(
+function getObligationPaymentStateWithCandidates(
   obligation: PaymentObligation,
-  transactions: readonly LedgerTransaction[],
+  candidates: readonly LedgerTransaction[],
   currencyCode?: string,
 ): ObligationPaymentState {
-  const confirmedMatch = matchPaymentsToObligation(obligation, transactions, {
+  const confirmedMatch = matchPaymentsToObligation(obligation, candidates, {
     currencyCode,
     includePending: false,
   });
-  const withPendingMatch = matchPaymentsToObligation(obligation, transactions, {
+  const withPendingMatch = matchPaymentsToObligation(obligation, candidates, {
     currencyCode,
     includePending: true,
   });
@@ -297,6 +414,88 @@ export function getObligationPaymentState(
         : 'unpaid';
 
   return { status, confirmedMatch, withPendingMatch, pendingAmount };
+}
+
+/**
+ * Shared settlement view for Home, Budget and Transactions. Pending transactions
+ * remain excluded from confirmed paid totals, but prevent another payment from
+ * being recorded while their confirmation is unresolved.
+ */
+export function getObligationPaymentState(
+  obligation: PaymentObligation,
+  transactions: readonly LedgerTransaction[],
+  currencyCode?: string,
+): ObligationPaymentState {
+  const index = buildTransactionObligationIndex(transactions);
+  const candidates = getCandidateTransactionsForObligation(index, obligation);
+  return getObligationPaymentStateWithCandidates(obligation, candidates, currencyCode);
+}
+
+/** Paid markers for a selected month, including acknowledged cycles omitted from Scheduled. */
+export function getPaidMonthlyObligationKeys({
+  month,
+  debts,
+  recurringBills,
+  transactions,
+  currencyCode,
+  schedules,
+  historicalBillIdsByDebtId,
+}: {
+  month: string;
+  debts: readonly DebtItem[];
+  recurringBills: readonly RecurringBill[];
+  transactions: readonly LedgerTransaction[];
+  currencyCode: string;
+  schedules?: ObligationSchedules;
+  historicalBillIdsByDebtId: Readonly<Record<string, readonly string[]>>;
+}): ReadonlySet<ObligationScheduleKey> {
+  const paid = new Set<ObligationScheduleKey>();
+  const index = buildTransactionObligationIndex(transactions);
+  const scale = getCurrency(currencyCode).scale;
+
+  const check = (
+    key: ObligationScheduleKey,
+    obligation: PaymentObligation,
+    cycle: ReturnType<typeof getObligationCycle>,
+    startDate?: string,
+  ) => {
+    if (startDate && obligation.dueDate < startDate.slice(0, 10)) return;
+    if (cycle?.acknowledgedPaid || (
+      (obligation.requiredAmount?.minorUnits ?? 0) > 0 &&
+      matchPaymentsToObligation(obligation, getCandidateTransactionsForObligation(index, obligation), { currencyCode }).isSatisfied
+    )) {
+      paid.add(key);
+    }
+  };
+
+  for (const bill of recurringBills) {
+    const key = obligationScheduleKey('bill', bill.id);
+    const schedule = schedules?.[key];
+    const cycle = schedule ? getObligationCycle(schedule, month) : null;
+    if (schedule && !cycle) continue;
+    check(key, {
+      id: bill.id, kind: 'bill', bill, billId: bill.id, accountId: bill.creditAccountId,
+      dueDate: cycle?.dueDate ?? resolveRecurringBillDate(month, bill.dueDay),
+      dueCycleMonth: month, requiredAmount: cycle?.amount ?? bill.amount,
+    }, cycle, bill.createdAt);
+  }
+
+  for (const debt of debts) {
+    const key = obligationScheduleKey('debt', debt.id);
+    const historicalBillIds = historicalBillIdsByDebtId[debt.id] ?? [];
+    const schedule = resolveEffectiveDebtSchedule(schedules, debt.id, historicalBillIds);
+    const cycle = schedule ? getObligationCycle(schedule, month) : null;
+    if (schedule && !cycle) continue;
+    const dueDate = cycle?.dueDate ?? (debt.dueDay == null ? null : resolveRecurringBillDate(month, debt.dueDay));
+    if (!dueDate) continue;
+    check(key, {
+      id: `minimum:${debt.id}`, kind: 'debt', debt, accountId: debt.id, historicalBillIds,
+      dueDate,
+      dueCycleMonth: month, requiredAmount: cycle?.amount ?? makeMoney(currencyCode, Math.round(debt.minimumPayment * 10 ** scale)),
+    }, cycle, schedule ? undefined : debt.createdAt);
+  }
+
+  return paid;
 }
 
 /**
@@ -443,6 +642,7 @@ export function calculateOverdueObligations(params: {
     excludedBillIds = [],
     historicalBillIdsByDebtId = {},
   } = params;
+  const txIndex = buildTransactionObligationIndex(transactions);
   const excludedBills = new Set(excludedBillIds);
   const linkedBillToDebt = new Map(Object.entries(loanBillPairs).map(([debtId, billId]) => [billId, debtId]));
   const currentMonthStr = asOfDate.slice(0, 7);
@@ -454,16 +654,18 @@ export function calculateOverdueObligations(params: {
     if (excludedBills.has(bill.id)) continue;
     // Don't create cycles before bill creation or if creation is future-dated
     const billCreationDate = bill.createdAt || asOfDate;
-    if (billCreationDate.slice(0, 10) > asOfDate) continue;
+    const billCreationDateOnly = billCreationDate.slice(0, 10);
+    if (billCreationDateOnly > asOfDate) continue;
 
     const schedule = schedules?.[obligationScheduleKey('bill', bill.id)];
     const validMonths = getValidPastDueCycleMonths(schedule?.firstDueDate ?? billCreationDate, currentMonthStr);
+    const linkedDebtId = linkedBillToDebt.get(bill.id);
     for (const mStr of validMonths) {
       const cycle = schedule ? getObligationCycle(schedule, mStr) : null;
       if (schedule && (!cycle || cycle.acknowledgedPaid)) continue;
       const cycleDueDate = cycle?.dueDate ?? resolveRecurringBillDate(mStr, bill.dueDay);
       const requiredAmount = cycle?.amount ?? bill.amount;
-      if (cycleDueDate < billCreationDate.slice(0, 10)) continue;
+      if (cycleDueDate < billCreationDateOnly) continue;
       // Overdue means cycle due date is strictly in the past relative to asOfDate
       if (cycleDueDate < asOfDate) {
         const obligation: PaymentObligation = {
@@ -475,10 +677,14 @@ export function calculateOverdueObligations(params: {
           requiredAmount,
           accountId: bill.creditAccountId,
           billId: bill.id,
-          linkedDebtId: linkedBillToDebt.get(bill.id),
+          linkedDebtId,
           bill,
         };
-        const state = getObligationPaymentState(obligation, transactions, currencyCode);
+        const state = getObligationPaymentStateWithCandidates(
+          obligation,
+          getCandidateTransactionsForObligation(txIndex, obligation),
+          currencyCode,
+        );
         const match = state.confirmedMatch;
         if (!match.isSatisfied) {
           overdueItems.push({
@@ -534,7 +740,11 @@ export function calculateOverdueObligations(params: {
           debt,
           historicalBillIds,
         };
-        const state = getObligationPaymentState(obligation, transactions, currencyCode);
+        const state = getObligationPaymentStateWithCandidates(
+          obligation,
+          getCandidateTransactionsForObligation(txIndex, obligation),
+          currencyCode,
+        );
         const match = state.confirmedMatch;
         if (!match.isSatisfied) {
           overdueItems.push({
@@ -603,6 +813,7 @@ export function getScheduledObligationRows(params: {
     excludedBillIds = [],
     historicalBillIdsByDebtId = {},
   } = params;
+  const txIndex = buildTransactionObligationIndex(transactions);
   const linkedBillToDebt = new Map(Object.entries(loanBillPairs).map(([debtId, billId]) => [billId, debtId]));
   const excludedBills = new Set(excludedBillIds);
   const currentMonth = asOfDate.slice(0, 7);
@@ -613,9 +824,14 @@ export function getScheduledObligationRows(params: {
   });
   const rows = new Map<string, ScheduledObligationRow>();
   const add = (obligation: PaymentObligation, bill?: RecurringBill, debt?: DebtItem) => {
-    const state = getObligationPaymentState(obligation, transactions, currencyCode);
-    rows.set(`${obligation.kind}:${obligation.id}:${obligation.dueDate}`, {
-      id: `${obligation.kind}:${obligation.id}:${obligation.dueDate}`,
+    const id = `${obligation.kind}:${obligation.id}:${obligation.dueDate}`;
+    const state = getObligationPaymentStateWithCandidates(
+      obligation,
+      getCandidateTransactionsForObligation(txIndex, obligation),
+      currencyCode,
+    );
+    rows.set(id, {
+      id,
       kind: obligation.kind, name: obligation.name ?? '', dueDate: obligation.dueDate,
       dueCycleMonth: obligation.dueCycleMonth ?? obligation.dueDate.slice(0, 7),
       requiredAmount: obligation.requiredAmount ?? makeMoney(currencyCode, 0), bill, debt, state,
@@ -639,17 +855,19 @@ export function getScheduledObligationRows(params: {
 
   for (const bill of getActiveRecurringBills(recurringBills)) {
     if (excludedBills.has(bill.id)) continue;
-    if ((bill.createdAt || asOfDate).slice(0, 10) > asOfDate) continue;
+    const billStartDate = (bill.createdAt || asOfDate).slice(0, 10);
+    if (billStartDate > asOfDate) continue;
     const schedule = schedules?.[obligationScheduleKey('bill', bill.id)];
+    const linkedDebtId = linkedBillToDebt.get(bill.id);
     for (const month of months) {
       const cycle = schedule ? getObligationCycle(schedule, month) : null;
       if (schedule && (!cycle || cycle.acknowledgedPaid)) continue;
       const dueDate = cycle?.dueDate ?? resolveRecurringBillDate(month, bill.dueDay);
-      if (dueDate < (bill.createdAt || asOfDate).slice(0, 10)) continue;
+      if (dueDate < billStartDate) continue;
       const cycleBill = cycle ? { ...bill, amount: cycle.amount } : bill;
       add({ id: bill.id, kind: 'bill', name: bill.name, dueDate, dueCycleMonth: month,
         requiredAmount: cycleBill.amount, accountId: bill.creditAccountId, billId: bill.id,
-        linkedDebtId: Object.entries(loanBillPairs).find(([, billId]) => billId === bill.id)?.[0], bill: cycleBill }, cycleBill);
+        linkedDebtId, bill: cycleBill }, cycleBill);
     }
   }
   const scale = getCurrency(currencyCode).scale;

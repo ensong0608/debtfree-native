@@ -7,7 +7,7 @@ import { moneyFromMajor } from './money.ts';
 // @ts-ignore TS5097
 import type { DateOnly } from './calendar.ts';
 // @ts-ignore TS5097
-import { prepareObligationEditorSchedule } from './obligation-editor-domain.ts';
+import { prepareObligationEditorSchedule, type ObligationDueDateEdit } from './obligation-editor-domain.ts';
 // @ts-ignore TS5097
 import { resolveEffectiveDebtSchedule } from './payment-matching.ts';
 // @ts-ignore TS5097
@@ -21,6 +21,7 @@ export type UnifiedLoanSettings = Pick<UserOnboardingData, 'obligationSchedules'
 export function prepareUnifiedLoanSettings(params: {
   current: UserOnboardingData; debt: DebtItem; bills: readonly RecurringBill[];
   today: DateOnly; currency: string; paidToday?: boolean; escrow?: number | null; resolveLegacy?: boolean;
+  dateEdit?: ObligationDueDateEdit;
 }): UnifiedLoanSettings {
   const { current, debt, bills, today, currency } = params;
   if (!isUnifiedBudgetLoanCategory(debt.category)) throw new Error('Only mortgage and auto loans use this editor.');
@@ -44,7 +45,7 @@ export function prepareUnifiedLoanSettings(params: {
       legacyDueDay: priorBill?.dueDay ?? prior?.dueDay ?? undefined,
       legacyAmount: priorBill?.amount ?? (prior ? moneyFromMajor(prior.minimumPayment, currency) : undefined),
       createdAt: priorBill?.createdAt ?? prior?.createdAt ?? debt.createdAt,
-      isNew: !prior, paidToday: params.paidToday,
+      isNew: !prior, paidToday: params.paidToday, ...params.dateEdit,
       existing: relation?.canonical ? resolveEffectiveDebtSchedule(current.obligationSchedules, debt.id, aliases)
         : legacySchedule ?? current.obligationSchedules?.['debt:' + debt.id],
     });

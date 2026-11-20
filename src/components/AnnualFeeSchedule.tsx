@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Pressable, Text, View, appearanceColor, useNativeAppearance } from './NativeAppearance';
 import { AmountText } from './AmountText';
 import { Card, ui } from './FinancialScreen';
@@ -8,6 +8,8 @@ import { formatCurrency, type DebtItem } from '../onboarding-domain';
 import { type DateOnly } from '../finance/calendar';
 import { type LedgerTransaction } from '../finance/ledger';
 import { annualFeeTransactionId, isAnnualFeeTransaction } from '../finance/annual-fees';
+
+const ANNUAL_FEE_DATE_FMT = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 
 type AnnualFeeRow = { debt: DebtItem; dueDate: DateOnly; transaction?: LedgerTransaction };
 
@@ -48,10 +50,12 @@ export function AnnualFeeSchedule({
     const [year, month] = currentDate.slice(0, 7).split('-').map(Number);
     return month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, '0')}`;
   })();
-  const allRows = getAnnualFeeRows(debts, transactions);
-  const rows = mode === 'upcoming'
-    ? allRows.filter(row => row.dueDate.slice(0, 7) <= nextMonth)
-    : allRows.filter(row => row.dueDate.slice(0, 7) === selectedMonth && (!selectedDate || row.dueDate === selectedDate));
+  const allRows = useMemo(() => getAnnualFeeRows(debts, transactions), [debts, transactions]);
+  const rows = useMemo(() => (
+    mode === 'upcoming'
+      ? allRows.filter(row => row.dueDate.slice(0, 7) <= nextMonth)
+      : allRows.filter(row => row.dueDate.slice(0, 7) === selectedMonth && (!selectedDate || row.dueDate === selectedDate))
+  ), [allRows, mode, nextMonth, selectedMonth, selectedDate]);
 
   const confirm = (row: AnnualFeeRow) => {
     if (readOnly) return;
@@ -80,7 +84,7 @@ export function AnnualFeeSchedule({
     <Text accessibilityRole="header" style={[ui.heading, { marginHorizontal: 16 }]}>Annual card fees</Text>
     {error ? <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight), marginHorizontal: 16 }]}>{error}</Text> : null}
     {[...grouped.entries()].map(([date, dateRows]) => <View key={date} style={{ gap: 8 }}>
-      <Text style={[ui.small, { fontWeight: '700', marginHorizontal: 16 }]}>{new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(`${date}T12:00:00`))}</Text>
+      <Text style={[ui.small, { fontWeight: '700', marginHorizontal: 16 }]}>{ANNUAL_FEE_DATE_FMT.format(new Date(`${date}T12:00:00`))}</Text>
       {dateRows.map(row => {
         const id = annualFeeTransactionId(row.debt.id, row.dueDate);
         const pending = Boolean(row.transaction?.isPending);

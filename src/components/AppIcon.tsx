@@ -40,7 +40,10 @@ export type AppIconName =
   | 'users'
   | 'globe'
   | 'warning'
-  | 'edit';
+  | 'edit'
+  | 'cash'
+  | 'layers'
+  | 'box';
 
 export const NAVIGATION_TAB_ICONS: readonly {
   name: NavigationTabIconName;
@@ -638,6 +641,61 @@ function renderIconContent(name: AppIconName, color: string, selected: boolean, 
             stroke={color}
             strokeWidth={strokeWidth ?? 1.8}
             strokeLinecap="round"
+          />
+        </>
+      );
+
+    case 'cash':
+      return (
+        <>
+          <Rect x={3} y={6} width={18} height={12} rx={2.2} stroke={color} strokeWidth={1.8} />
+          <Circle cx={12} cy={12} r={2.6} stroke={color} strokeWidth={1.8} />
+          <Circle cx={6.3} cy={12} r={0.9} fill={color} />
+          <Circle cx={17.7} cy={12} r={0.9} fill={color} />
+        </>
+      );
+
+    case 'layers':
+      return (
+        <>
+          <Path
+            d="M12 4.5 3.5 9l8.5 4.5L20.5 9 12 4.5Z"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinejoin="round"
+          />
+          <Path
+            d="M3.5 13 12 17.5 20.5 13"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <Path
+            d="M3.5 17 12 21.5 20.5 17"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </>
+      );
+
+    case 'box':
+      return (
+        <>
+          <Path
+            d="M12 3.5 4.5 7.7v8.6L12 20.5l7.5-4.2V7.7L12 3.5Z"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinejoin="round"
+          />
+          <Path
+            d="M4.5 7.7 12 12l7.5-4.3M12 12v8.5"
+            stroke={color}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
           />
         </>
       );

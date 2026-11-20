@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState, type ReactNode, type ComponentProps } from 'react';
+import { useEffect, useState, type ReactNode, type ComponentProps } from 'react';
 import { StyleSheet } from 'react-native';
 import { NativeAppearanceProvider, Pressable, Text, View, useNativeAppearance } from './components/NativeAppearance';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NAVIGATION_TAB_ICONS, type NavigationTabIconName } from './components/AppIcon';
 import { NavigationIcon } from './components/NavigationIcon';
-import { TabShellContext, type RefreshFeedback } from './components/TabShellContext';
+import { DEFAULT_TAB_UI_PREFERENCES, TabShellContext, type RefreshFeedback, type TabUiPreferences } from './components/TabShellContext';
 import { bottomInsetPadding } from './components/bottom-inset';
+import { InspireBackdrop } from './components/InspireArt';
 
 export function FiveTabShell({
   home,
@@ -17,21 +18,19 @@ export function FiveTabShell({
   settingsVisible = false,
   onCloseSettings,
   onHomeVisibilityChange,
-  themePreference = 'Dark',
   userId,
   overlay,
   onRefresh, refreshing = false, refreshFeedback, settingsSaveWarning,
 }: {
   home: (navigate: (tab: NavigationTabIconName, section?: string) => void) => ReactNode;
-  debt: ReactNode | ((selectedDebtId: string | null, clearTarget: () => void, section: string, resetKey: number) => ReactNode);
+  debt: ReactNode | ((selectedDebtId: string | null, clearTarget: () => void, section: string, resetKey: number, navigate: (tab: NavigationTabIconName, section?: string) => void) => ReactNode);
   transactions: ReactNode | ((selectedTransactionId: string | null, clearTarget: () => void, section: string) => ReactNode);
-  budget: (navigate: (tab: NavigationTabIconName, section?: string) => void, section: string) => ReactNode;
+  budget: (navigate: (tab: NavigationTabIconName, section?: string) => void) => ReactNode;
   progress: ReactNode | ((navigate: (tab: NavigationTabIconName, section?: string) => void) => ReactNode);
   settings?: ReactNode | ((onClose: () => void) => ReactNode);
   settingsVisible?: boolean;
   onCloseSettings?: () => void;
   onHomeVisibilityChange?: (visible: boolean) => void;
-  themePreference?: 'System' | 'Dark' | 'Light' | 'Inspire';
   userId?: string;
   overlay?: ReactNode;
   onRefresh?: () => Promise<void>;
@@ -40,15 +39,20 @@ export function FiveTabShell({
   settingsSaveWarning?: { checking: boolean; onCheck: () => void };
 }) {
   const [selectedTab, setSelectedTab] = useState<NavigationTabIconName>('home');
+  const [visitedTabs, setVisitedTabs] = useState<Partial<Record<NavigationTabIconName, boolean>>>({ home: true });
   const [targetTransactionId, setTargetTransactionId] = useState<string | null>(null);
   const [targetDebtId, setTargetDebtId] = useState<string | null>(null);
+  const [uiPreferences, setUiPreferences] = useState<TabUiPreferences>(DEFAULT_TAB_UI_PREFERENCES);
   const [debtSection, setDebtSection] = useState('Cards & Loans');
   const [debtResetKey, setDebtResetKey] = useState(0);
   const [transactionSection, setTransactionSection] = useState('History');
-  const [budgetSection, setBudgetSection] = useState('Budget');
 
-  const registerAction = useCallback((_tab: NavigationTabIconName, _callback: () => void, _label?: string) => () => {}, []);
   const showSettings = Boolean(settingsVisible && settings);
+
+  const activateTab = (tab: NavigationTabIconName) => {
+    setVisitedTabs(current => (current[tab] ? current : { ...current, [tab]: true }));
+    setSelectedTab(tab);
+  };
 
   useEffect(() => {
     onHomeVisibilityChange?.(selectedTab === 'home' && !showSettings);
@@ -57,54 +61,63 @@ export function FiveTabShell({
   const navigate = (tab: NavigationTabIconName, section?: string) => {
     if (tab === 'debt' && section === 'Scheduled') {
       setTransactionSection('Scheduled');
+      setUiPreferences(current => ({ ...current, transactionsSection: 'Scheduled' }));
       setTargetTransactionId(null);
-      setSelectedTab('transactions');
+      activateTab('transactions');
       return;
     }
     if (tab === 'debt') {
+      const nextDebtSection = section === 'Strategy' ? 'Strategy' : 'Accounts';
       setDebtSection(section === 'Strategy' ? 'Strategy' : 'Cards & Loans');
+      setUiPreferences(current => ({ ...current, debtSection: nextDebtSection }));
       setTargetDebtId(section && section !== 'Strategy' && section !== 'Scheduled' && section !== 'Cards & Loans' && section !== 'Accounts' ? section : null);
       setDebtResetKey(value => value + 1);
     }
     if (tab === 'transactions') {
-      setTransactionSection(section === 'Scheduled' ? 'Scheduled' : 'History');
+      const nextTxSection = section === 'Scheduled' ? 'Scheduled' : 'History';
+      setTransactionSection(nextTxSection);
+      setUiPreferences(current => ({ ...current, transactionsSection: nextTxSection }));
       setTargetTransactionId(section && !['History', 'Scheduled'].includes(section) ? section : null);
     }
-    if (tab === 'budget') setBudgetSection('Budget');
-    setSelectedTab(tab);
+    activateTab(tab);
   };
 
-  const activeScreen = (() => {
-    switch (selectedTab) {
-      case 'home':
-        return home(navigate);
-      case 'debt':
-        return typeof debt === 'function' ? debt(targetDebtId, () => setTargetDebtId(null), debtSection, debtResetKey) : debt;
-      case 'transactions':
-        return typeof transactions === 'function' ? transactions(targetTransactionId, () => setTargetTransactionId(null), transactionSection) : transactions;
-      case 'budget':
-        return budget(navigate, budgetSection);
-      case 'progress':
-        return typeof progress === 'function' ? progress(navigate) : progress;
-    }
-  })();
+  const renderTabPane = (tab: NavigationTabIconName, content: ReactNode) => {
+    const active = selectedTab === tab;
+    return (
+      <View
+        key={tab}
+        style={[styles.tabPane, !active && styles.hidden]}
+        pointerEvents={active ? 'auto' : 'none'}
+        accessibilityElementsHidden={!active}
+        importantForAccessibility={active ? 'auto' : 'no-hide-descendants'}
+      >
+        {content}
+      </View>
+    );
+  };
 
   return (
-    <NativeAppearanceProvider themePreference={themePreference} userId={userId}>
-    <TabShellContext.Provider value={{ tab: selectedTab, registerAction, onRefresh, refreshing, refreshFeedback }}>
+    <NativeAppearanceProvider userId={userId}>
+    <TabShellContext.Provider value={{ tab: selectedTab, onRefresh, refreshing, refreshFeedback, uiPreferences, setUiPreferences }}>
     <ThemedSafeArea edges={['top', 'left', 'right']}>
       {settingsSaveWarning ? <SettingsSaveWarning checking={settingsSaveWarning.checking} onCheck={settingsSaveWarning.onCheck} /> : null}
       <View style={[styles.content, showSettings && styles.hidden]}>
-        {activeScreen}
+        {visitedTabs.home ? renderTabPane('home', home(navigate)) : null}
+        {visitedTabs.debt ? renderTabPane('debt', typeof debt === 'function' ? debt(targetDebtId, () => setTargetDebtId(null), debtSection, debtResetKey, navigate) : debt) : null}
+        {visitedTabs.transactions ? renderTabPane('transactions', typeof transactions === 'function' ? transactions(targetTransactionId, () => setTargetTransactionId(null), transactionSection) : transactions) : null}
+        {visitedTabs.budget ? renderTabPane('budget', budget(navigate)) : null}
+        {visitedTabs.progress ? renderTabPane('progress', typeof progress === 'function' ? progress(navigate) : progress) : null}
       </View>
       <TabBar
         selectedTab={selectedTab}
         hidden={showSettings}
         onSelect={tab => {
-          if (tab === 'transactions') { setTargetTransactionId(null); setTransactionSection('History'); }
-          if (tab === 'debt') { setTargetDebtId(null); setDebtSection('Cards & Loans'); setDebtResetKey(value => value + 1); }
-          if (tab === 'budget') setBudgetSection('Budget');
-          setSelectedTab(tab);
+          if (tab !== selectedTab) {
+            if (tab === 'transactions') setTargetTransactionId(null);
+            if (tab === 'debt') setTargetDebtId(null);
+          }
+          activateTab(tab);
         }}
       />
       {showSettings ? (
@@ -131,7 +144,7 @@ function SettingsSaveWarning({ checking, onCheck }: { checking: boolean; onCheck
 
 function ThemedSafeArea({ children, edges }: ComponentProps<typeof SafeAreaView>) {
   const { palette } = useNativeAppearance();
-  return <SafeAreaView edges={edges} style={[styles.root, { backgroundColor: palette.canvas }]}>{children}</SafeAreaView>;
+  return <SafeAreaView edges={edges} style={[styles.root, { backgroundColor: palette.canvas }]}><InspireBackdrop />{children}</SafeAreaView>;
 }
 
 function TabBar({ selectedTab, hidden, onSelect }: { selectedTab: NavigationTabIconName; hidden: boolean; onSelect: (tab: NavigationTabIconName) => void }) {
@@ -142,7 +155,7 @@ function TabBar({ selectedTab, hidden, onSelect }: { selectedTab: NavigationTabI
       style={[
         styles.navArea,
         {
-          backgroundColor: palette.surface,
+          backgroundColor: palette.navBg,
           borderTopColor: palette.border,
           paddingBottom: bottomInsetPadding(insets.bottom, 6),
         },
@@ -152,7 +165,7 @@ function TabBar({ selectedTab, hidden, onSelect }: { selectedTab: NavigationTabI
       <View accessibilityRole="tablist" style={styles.dock}>
         {NAVIGATION_TAB_ICONS.map(tab => {
           const selected = tab.name === selectedTab;
-          const color = selected ? palette.brand : palette.muted;
+          const color = selected ? palette.accentInk : palette.muted;
           return (
             <Pressable
               key={tab.name}
@@ -162,7 +175,9 @@ function TabBar({ selectedTab, hidden, onSelect }: { selectedTab: NavigationTabI
               onPress={() => onSelect(tab.name)}
               style={styles.tab}
             >
-              <NavigationIcon name={tab.name} color={color} />
+              <View style={styles.dockIcon}>
+                <NavigationIcon name={tab.name} color={selected ? palette.brand : palette.muted} />
+              </View>
               <Text
                 numberOfLines={1}
                 adjustsFontSizeToFit
@@ -188,6 +203,7 @@ const styles = StyleSheet.create({
     paddingTop: 4,
   },
   content: { flex: 1 },
+  tabPane: { flex: 1 },
   hidden: { display: 'none' },
   settingsOverlay: { flex: 1, backgroundColor: '#0C0E0D' },
   dock: {
@@ -206,6 +222,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 2,
   },
+  dockIcon: { width: 43, height: 27, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
   label: {
     fontSize: 11.5,
     textAlign: 'center',
