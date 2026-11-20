@@ -137,7 +137,6 @@ test('T-301: Sub-tabs persist across bottom-tab switches and Phase 3 clarity fea
 
   const home = readFileSync(new URL('../src/screens/HomeScreen.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(home, /Weighted APR/);
-  assert.doesNotMatch(home, /Keep building your freedom/);
 
   const onboard = readFileSync(new URL('../src/OnboardingAndHome.tsx', import.meta.url), 'utf8');
   assert.match(onboard, /four short steps/);

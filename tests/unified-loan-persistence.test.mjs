@@ -58,15 +58,19 @@ function save(){
  return upsertUserDebt(f.current,debt,patch);
 }
 
-test('loan terms and schedule use exactly one atomic RPC and return the proven revision',async()=>{
+test('loan terms and schedule use one atomic write after currency verification and return the proven revision',async()=>{
  const saved=await save();
- assert.deepEqual(f.calls,['debtfree_upsert_household_loan_atomic']);
+ assert.deepEqual(f.calls,['debtfree_get_household_settings','debtfree_upsert_household_loan_atomic']);
  assert.equal(saved.debts[0].minimumPayment,1200);assert.equal(saved.settingsRevision,4);
  assert.equal(saved.obligationSchedules['debt:'+loan.id].terms.at(-1).amount.minorUnits,120000);
 });
 test('lost response succeeds only after both debt and settings are proven',async()=>{
  f.mode='lost';const saved=await save();assert.equal(saved.settingsRevision,4);assert.equal(f.readbacks,1);
- assert.deepEqual(f.calls,['debtfree_upsert_household_loan_atomic','debtfree_get_household_settings']);
+ assert.deepEqual(f.calls,[
+  'debtfree_get_household_settings',
+  'debtfree_upsert_household_loan_atomic',
+  'debtfree_get_household_settings',
+ ]);
 });
 test('thrown transport failure after commit follows the same exact readback path',async()=>{
  f.mode='throw-after-commit';const saved=await save();assert.equal(saved.settingsRevision,4);assert.equal(f.readbacks,1);
@@ -77,7 +81,8 @@ test('matching debt row alone never reports success and preserves the prior loca
 });
 test('missing deployment fails closed without sequential fallback or misleading readback success',async()=>{
  f.mode='missing';await assert.rejects(save(),{name:'OnboardingDataUnavailableError'});
- assert.deepEqual(f.calls,['debtfree_upsert_household_loan_atomic']);assert.equal(f.readbacks,0);
+ assert.deepEqual(f.calls,['debtfree_get_household_settings','debtfree_upsert_household_loan_atomic']);
+ assert.equal(f.readbacks,0);
 });
 test('confirmed authorization rejection does not masquerade as an uncertain partial commit',async()=>{
  f.mode='reject';await assert.rejects(save(),{name:'DebtWriteFailedError'});assert.equal(f.readbacks,0);
