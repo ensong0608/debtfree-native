@@ -92,6 +92,9 @@ export function PullToRefreshScrollView({
   const pullTriggeredRefreshRef = useRef(false);
   const refreshErroredRef = useRef(false);
   const updatedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settlingSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const collapseSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
   const dragStateRef = useRef({ pulling: false, ready: false });
   const [dragPhase, setDragPhase] = useState<DragPhase>('idle');
 
@@ -99,30 +102,54 @@ export function PullToRefreshScrollView({
     ? 'refreshing'
     : dragPhase;
 
+  const clearSafetyTimers = useCallback(() => {
+    if (settlingSafetyTimerRef.current) {
+      clearTimeout(settlingSafetyTimerRef.current);
+      settlingSafetyTimerRef.current = null;
+    }
+    if (collapseSafetyTimerRef.current) {
+      clearTimeout(collapseSafetyTimerRef.current);
+      collapseSafetyTimerRef.current = null;
+    }
+  }, []);
+
   const collapseToIdle = useCallback(() => {
     awaitingLocalRefreshRef.current = false;
     pullTriggeredRefreshRef.current = false;
+    clearSafetyTimers();
     if (updatedTimerRef.current) {
       clearTimeout(updatedTimerRef.current);
       updatedTimerRef.current = null;
     }
+    const finalizeIdle = () => {
+      if (collapseSafetyTimerRef.current) {
+        clearTimeout(collapseSafetyTimerRef.current);
+        collapseSafetyTimerRef.current = null;
+      }
+      if (mountedRef.current && !refreshingRef.current && !dragStateRef.current.pulling && !awaitingLocalRefreshRef.current) {
+        setDragPhase('idle');
+      }
+    };
+    collapseSafetyTimerRef.current = setTimeout(finalizeIdle, 320);
     Animated.timing(pullY, {
       toValue: 0,
       duration: 210,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished && !refreshingRef.current && !dragStateRef.current.pulling) {
-        setDragPhase('idle');
-      }
+    }).start(() => {
+      finalizeIdle();
     });
-  }, [pullY]);
+  }, [clearSafetyTimers, pullY]);
 
   const finishPullRefresh = useCallback(() => {
     if (awaitingLocalRefreshRef.current || refreshingRef.current) return;
+    if (settlingSafetyTimerRef.current) {
+      clearTimeout(settlingSafetyTimerRef.current);
+      settlingSafetyTimerRef.current = null;
+    }
     if (pullTriggeredRefreshRef.current && !refreshErroredRef.current) {
       pullTriggeredRefreshRef.current = false;
-      setDragPhase('updated');
+      if (mountedRef.current) setDragPhase('updated');
       updatedTimerRef.current = setTimeout(() => {
         updatedTimerRef.current = null;
         collapseToIdle();
@@ -132,12 +159,21 @@ export function PullToRefreshScrollView({
     }
   }, [collapseToIdle]);
 
-  useEffect(() => () => {
-    if (updatedTimerRef.current) {
-      clearTimeout(updatedTimerRef.current);
-      updatedTimerRef.current = null;
-    }
-  }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      awaitingLocalRefreshRef.current = false;
+      pullTriggeredRefreshRef.current = false;
+      dragStateRef.current = { pulling: false, ready: false };
+      if (updatedTimerRef.current) {
+        clearTimeout(updatedTimerRef.current);
+        updatedTimerRef.current = null;
+      }
+      clearSafetyTimers();
+      pullY.stopAnimation();
+    };
+  }, [clearSafetyTimers, pullY]);
 
   useEffect(() => {
     refreshingRef.current = refreshing;
@@ -149,6 +185,10 @@ export function PullToRefreshScrollView({
       if (updatedTimerRef.current) {
         clearTimeout(updatedTimerRef.current);
         updatedTimerRef.current = null;
+      }
+      if (collapseSafetyTimerRef.current) {
+        clearTimeout(collapseSafetyTimerRef.current);
+        collapseSafetyTimerRef.current = null;
       }
       Animated.timing(pullY, {
         toValue: REFRESH_REST_HEIGHT,
@@ -167,6 +207,7 @@ export function PullToRefreshScrollView({
       clearTimeout(updatedTimerRef.current);
       updatedTimerRef.current = null;
     }
+    clearSafetyTimers();
     if (!dragStateRef.current.pulling) {
       dragStateRef.current = { pulling: true, ready: false };
       setDragPhase('pulling');
@@ -178,7 +219,7 @@ export function PullToRefreshScrollView({
       dragStateRef.current.ready = nextReady;
       setDragPhase(nextReady ? 'ready' : 'pulling');
     }
-  }, [pullY]);
+  }, [clearSafetyTimers, pullY]);
 
   const handlePullRelease = useCallback((rawDy?: number, cancelled = false) => {
     const computedReady =
@@ -191,6 +232,7 @@ export function PullToRefreshScrollView({
       awaitingLocalRefreshRef.current = true;
       pullTriggeredRefreshRef.current = true;
       refreshErroredRef.current = false;
+      clearSafetyTimers();
       setDragPhase('settling');
       Animated.timing(pullY, {
         toValue: REFRESH_REST_HEIGHT,
@@ -198,15 +240,30 @@ export function PullToRefreshScrollView({
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }).start();
+      let settled = false;
+      settlingSafetyTimerRef.current = setTimeout(() => {
+        settlingSafetyTimerRef.current = null;
+        if (settled || !mountedRef.current) return;
+        settled = true;
+        refreshErroredRef.current = true;
+        awaitingLocalRefreshRef.current = false;
+        collapseToIdle();
+      }, 18_000);
       const minDisplayMs = new Promise<void>(resolve => setTimeout(resolve, 480));
       Promise.all([
-        Promise.resolve(onRefreshRef.current()).catch(() => {
+        Promise.resolve().then(() => onRefreshRef.current?.()).catch(() => {
           refreshErroredRef.current = true;
         }),
         minDisplayMs,
       ]).finally(() => {
+        if (settled) return;
+        settled = true;
         awaitingLocalRefreshRef.current = false;
-        finishPullRefresh();
+        if (settlingSafetyTimerRef.current) {
+          clearTimeout(settlingSafetyTimerRef.current);
+          settlingSafetyTimerRef.current = null;
+        }
+        if (mountedRef.current) finishPullRefresh();
       });
     } else {
       Animated.spring(pullY, {
@@ -214,11 +271,13 @@ export function PullToRefreshScrollView({
         useNativeDriver: true,
         tension: 120,
         friction: 14,
-      }).start(({ finished }) => {
-        if (finished && !refreshingRef.current) setDragPhase('idle');
+      }).start(() => {
+        if (mountedRef.current && !refreshingRef.current && !dragStateRef.current.pulling && !awaitingLocalRefreshRef.current) {
+          setDragPhase('idle');
+        }
       });
     }
-  }, [finishPullRefresh, pullY]);
+  }, [clearSafetyTimers, collapseToIdle, finishPullRefresh, pullY]);
 
   const gestureHandlersRef = useRef({
     canCapture: (dx: number, dy: number) =>

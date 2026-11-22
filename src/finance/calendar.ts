@@ -24,6 +24,14 @@ export function addCalendarDays(value: DateOnly, days: number): DateOnly {
   result.setUTCDate(result.getUTCDate() + days);
   return dateFromParts(result.getUTCFullYear(), result.getUTCMonth() + 1, result.getUTCDate());
 }
+/** Exact integer calendar-day difference (`end - start`) independent of device DST rules. */
+export function calendarDaysBetween(start: DateOnly, end: DateOnly): number {
+  const s = parseDateOnly(start);
+  const e = parseDateOnly(end);
+  const startUtcMs = Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10)));
+  const endUtcMs = Date.UTC(Number(e.slice(0, 4)), Number(e.slice(5, 7)) - 1, Number(e.slice(8, 10)));
+  return Math.round((endUtcMs - startUtcMs) / 86_400_000);
+}
 /** Offset from the first payment's month, preserving the original requested day. */
 export function monthlyPaymentDate(firstPayment: DateOnly, requestedDay: number, monthOffset: number): DateOnly {
   const first = parseDateOnly(firstPayment);

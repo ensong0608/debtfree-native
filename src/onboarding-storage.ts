@@ -90,16 +90,31 @@ export class OnboardingDataUnavailableError extends Error {
   }
 }
 
+export type HouseholdRecoveryKind = 'category_diagnostics' | 'pending_finance_commands';
+
 export class HouseholdDataUnavailableError extends OnboardingDataUnavailableError {
   readonly context: HouseholdContext;
   readonly summaries: import('./household-context').HouseholdMembershipSummary[];
   readonly diagnostics: DebtCategoryDiagnostic[];
-  constructor(context: HouseholdContext, summaries: import('./household-context').HouseholdMembershipSummary[], diagnostics: DebtCategoryDiagnostic[]) {
-    super('Choose an account category to finish loading your household.');
+  readonly recoveryKind: HouseholdRecoveryKind;
+  readonly pendingOperationCount: number;
+  constructor(
+    context: HouseholdContext,
+    summaries: import('./household-context').HouseholdMembershipSummary[],
+    diagnostics: DebtCategoryDiagnostic[],
+    options?: {
+      message?: string;
+      recoveryKind?: HouseholdRecoveryKind;
+      pendingOperationCount?: number;
+    },
+  ) {
+    super(options?.message ?? 'Choose an account category to finish loading your household.');
     this.name = 'HouseholdDataUnavailableError';
     this.context = context;
     this.summaries = summaries;
     this.diagnostics = diagnostics;
+    this.recoveryKind = options?.recoveryKind ?? (diagnostics.length > 0 ? 'category_diagnostics' : 'pending_finance_commands');
+    this.pendingOperationCount = options?.pendingOperationCount ?? 0;
   }
 }
 
@@ -293,11 +308,27 @@ export async function loadUserOnboardingData(
   }
 
   try {
-    await assertHouseholdFinanceContextReady(context, { allowCurrentMembershipPending: true });
+    await assertHouseholdFinanceContextReady(context, {
+      allowCurrentMembershipPending: true,
+      session,
+      autoReconcileWithServer: true,
+    });
   } catch (error) {
-    throw new OnboardingDataUnavailableError(error instanceof Error
-      ? error.message
-      : 'Unresolved finance changes must be reviewed before opening this household.');
+    const pendingOperationCount = error && typeof error === 'object' && 'pendingCount' in error && typeof (error as { pendingCount?: unknown }).pendingCount === 'number'
+      ? (error as { pendingCount: number }).pendingCount
+      : 0;
+    throw new HouseholdDataUnavailableError(
+      context,
+      householdSelection.summaries,
+      [],
+      {
+        recoveryKind: 'pending_finance_commands',
+        pendingOperationCount,
+        message: error instanceof Error
+          ? error.message
+          : 'Unresolved finance changes must be reviewed before opening this household.',
+      },
+    );
   }
 
   let localData: UserOnboardingData | null = null;

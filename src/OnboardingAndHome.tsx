@@ -1,5 +1,5 @@
 import { resolveAuthenticatedStage } from './onboarding-domain';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -287,14 +287,20 @@ function DebtFreeFlowContent({
   const draftDebtIdRef = useRef<string | null>(null);
   const draftDebtPaidTodayRef = useRef<Record<string, boolean>>({});
   const [showDebtForm, setShowDebtForm] = useState(false);
-  const [debtCategory, setDebtCategory] = useState<DebtCategory>('Credit card');
-  const [debtName, setDebtName] = useState('');
-  const [debtBalance, setDebtBalance] = useState('');
-  const [debtOriginalBalance, setDebtOriginalBalance] = useState('');
-  const [debtApr, setDebtApr] = useState('');
-  const [debtMinimum, setDebtMinimum] = useState('');
-  const [debtDueDay, setDebtDueDay] = useState('');
-  const [debtCreditLimit, setDebtCreditLimit] = useState('');
+  const debtFormKeyRef = useRef(0);
+  const [debtFormSeed, setDebtFormSeed] = useState<{ key: number; draft: OnboardingDebtDraft }>({
+    key: 0,
+    draft: {
+      category: 'Credit card',
+      name: '',
+      balance: '',
+      originalBalance: '',
+      apr: '',
+      minimum: '',
+      dueDay: '',
+      creditLimit: '',
+    },
+  });
 
   // Onboarding Step 4 (Payoff strategy) extra monthly payment input
   const [extraPaymentInput, setExtraPaymentInput] = useState(() =>
@@ -412,6 +418,21 @@ function DebtFreeFlowContent({
     const request = { scope };
     activeAccountRefresh.current = request;
     const isCurrent = () => refreshMounted.current && accountRefreshScope === scope && activeAccountRefresh.current === request;
+    const REFRESH_TIMEOUT_MS = 15_000;
+    const deadline = Date.now() + REFRESH_TIMEOUT_MS;
+    class RefreshTimeoutError extends Error {}
+    const withRefreshTimeout = <T,>(promise: Promise<T>): Promise<T> => {
+      const remainingMs = Math.max(1000, deadline - Date.now());
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new RefreshTimeoutError('Refresh timed out. Please check your connection and try again.'));
+        }, remainingMs);
+      });
+      return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+      });
+    };
     setReloading(true);
     setVerifiedFinanceScope('');
     setLocalError('');
@@ -421,8 +442,9 @@ function DebtFreeFlowContent({
       let settingsError: Error | null = null;
       if (session) {
         try {
-          void onRefreshHouseholdContexts?.();
-          refreshedData = await loadUserOnboardingData(session, { householdId: onboardingData.householdId });
+          refreshedData = await withRefreshTimeout(
+            loadUserOnboardingData(session, { householdId: onboardingData.householdId }),
+          );
           if (!isCurrent()) return;
           if (refreshedData.userId !== onboardingData.userId || refreshedData.householdId !== onboardingData.householdId) {
             throw new Error('The signed-in account changed. Sign in again to reload.');
@@ -430,12 +452,15 @@ function DebtFreeFlowContent({
           onUpdateOnboardingData(refreshedData);
         } catch (error) {
           if (!isCurrent()) return;
+          if (error instanceof RefreshTimeoutError) throw error;
           if (error instanceof Error && error.message.includes('signed-in account changed')) throw error;
           settingsError = error instanceof Error ? error : new Error(String(error));
         }
       }
       if (!isCurrent()) return;
-      const records = await loadFinanceRecords({ session, userId: refreshedData.userId, currency: resolveCurrencyOption(refreshedData).code, householdContext: refreshedData.householdContext });
+      const records = await withRefreshTimeout(
+        loadFinanceRecords({ session, userId: refreshedData.userId, currency: resolveCurrencyOption(refreshedData).code, householdContext: refreshedData.householdContext }),
+      );
       if (!isCurrent()) return;
       const hasServerSnapshot = records.snapshotStatus === 'authoritative' || records.snapshotStatus === 'authoritative_with_pending_writes';
       if (hasServerSnapshot) {
@@ -468,8 +493,10 @@ function DebtFreeFlowContent({
           : 'Account data refresh failed. Existing financial records remain on screen.',
       });
     } finally {
-      if (isCurrent()) {
+      if (activeAccountRefresh.current === request) {
         activeAccountRefresh.current = null;
+      }
+      if (refreshMounted.current && activeAccountRefresh.current === null) {
         setReloading(false);
       }
     }
@@ -836,7 +863,7 @@ function DebtFreeFlowContent({
   };
 
   const { payoffPlan, strategyComparison } = useMemo(() => {
-    if (!onboardingData) return { payoffPlan: null, strategyComparison: null };
+    if (!onboardingData || stage === 'home') return { payoffPlan: null, strategyComparison: null };
     const parsedExtra = parseMoneyInput(extraPaymentInput, currencyCode);
     const effectiveExtra =
       stage === 'onboard_4' && parsedExtra !== null
@@ -847,10 +874,10 @@ function DebtFreeFlowContent({
     return { payoffPlan: comparison.activePlan, strategyComparison: comparison };
   }, [onboardingData, extraPaymentInput, stage, currencyCode]);
 
-  const clearErrors = () => {
+  const clearErrors = useCallback(() => {
     setLocalError('');
     if (authError) onClearAuthError();
-  };
+  }, [authError, onClearAuthError]);
 
   const persistAndMove = async (
     patch: Partial<UserOnboardingData>,
@@ -897,20 +924,25 @@ function DebtFreeFlowContent({
     setEditingDebtId(null);
     draftDebtIdRef.current = Crypto.randomUUID();
     draftDebtPaidTodayRef.current = {};
-    setDebtCategory(category);
-    setDebtName(
-      category === 'Mortgage'
-        ? 'Home Mortgage'
-        : category === 'Auto loan'
-          ? 'Auto Loan'
-          : '',
-    );
-    setDebtBalance('');
-    setDebtOriginalBalance('');
-    setDebtApr('');
-    setDebtMinimum('');
-    setDebtDueDay('');
-    setDebtCreditLimit('');
+    debtFormKeyRef.current += 1;
+    setDebtFormSeed({
+      key: debtFormKeyRef.current,
+      draft: {
+        category,
+        name:
+          category === 'Mortgage'
+            ? 'Home Mortgage'
+            : category === 'Auto loan'
+              ? 'Auto Loan'
+              : '',
+        balance: '',
+        originalBalance: '',
+        apr: '',
+        minimum: '',
+        dueDay: '',
+        creditLimit: '',
+      },
+    });
     setShowDebtForm(true);
   };
 
@@ -919,29 +951,35 @@ function DebtFreeFlowContent({
     setEditingDebtId(item.id);
     draftDebtIdRef.current = null;
     draftDebtPaidTodayRef.current = {};
-    setDebtCategory(item.category);
-    setDebtName(item.name);
-    setDebtBalance(formatEditableMoney(item.balance, currencyCode));
-    setDebtOriginalBalance(item.originalBalance !== null ? formatEditableMoney(item.originalBalance, currencyCode) : '');
-    setDebtApr(String(item.apr));
-    setDebtMinimum(formatEditableMoney(item.minimumPayment, currencyCode));
-    setDebtDueDay(item.dueDay !== null ? String(item.dueDay) : '');
-    setDebtCreditLimit(item.creditLimit !== null ? formatEditableMoney(item.creditLimit, currencyCode) : '');
+    debtFormKeyRef.current += 1;
+    setDebtFormSeed({
+      key: debtFormKeyRef.current,
+      draft: {
+        category: item.category,
+        name: item.name,
+        balance: formatEditableMoney(item.balance, currencyCode),
+        originalBalance: item.originalBalance !== null ? formatEditableMoney(item.originalBalance, currencyCode) : '',
+        apr: String(item.apr),
+        minimum: formatEditableMoney(item.minimumPayment, currencyCode),
+        dueDay: item.dueDay !== null ? String(item.dueDay) : '',
+        creditLimit: item.creditLimit !== null ? formatEditableMoney(item.creditLimit, currencyCode) : '',
+      },
+    });
     setShowDebtForm(true);
   };
 
-  const handleSaveDebt = async () => {
+  const handleSaveDebt = useCallback(async (draft: OnboardingDebtDraft) => {
     if (!onboardingData || savingRef.current) return;
     clearErrors();
     const validation = validateDebtDraft({
-      name: debtName,
-      category: debtCategory,
-      balanceRaw: debtBalance,
-      originalBalanceRaw: debtOriginalBalance,
-      aprRaw: debtApr,
-      minimumPaymentRaw: debtMinimum,
-      dueDayRaw: debtDueDay,
-      creditLimitRaw: debtCreditLimit,
+      name: draft.name,
+      category: draft.category,
+      balanceRaw: draft.balance,
+      originalBalanceRaw: draft.originalBalance,
+      aprRaw: draft.apr,
+      minimumPaymentRaw: draft.minimum,
+      dueDayRaw: draft.dueDay,
+      creditLimitRaw: draft.creditLimit,
     }, currencyCode);
     if (!validation.valid) {
       setLocalError(validation.error);
@@ -1058,7 +1096,7 @@ function DebtFreeFlowContent({
       savingRef.current = false;
       setSaving(false);
     }
-  };
+  }, [clearErrors, currencyCode, editingDebtId, onboardingData, onUpdateOnboardingData, recurringBills, session, transactions]);
 
   const handleDeleteDebt = async (debtId: string) => {
     if (!onboardingData || savingRef.current) return;
@@ -2299,145 +2337,26 @@ function DebtFreeFlowContent({
 
             {/* Inline Debt Form */}
             {showDebtForm ? (
-              <View style={styles.inlineEditorCard}>
-                <Text style={styles.inlineEditorTitle}>
-                  {editingDebtId ? 'Edit debt account' : `Add ${debtCategory}`}
-                </Text>
-
-                <SelectDropdown
-                  label="Account category *"
-                  sheetTitle="Select Debt Category"
-                  value={debtCategory}
-                  options={DEBT_CATEGORY_DROPDOWN_OPTIONS}
-                  onSelect={setDebtCategory}
-                />
-
-                <Text style={styles.fieldLabelSmall}>Debt name *</Text>
-                <TextInput
-                  accessibilityLabel="Debt name" accessibilityHint="Required"
-                  style={styles.textInputField}
-                  value={debtName}
-                  onChangeText={setDebtName}
-                  placeholder="e.g., Chase Freedom, Auto Loan"
-                  placeholderTextColor={palette.muted}
-                />
-
-                <View style={styles.choiceGrid2}>
-                  <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>Current balance ({currencySymbol}) *</Text>
-                    <TextInput
-                      accessibilityLabel="Current balance" accessibilityHint="Required"
-                      style={styles.textInputField}
-                      keyboardType={Platform.OS === "ios" ? "numbers-and-punctuation" : "numeric"}
-                      value={debtBalance}
-                      onChangeText={text => setDebtBalance(prev => acceptMoneyEdit(prev, text, currencyCode, true))}
-                      placeholder="4200.00"
-                      placeholderTextColor={palette.muted}
-                    />
-                  </View>
-                  <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>APR (%) *</Text>
-                    <TextInput
-                      accessibilityLabel="APR percentage" accessibilityHint="Required"
-                      style={styles.textInputField}
-                      keyboardType="decimal-pad"
-                      value={debtApr}
-                      onChangeText={text => setDebtApr(prev => acceptAprEdit(prev, text))}
-                      placeholder="19.99"
-                      placeholderTextColor={palette.muted}
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.choiceGrid2}>
-                  <View style={styles.flex1}>
-                    <Text style={styles.fieldLabelSmall}>Minimum payment ({currencySymbol}/mo) *</Text>
-                    <TextInput
-                      accessibilityLabel="Minimum monthly payment" accessibilityHint="Required"
-                      style={styles.textInputField}
-                      keyboardType="decimal-pad"
-                      value={debtMinimum}
-                      onChangeText={text => setDebtMinimum(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                      placeholder="125.00"
-                      placeholderTextColor={palette.muted}
-                    />
-                  </View>
-                  <View style={styles.flex1}>
-                  <Text style={styles.fieldLabelSmall}>Due day (1–31, optional)</Text>
-                    <TextInput
-                      accessibilityLabel="Due day of month"
-                      style={styles.textInputField}
-                      keyboardType="number-pad"
-                      value={debtDueDay}
-                      onChangeText={setDebtDueDay}
-                      placeholder="15"
-                      placeholderTextColor={palette.muted}
-                    />
-                  </View>
-                </View>
-
-                {!editingDebtId && Number.isInteger(Number(debtDueDay)) && Number(debtDueDay) >= 1 && Number(debtDueDay) <= 31 ? (
-                  <Text style={styles.fieldLabelSmall}>{`First due date: ${obligationFirstDueDate(Number(debtDueDay), currentHouseholdDate(onboardingData.householdTimeZone), currencyCode)}`}</Text>
-                ) : null}
-
-                <Text style={styles.fieldLabelSmall}>
-                  Original balance ({currencySymbol}, optional)
-                </Text>
-                <TextInput
-                  accessibilityLabel="Original balance"
-                  style={styles.textInputField}
-                  keyboardType="decimal-pad"
-                  value={debtOriginalBalance}
-                  onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                  placeholder="25000.00"
-                  placeholderTextColor={palette.muted}
-                />
-
-                {debtCategory === 'Credit card' ? (
-                  <>
-                    <Text style={styles.fieldLabelSmall}>Credit limit ({currencySymbol}, optional)</Text>
-                    <TextInput
-                      accessibilityLabel="Credit limit"
-                      style={styles.textInputField}
-                      keyboardType="decimal-pad"
-                      value={debtCreditLimit}
-                      onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                      placeholder="10000.00"
-                      placeholderTextColor={palette.muted}
-                    />
-                  </>
-                ) : null}
-
-                <View style={[styles.choiceGrid2, { marginTop: 14 }]}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Cancel debt form"
-                    style={styles.subtleActionBtn}
-                    onPress={() => {
-                      clearErrors();
-                      setShowDebtForm(false);
-                      setEditingDebtId(null);
-                      draftDebtIdRef.current = null;
-                      draftDebtPaidTodayRef.current = {};
-                    }}
-                  >
-                    <Text style={styles.subtleActionBtnText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Save debt account"
-                    disabled={saving}
-                    style={[styles.saveInlineBtn, saving && styles.disabledButton]}
-                    onPress={() => void handleSaveDebt()}
-                  >
-                    {saving ? (
-                      <ActivityIndicator color={palette.onBrand} size="small" />
-                    ) : (
-                      <Text style={styles.saveInlineBtnText}>Save debt</Text>
-                    )}
-                  </Pressable>
-                </View>
-              </View>
+              <OnboardingDebtFormCard
+                key={debtFormSeed.key}
+                initialDraft={debtFormSeed.draft}
+                editingDebtId={editingDebtId}
+                currencyCode={currencyCode}
+                currencySymbol={currencySymbol}
+                householdTimeZone={onboardingData.householdTimeZone}
+                saving={saving}
+                styles={styles}
+                mutedColor={palette.muted}
+                onBrandColor={palette.onBrand}
+                onCancel={() => {
+                  clearErrors();
+                  setShowDebtForm(false);
+                  setEditingDebtId(null);
+                  draftDebtIdRef.current = null;
+                  draftDebtPaidTodayRef.current = {};
+                }}
+                onSave={handleSaveDebt}
+              />
             ) : null}
 
             {/* Added Debts List */}
@@ -2462,6 +2381,7 @@ function DebtFreeFlowContent({
                       <Pressable
                         accessibilityRole="button"
                         accessibilityLabel={`Edit ${item.name}`}
+                        disabled={saving}
                         onPress={() => openEditDebtEditor(item)}
                       >
                         <Text style={styles.editActionText}>Edit</Text>
@@ -2469,9 +2389,10 @@ function DebtFreeFlowContent({
                       <Pressable
                         accessibilityRole="button"
                         accessibilityLabel={`Remove ${item.name}`}
+                        disabled={saving}
                         onPress={() => void handleDeleteDebt(item.id)}
                       >
-                        <Text style={styles.removeActionText}>Remove</Text>
+                        <Text style={[styles.removeActionText, saving && styles.disabledButton]}>Remove</Text>
                       </Pressable>
                     </View>
                   </View>
@@ -2850,6 +2771,211 @@ function DebtFreeFlowContent({
     />
   );
 }
+
+type OnboardingDebtDraft = {
+  category: DebtCategory;
+  name: string;
+  balance: string;
+  originalBalance: string;
+  apr: string;
+  minimum: string;
+  dueDay: string;
+  creditLimit: string;
+};
+
+const OnboardingDebtFormCard = memo(function OnboardingDebtFormCard({
+  initialDraft,
+  editingDebtId,
+  currencyCode,
+  currencySymbol,
+  householdTimeZone,
+  saving,
+  styles,
+  mutedColor,
+  onBrandColor,
+  onCancel,
+  onSave,
+}: {
+  initialDraft: OnboardingDebtDraft;
+  editingDebtId: string | null;
+  currencyCode: string;
+  currencySymbol: string;
+  householdTimeZone?: string;
+  saving: boolean;
+  styles: ReturnType<typeof createStyles>;
+  mutedColor: string;
+  onBrandColor: string;
+  onCancel: () => void;
+  onSave: (draft: OnboardingDebtDraft) => Promise<void>;
+}) {
+  const [debtCategory, setDebtCategory] = useState<DebtCategory>(initialDraft.category);
+  const [debtName, setDebtName] = useState(initialDraft.name);
+  const [debtBalance, setDebtBalance] = useState(initialDraft.balance);
+  const [debtOriginalBalance, setDebtOriginalBalance] = useState(initialDraft.originalBalance);
+  const [debtApr, setDebtApr] = useState(initialDraft.apr);
+  const [debtMinimum, setDebtMinimum] = useState(initialDraft.minimum);
+  const [debtDueDay, setDebtDueDay] = useState(initialDraft.dueDay);
+  const [debtCreditLimit, setDebtCreditLimit] = useState(initialDraft.creditLimit);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const busy = saving || submitting;
+
+  const handleSubmit = () => {
+    if (busy || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    void onSave({
+      category: debtCategory,
+      name: debtName,
+      balance: debtBalance,
+      originalBalance: debtOriginalBalance,
+      apr: debtApr,
+      minimum: debtMinimum,
+      dueDay: debtDueDay,
+      creditLimit: debtCreditLimit,
+    }).finally(() => {
+      submittingRef.current = false;
+      setSubmitting(false);
+    });
+  };
+
+  return (
+    <View style={styles.inlineEditorCard}>
+      <Text style={styles.inlineEditorTitle}>
+        {editingDebtId ? 'Edit debt account' : `Add ${debtCategory}`}
+      </Text>
+
+      <SelectDropdown
+        label="Account category *"
+        sheetTitle="Select Debt Category"
+        value={debtCategory}
+        options={DEBT_CATEGORY_DROPDOWN_OPTIONS}
+        onSelect={setDebtCategory}
+      />
+
+      <Text style={styles.fieldLabelSmall}>Debt name *</Text>
+      <TextInput
+        accessibilityLabel="Debt name" accessibilityHint="Required"
+        style={styles.textInputField}
+        value={debtName}
+        onChangeText={setDebtName}
+        placeholder="e.g., Chase Freedom, Auto Loan"
+        placeholderTextColor={mutedColor}
+      />
+
+      <View style={styles.choiceGrid2}>
+        <View style={styles.flex1}>
+          <Text style={styles.fieldLabelSmall}>Current balance ({currencySymbol}) *</Text>
+          <TextInput
+            accessibilityLabel="Current balance" accessibilityHint="Required"
+            style={styles.textInputField}
+            keyboardType={Platform.OS === "ios" ? "numbers-and-punctuation" : "numeric"}
+            value={debtBalance}
+            onChangeText={text => setDebtBalance(prev => acceptMoneyEdit(prev, text, currencyCode, true))}
+            placeholder="4200.00"
+            placeholderTextColor={mutedColor}
+          />
+        </View>
+        <View style={styles.flex1}>
+          <Text style={styles.fieldLabelSmall}>APR (%) *</Text>
+          <TextInput
+            accessibilityLabel="APR percentage" accessibilityHint="Required"
+            style={styles.textInputField}
+            keyboardType="decimal-pad"
+            value={debtApr}
+            onChangeText={text => setDebtApr(prev => acceptAprEdit(prev, text))}
+            placeholder="19.99"
+            placeholderTextColor={mutedColor}
+          />
+        </View>
+      </View>
+
+      <View style={styles.choiceGrid2}>
+        <View style={styles.flex1}>
+          <Text style={styles.fieldLabelSmall}>Minimum payment ({currencySymbol}/mo) *</Text>
+          <TextInput
+            accessibilityLabel="Minimum monthly payment" accessibilityHint="Required"
+            style={styles.textInputField}
+            keyboardType="decimal-pad"
+            value={debtMinimum}
+            onChangeText={text => setDebtMinimum(prev => acceptMoneyEdit(prev, text, currencyCode))}
+            placeholder="125.00"
+            placeholderTextColor={mutedColor}
+          />
+        </View>
+        <View style={styles.flex1}>
+          <Text style={styles.fieldLabelSmall}>Due day (1–31, optional)</Text>
+          <TextInput
+            accessibilityLabel="Due day of month"
+            style={styles.textInputField}
+            keyboardType="number-pad"
+            value={debtDueDay}
+            onChangeText={setDebtDueDay}
+            placeholder="15"
+            placeholderTextColor={mutedColor}
+          />
+        </View>
+      </View>
+
+      {!editingDebtId && Number.isInteger(Number(debtDueDay)) && Number(debtDueDay) >= 1 && Number(debtDueDay) <= 31 ? (
+        <Text style={styles.fieldLabelSmall}>{`First due date: ${obligationFirstDueDate(Number(debtDueDay), currentHouseholdDate(householdTimeZone), currencyCode)}`}</Text>
+      ) : null}
+
+      <Text style={styles.fieldLabelSmall}>
+        Original balance ({currencySymbol}, optional)
+      </Text>
+      <TextInput
+        accessibilityLabel="Original balance"
+        style={styles.textInputField}
+        keyboardType="decimal-pad"
+        value={debtOriginalBalance}
+        onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
+        placeholder="25000.00"
+        placeholderTextColor={mutedColor}
+      />
+
+      {debtCategory === 'Credit card' ? (
+        <>
+          <Text style={styles.fieldLabelSmall}>Credit limit ({currencySymbol}, optional)</Text>
+          <TextInput
+            accessibilityLabel="Credit limit"
+            style={styles.textInputField}
+            keyboardType="decimal-pad"
+            value={debtCreditLimit}
+            onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
+            placeholder="10000.00"
+            placeholderTextColor={mutedColor}
+          />
+        </>
+      ) : null}
+
+      <View style={[styles.choiceGrid2, { marginTop: 14 }]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Cancel debt form"
+          disabled={busy}
+          style={[styles.subtleActionBtn, busy && styles.disabledButton]}
+          onPress={onCancel}
+        >
+          <Text style={styles.subtleActionBtnText}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Save debt account"
+          disabled={busy}
+          style={[styles.saveInlineBtn, busy && styles.disabledButton]}
+          onPress={handleSubmit}
+        >
+          {busy ? (
+            <ActivityIndicator color={onBrandColor} size="small" />
+          ) : (
+            <Text style={styles.saveInlineBtnText}>Save debt</Text>
+          )}
+        </Pressable>
+      </View>
+    </View>
+  );
+});
 
 const createStyles = (palette: AppearancePalette) => StyleSheet.create({
   root: {

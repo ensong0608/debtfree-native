@@ -7,7 +7,7 @@ import { CURRENCIES, getCurrency, type CurrencyScale } from './finance/currencie
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { classifyMoneyEdit, parseMoney, parseApr, makeMoney, moneyFromMajor, multiplyMoneyRatio, addMoney } from './finance/money.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
-import { householdDate, monthlyPaymentDate, parseDateOnly, type DateOnly } from './finance/calendar.ts';
+import { calendarDaysBetween, daysInMonth, getNextMonthString, householdDate, monthlyPaymentDate, parseDateOnly, type DateOnly } from './finance/calendar.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import type { DataContext } from './finance/contracts.ts';
 import type { HouseholdContext } from './household-context';
@@ -1290,6 +1290,8 @@ export function comparePayoffStrategies(
   };
 }
 
+export type LoanInterestMethod = 'monthly' | 'daily_simple';
+
 export type LoanPaymentSplitSuggestion = Readonly<{
   principal: number;
   interest: number;
@@ -1303,6 +1305,9 @@ export function suggestLoanPaymentSplit(params: {
   paymentAmount: number;
   escrowAmount?: number;
   currencyCode?: string;
+  interestMethod?: LoanInterestMethod;
+  daysElapsed?: number;
+  dayCountBasis?: number;
 }): LoanPaymentSplitSuggestion {
   const currencyCode = params.currencyCode ?? 'USD';
   const factor = 10 ** getCurrency(currencyCode).scale;
@@ -1314,8 +1319,175 @@ export function suggestLoanPaymentSplit(params: {
   const afterEscrow = Math.max(0, roundToCurrency(safePayment - escrow));
   const safeBalance = Number.isFinite(params.balance) && params.balance > 0 ? params.balance : 0;
   const safeApr = Number.isFinite(params.aprPercent) && params.aprPercent > 0 ? params.aprPercent : 0;
-  const monthlyInterest = roundToCurrency((safeBalance * (safeApr / 100)) / 12);
-  const interest = Math.min(afterEscrow, monthlyInterest);
-  const principal = Math.max(0, roundToCurrency(afterEscrow - interest));
+  let accruedInterest: number;
+  if (params.interestMethod === 'daily_simple') {
+    const safeDays = Number.isFinite(params.daysElapsed) && (params.daysElapsed ?? 0) > 0 ? params.daysElapsed! : 0;
+    const safeBasis = Number.isFinite(params.dayCountBasis) && (params.dayCountBasis ?? 0) > 0 ? params.dayCountBasis! : 365;
+    accruedInterest = roundToCurrency(((safeBalance * (safeApr / 100)) / safeBasis) * safeDays);
+  } else {
+    accruedInterest = roundToCurrency((safeBalance * (safeApr / 100)) / 12);
+  }
+  const interest = Math.min(afterEscrow, accruedInterest);
+  const principal = Math.min(Math.max(0, roundToCurrency(afterEscrow - interest)), roundToCurrency(safeBalance));
   return { principal, interest, escrow };
+}
+
+/** Unrounded daily interest accrual on a loan balance (`(balance * apr / 100) / dayCountBasis`). */
+export function calculateDailyInterestCost(balance: number, aprPercent: number, dayCountBasis = 365): number {
+  if (!Number.isFinite(balance) || balance <= 0 || !Number.isFinite(aprPercent) || aprPercent <= 0 || !Number.isFinite(dayCountBasis) || dayCountBasis <= 0) {
+    return 0;
+  }
+  return (balance * (aprPercent / 100)) / dayCountBasis;
+}
+
+/** Find the most recent confirmed payment date on or before `onOrBeforeDate` for a loan or its linked bills. */
+export function findPreviousLoanPaymentDate(params: {
+  debtId: string;
+  transactions: readonly {
+    id: string;
+    accountId: string | null;
+    date: DateOnly;
+    category: string;
+    deletedAt: string | null;
+    isPending?: boolean;
+    memo?: string | null;
+  }[];
+  onOrBeforeDate: DateOnly;
+  excludeTransactionId?: string;
+  linkedBillIds?: readonly string[];
+}): DateOnly | null {
+  const cutoff = parseDateOnly(params.onOrBeforeDate);
+  const billIds = params.linkedBillIds ?? [];
+  let latest: DateOnly | null = null;
+  for (const tx of params.transactions) {
+    if (tx.deletedAt !== null || tx.isPending || tx.id === params.excludeTransactionId || tx.date > cutoff) {
+      continue;
+    }
+    const directMatch = tx.accountId === params.debtId && tx.category === 'payment';
+    const linkedBillMatch =
+      billIds.length > 0
+      && tx.accountId === null
+      && (tx.category === 'debit_bill' || tx.category === 'payment')
+      && billIds.some(billId => tx.id.startsWith(`bill:${billId}:`) || (tx.memo ?? '').includes(`[bill:${billId}]`));
+    if (!directMatch && !linkedBillMatch) continue;
+    if (latest === null || tx.date > latest) {
+      latest = tx.date;
+    }
+  }
+  return latest;
+}
+
+/** Resolve the next upcoming due date on or after `today` and strictly after `lastPaymentDate`. */
+export function resolveNextAutoDueDate(params: {
+  dueDay: number | null;
+  today: DateOnly;
+  lastPaymentDate?: DateOnly | null;
+}): DateOnly | null {
+  const { dueDay } = params;
+  if (dueDay === null || !Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) {
+    return null;
+  }
+  const today = parseDateOnly(params.today);
+  const lastPayment = params.lastPaymentDate ? parseDateOnly(params.lastPaymentDate) : null;
+  let month = today.slice(0, 7);
+  for (let step = 0; step < 24; step += 1) {
+    const year = Number(month.slice(0, 4));
+    const monthNum = Number(month.slice(5, 7));
+    const day = Math.min(dueDay, daysInMonth(year, monthNum));
+    const candidate = parseDateOnly(`${String(year).padStart(4, '0')}-${String(monthNum).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+    if (candidate >= today && (lastPayment === null || candidate > lastPayment)) {
+      return candidate;
+    }
+    month = getNextMonthString(month);
+  }
+  return null;
+}
+
+export type AutoLoanSplitEstimate = Readonly<{
+  suggestion: LoanPaymentSplitSuggestion;
+  method: LoanInterestMethod;
+  daysElapsed: number | null;
+  lastPaymentDate: DateOnly | null;
+  dailyInterestCost: number;
+}>;
+
+/** Resolve Auto loan P/I split using Actual/365 daily simple interest when a prior payment exists, else monthly fallback. */
+export function resolveAutoLoanSplitSuggestion(params: {
+  debt: Pick<DebtItem, 'id' | 'balance' | 'apr'>;
+  paymentAmount: number;
+  paymentDate: DateOnly;
+  transactions: readonly {
+    id: string;
+    accountId: string | null;
+    date: DateOnly;
+    category: string;
+    deletedAt: string | null;
+    isPending?: boolean;
+    memo?: string | null;
+  }[];
+  currencyCode?: string;
+  preferredMethod?: LoanInterestMethod;
+  excludeTransactionId?: string;
+  linkedBillIds?: readonly string[];
+  dayCountBasis?: number;
+}): AutoLoanSplitEstimate {
+  const dailyInterestCost = calculateDailyInterestCost(params.debt.balance, params.debt.apr, params.dayCountBasis);
+  const lastPaymentDate = findPreviousLoanPaymentDate({
+    debtId: params.debt.id,
+    transactions: params.transactions,
+    onOrBeforeDate: params.paymentDate,
+    excludeTransactionId: params.excludeTransactionId,
+    linkedBillIds: params.linkedBillIds,
+  });
+  const rawDays = lastPaymentDate ? Math.max(0, calendarDaysBetween(lastPaymentDate, params.paymentDate)) : null;
+  const method: LoanInterestMethod = params.preferredMethod === 'monthly'
+    ? 'monthly'
+    : rawDays !== null
+      ? 'daily_simple'
+      : 'monthly';
+  const suggestion = suggestLoanPaymentSplit({
+    balance: params.debt.balance,
+    aprPercent: params.debt.apr,
+    paymentAmount: params.paymentAmount,
+    currencyCode: params.currencyCode,
+    interestMethod: method,
+    daysElapsed: method === 'daily_simple' ? (rawDays ?? 0) : undefined,
+    dayCountBasis: params.dayCountBasis,
+  });
+  return {
+    suggestion,
+    method,
+    daysElapsed: method === 'daily_simple' ? rawDays : null,
+    lastPaymentDate,
+    dailyInterestCost,
+  };
+}
+
+/** Whether a debt account has complete inputs for an auto-estimated P/I/(Escrow) split. */
+export function canSuggestLoanPaymentSplit(
+  debt: Pick<DebtItem, 'category' | 'balance' | 'apr'>,
+  escrowAmount?: number,
+): boolean {
+  if (!Number.isFinite(debt.balance) || debt.balance <= 0 || !Number.isFinite(debt.apr) || debt.apr < 0) {
+    return false;
+  }
+  if (debt.category === 'Mortgage') {
+    return escrowAmount !== undefined && Number.isFinite(escrowAmount) && escrowAmount >= 0;
+  }
+  if (debt.category === 'Auto loan') {
+    return true;
+  }
+  return false;
+}
+
+/** Projected remaining loan balance after applying an explicit principal reduction. */
+export function projectedLoanBalanceAfterPrincipal(
+  balance: number,
+  principal: number,
+  currencyCode = 'USD',
+): number {
+  const factor = 10 ** getCurrency(currencyCode).scale;
+  const safeBalance = Number.isFinite(balance) && balance > 0 ? balance : 0;
+  const safePrincipal = Number.isFinite(principal) && principal > 0 ? principal : 0;
+  return Math.max(0, Math.round((safeBalance - safePrincipal + Number.EPSILON) * factor) / factor);
 }

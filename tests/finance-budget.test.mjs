@@ -586,3 +586,54 @@ test('T-312: summarizeMonthlyExpenses avoids linked Mortgage/Auto and duplicate 
   assert.equal(kwd.unpaidCharges, 2.002);
   assert.equal(kwd.netBalanceChange, 1.001);
 });
+
+test('T-345: summarizeMonthlyExpenses keeps cash-basis totals unchanged and surfaces paidEarlyForMonth without double-counting', () => {
+  const debts = [
+    { id: 'mtg-1', name: 'Home Loan', category: 'Mortgage', balance: 250000, minimumPayment: 2010, dueDay: 1 },
+    { id: 'cc-1', name: 'Card', category: 'Credit card', balance: 1000, minimumPayment: 50, dueDay: 20 },
+  ];
+  const recurringBills = [
+    { id: 'bill-mtg', name: 'Old Mortgage', category: 'housing', amount: makeMoney('USD', 201000), dueDay: 1, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-util', name: 'Electric', category: 'utilities', amount: makeMoney('USD', 12000), dueDay: 3, paymentMethod: 'debit', autoPost: false, active: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'bill-sub', name: 'Streaming', category: 'subscription', amount: makeMoney('USD', 2500), dueDay: 2, paymentMethod: 'credit', creditAccountId: 'cc-1', autoPost: true, active: true, createdAt: '2026-01-01T00:00:00Z' },
+  ];
+  const base = { payee: 'Pay', memo: '', source: 'manual', reconciled: false, createdAt: '2026-11-21T00:00:00Z', deletedAt: null, isPending: false };
+  const transactions = [
+    // Early mortgage payment paid in Nov for Dec 1 + legacy mirrored recurring bill row (must dedup)
+    { ...base, id: 'pay-mtg-early', accountId: 'mtg-1', date: '2026-11-21', appliesToDate: '2026-12-01', amount: makeMoney('USD', 201000), category: 'payment' },
+    { ...base, id: 'bill:bill-mtg:2026-12-01', accountId: null, date: '2026-11-21', appliesToDate: '2026-12-01', amount: makeMoney('USD', 201000), category: 'debit_bill', memo: '[bill:bill-mtg]', source: 'recurring_bill' },
+    // Early debit utility bill paid in Nov for Dec 3
+    { ...base, id: 'bill:bill-util:2026-12-03', accountId: null, date: '2026-11-25', appliesToDate: '2026-12-03', amount: makeMoney('USD', 12000), category: 'debit_bill', memo: '[bill:bill-util]', source: 'recurring_bill', createdAt: '2026-11-25T00:00:00Z' },
+    // Charges (credit-card auto-bill + standalone card purchase) must never appear in paidEarlyForMonth
+    { ...base, id: 'bill:bill-sub:2026-12-02', accountId: 'cc-1', date: '2026-11-29', appliesToDate: '2026-12-02', amount: makeMoney('USD', 2500), category: 'subscription', memo: 'Auto-recorded recurring bill (Charged to credit card) [bill:bill-sub]', source: 'recurring_bill' },
+    { ...base, id: 'chg-early', accountId: 'cc-1', date: '2026-11-28', appliesToDate: '2026-12-04', amount: makeMoney('USD', 4500), category: 'purchase' },
+    // Same-month December payment & bill (must stay in Dec cashOutflow and NOT in paidEarlyForMonth)
+    { ...base, id: 'pay-cc-dec', accountId: 'cc-1', date: '2026-12-10', appliesToDate: '2026-12-20', amount: makeMoney('USD', 10000), category: 'payment', createdAt: '2026-12-10T00:00:00Z' },
+  ];
+
+  const common = {
+    currencyCode: 'USD',
+    transactions,
+    debts,
+    recurringBills,
+    loanBillPairingByDebtId: { 'mtg-1': { status: 'linked', billId: 'bill-mtg', canonical: true } },
+  };
+  const nov = summarizeMonthlyExpenses({ ...common, month: '2026-11' });
+  const dec = summarizeMonthlyExpenses({ ...common, month: '2026-12' });
+
+  assert.equal(nov.cashOutflow, 2130);
+  assert.equal(nov.totalDebtPayments, 2010);
+  assert.equal(nov.others, 120);
+  assert.equal(nov.paidEarlyForMonth.length, 0);
+
+  assert.equal(dec.cashOutflow, 100);
+  assert.equal(dec.totalDebtPayments, 100);
+  assert.equal(dec.others, 0);
+  assert.deepEqual(
+    dec.paidEarlyForMonth.map(entry => ({ categoryKey: entry.categoryKey, label: entry.label, id: entry.tx.id })),
+    [
+      { categoryKey: 'housing', label: 'Home', id: 'pay-mtg-early' },
+      { categoryKey: 'utilities', label: 'Utilities', id: 'bill:bill-util:2026-12-03' },
+    ],
+  );
+});

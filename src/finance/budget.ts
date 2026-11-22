@@ -278,6 +278,12 @@ export type ExpenseCategoryBreakdown = Readonly<{
   items: readonly LedgerTransaction[];
 }>;
 
+export type PaidEarlyExpenseEntry = Readonly<{
+  categoryKey: string;
+  label: string;
+  tx: LedgerTransaction;
+}>;
+
 export type MonthlyExpenseSummary = Readonly<{
   cashOutflow: number;
   totalDebtPayments: number;
@@ -287,6 +293,7 @@ export type MonthlyExpenseSummary = Readonly<{
   cashBreakdown: readonly { categoryKey: string; label: string; amount: number }[];
   categories: readonly ExpenseCategoryBreakdown[];
   transactions: readonly LedgerTransaction[];
+  paidEarlyForMonth: readonly PaidEarlyExpenseEntry[];
 }>;
 
 type ExpenseEntryKind = 'payment' | 'bill' | 'charge';
@@ -379,10 +386,9 @@ export function summarizeMonthlyExpenses(params: {
     }
   }
 
-  const eligibleTransactions = transactions.filter(tx => {
+  const isEligibleExpenseTx = (tx: LedgerTransaction) => {
     if (tx.deletedAt !== null || tx.isPending) return false;
     if (tx.amount.currency !== currencyCode || tx.amount.minorUnits <= 0) return false;
-    if (tx.date.slice(0, 7) !== month) return false;
     if (tx.source === 'reconciliation') return false;
     if (
       tx.category === 'refund' ||
@@ -393,24 +399,145 @@ export function summarizeMonthlyExpenses(params: {
       return false;
     }
     return true;
-  });
+  };
+
+  const eligibleTransactions = transactions.filter(
+    tx => isEligibleExpenseTx(tx) && tx.date.slice(0, 7) === month,
+  );
+  const paidEarlyCandidates = transactions.filter(
+    tx =>
+      isEligibleExpenseTx(tx) &&
+      tx.appliesToDate != null &&
+      tx.appliesToDate.slice(0, 7) === month &&
+      tx.date.slice(0, 7) < month,
+  );
 
   // An old linked bill can mirror a loan payment. Match by amount and actual date
   // within its due cycle so separate installments in the cycle remain counted.
   const loanPaymentKey = (debtId: string, tx: LedgerTransaction) =>
     JSON.stringify([debtId, (tx.appliesToDate ?? tx.date).slice(0, 7), tx.date, tx.amount.minorUnits]);
-  const loanPayments = new Map<string, number>();
-  const indexedPaymentIds = new Set<string>();
-  for (const tx of eligibleTransactions) {
-    if (tx.category !== 'payment' || !tx.accountId || indexedPaymentIds.has(tx.id)) continue;
-    const debt = debtById.get(tx.accountId);
-    if (!debt || (debt.category !== 'Mortgage' && debt.category !== 'Auto loan')) continue;
-    indexedPaymentIds.add(tx.id);
-    const key = loanPaymentKey(debt.id, tx);
-    loanPayments.set(key, (loanPayments.get(key) ?? 0) + 1);
-  }
 
-  const seenTxIds = new Set<string>();
+  const classifyTransactions = (
+    sourceTransactions: readonly LedgerTransaction[],
+    onClassified: (categoryKey: string, label: string, kind: ExpenseEntryKind, tx: LedgerTransaction) => void,
+  ) => {
+    const loanPayments = new Map<string, number>();
+    const indexedPaymentIds = new Set<string>();
+    for (const tx of sourceTransactions) {
+      if (tx.category !== 'payment' || !tx.accountId || indexedPaymentIds.has(tx.id)) continue;
+      const debt = debtById.get(tx.accountId);
+      if (!debt || (debt.category !== 'Mortgage' && debt.category !== 'Auto loan')) continue;
+      indexedPaymentIds.add(tx.id);
+      const key = loanPaymentKey(debt.id, tx);
+      loanPayments.set(key, (loanPayments.get(key) ?? 0) + 1);
+    }
+
+    const seenTxIds = new Set<string>();
+    for (const tx of sourceTransactions) {
+      if (seenTxIds.has(tx.id)) continue;
+
+      // 1. Confirmed debt payments route by account category (Mortgage -> Home, Auto -> Auto, others -> Debts).
+      if (tx.category === 'payment' && tx.accountId !== null) {
+        seenTxIds.add(tx.id);
+        const debt = debtById.get(tx.accountId);
+        if (debt?.category === 'Mortgage') {
+          onClassified('housing', 'Home', 'payment', tx);
+        } else if (debt?.category === 'Auto loan') {
+          onClassified('custom:transportation', 'Auto', 'payment', tx);
+        } else {
+          onClassified('debt', 'Debts', 'payment', tx);
+        }
+        continue;
+      }
+
+      // 2. Recurring bill settlements resolved strictly by stored bill IDs and validated loan pairings.
+      const txBillIdFromId = extractBillIdFromTxId(tx.id);
+      const memoBillIds = extractBillIdsFromMemo(tx.memo);
+      const candidateBillIds: string[] = [];
+      if (txBillIdFromId) candidateBillIds.push(txBillIdFromId);
+      for (const memoId of memoBillIds) {
+        if (memoId !== txBillIdFromId) candidateBillIds.push(memoId);
+      }
+
+      const linkedBillId = candidateBillIds.find(id => linkedDebtIdByBillId.has(id));
+      if (linkedBillId) {
+        const linkedDebtId = linkedDebtIdByBillId.get(linkedBillId)!;
+        const linkedDebt = debtById.get(linkedDebtId);
+        const loanCat = linkedDebt ? unifiedLoanBudgetCategory(linkedDebt.category) : null;
+        if (loanCat) {
+          const key = loanPaymentKey(linkedDebtId, tx);
+          const duplicateCount = loanPayments.get(key) ?? 0;
+          if (duplicateCount > 0) {
+            loanPayments.set(key, duplicateCount - 1);
+            seenTxIds.add(tx.id);
+            continue;
+          }
+          seenTxIds.add(tx.id);
+          onClassified(
+            loanCat,
+            loanCat === 'housing' ? 'Home' : 'Auto',
+            'payment',
+            tx,
+          );
+          continue;
+        }
+      }
+
+      const matchedBill = candidateBillIds.map(id => billById.get(id)).find((bill): bill is RecurringBill => {
+        if (!bill) return false;
+        if (bill.paymentMethod === 'credit') {
+          return tx.category !== 'payment' && (tx.accountId === bill.creditAccountId || (tx.category === 'debit_bill' && tx.accountId === null));
+        }
+        return tx.accountId === null
+          ? (tx.category === 'debit_bill' || tx.category === 'payment')
+          : tx.category !== 'payment';
+      });
+
+      // Automatic credit posts record a charge. An explicit recorded bill payment
+      // or a historical linked settlement counts as a paid expense.
+      if (tx.source === 'recurring_bill' && tx.accountId !== null &&
+        tx.memo?.startsWith('Auto-recorded recurring bill (Charged to credit card)')) {
+        seenTxIds.add(tx.id);
+        onClassified('charges', 'Charges', 'charge', tx);
+        continue;
+      }
+
+      if (matchedBill) {
+        const resolved = resolveRecurringBillBudgetCategory(matchedBill, customCategoryLabelsByBillId);
+        seenTxIds.add(tx.id);
+        onClassified(resolved.categoryKey, resolved.label, 'bill', tx);
+        continue;
+      }
+
+      if (tx.category === 'debit_bill' || tx.source === 'recurring_bill') {
+        seenTxIds.add(tx.id);
+        if (tx.category === 'subscription') {
+          onClassified('subscription', 'Subscriptions', 'bill', tx);
+        } else if (tx.category === 'utilities') {
+          onClassified('utilities', 'Utilities', 'bill', tx);
+        } else {
+          onClassified('other_bill', 'Other Bills', 'bill', tx);
+        }
+        continue;
+      }
+
+      // 3. Standalone charges (interest, fees, annual fees, standalone purchases/debit spending/non-bill charges).
+      if (
+        tx.category === 'purchase' ||
+        tx.category === 'debit_spending' ||
+        tx.category === 'subscription' ||
+        tx.category === 'utilities' ||
+        tx.category === 'interest' ||
+        tx.category === 'fee' ||
+        tx.category === 'annual_fee'
+      ) {
+        seenTxIds.add(tx.id);
+        if (tx.accountId === null) onClassified('other_spending', 'Other spending', 'bill', tx);
+        else onClassified('charges', 'Charges', 'charge', tx);
+      }
+    }
+  };
+
   const includedTransactions: LedgerTransaction[] = [];
   let totalDebtPayments = makeMoney(currencyCode, 0);
   let others = makeMoney(currencyCode, 0);
@@ -427,7 +554,6 @@ export function summarizeMonthlyExpenses(params: {
   }>();
 
   const recordTransaction = (categoryKey: string, label: string, kind: ExpenseEntryKind, tx: LedgerTransaction) => {
-    seenTxIds.add(tx.id);
     includedTransactions.push(tx);
     if (kind === 'charge') {
       unpaidCharges = addMoney(unpaidCharges, tx.amount);
@@ -457,103 +583,20 @@ export function summarizeMonthlyExpenses(params: {
     bucket.transactions.push(tx);
   };
 
-  for (const tx of eligibleTransactions) {
-    if (seenTxIds.has(tx.id)) continue;
+  classifyTransactions(eligibleTransactions, recordTransaction);
 
-    // 1. Confirmed debt payments route by account category (Mortgage -> Home, Auto -> Auto, others -> Debts).
-    if (tx.category === 'payment' && tx.accountId !== null) {
-      const debt = debtById.get(tx.accountId);
-      if (debt?.category === 'Mortgage') {
-        recordTransaction('housing', 'Home', 'payment', tx);
-      } else if (debt?.category === 'Auto loan') {
-        recordTransaction('custom:transportation', 'Auto', 'payment', tx);
-      } else {
-        recordTransaction('debt', 'Debts', 'payment', tx);
-      }
-      continue;
+  const paidEarlyForMonth: PaidEarlyExpenseEntry[] = [];
+  classifyTransactions(paidEarlyCandidates, (categoryKey, label, kind, tx) => {
+    if (kind === 'payment' || kind === 'bill') {
+      paidEarlyForMonth.push({ categoryKey, label, tx });
     }
-
-    // 2. Recurring bill settlements resolved strictly by stored bill IDs and validated loan pairings.
-    const txBillIdFromId = extractBillIdFromTxId(tx.id);
-    const memoBillIds = extractBillIdsFromMemo(tx.memo);
-    const candidateBillIds: string[] = [];
-    if (txBillIdFromId) candidateBillIds.push(txBillIdFromId);
-    for (const memoId of memoBillIds) {
-      if (memoId !== txBillIdFromId) candidateBillIds.push(memoId);
-    }
-
-    const linkedBillId = candidateBillIds.find(id => linkedDebtIdByBillId.has(id));
-    if (linkedBillId) {
-      const linkedDebtId = linkedDebtIdByBillId.get(linkedBillId)!;
-      const linkedDebt = debtById.get(linkedDebtId);
-      const loanCat = linkedDebt ? unifiedLoanBudgetCategory(linkedDebt.category) : null;
-      if (loanCat) {
-        const key = loanPaymentKey(linkedDebtId, tx);
-        const duplicateCount = loanPayments.get(key) ?? 0;
-        if (duplicateCount > 0) {
-          loanPayments.set(key, duplicateCount - 1);
-          seenTxIds.add(tx.id);
-          continue;
-        }
-        recordTransaction(
-          loanCat,
-          loanCat === 'housing' ? 'Home' : 'Auto',
-          'payment',
-          tx,
-        );
-        continue;
-      }
-    }
-
-    const matchedBill = candidateBillIds.map(id => billById.get(id)).find((bill): bill is RecurringBill => {
-      if (!bill) return false;
-      if (bill.paymentMethod === 'credit') {
-        return tx.category !== 'payment' && (tx.accountId === bill.creditAccountId || (tx.category === 'debit_bill' && tx.accountId === null));
-      }
-      return tx.accountId === null
-        ? (tx.category === 'debit_bill' || tx.category === 'payment')
-        : tx.category !== 'payment';
-    });
-
-    // Automatic credit posts record a charge. An explicit recorded bill payment
-    // or a historical linked settlement counts as a paid expense.
-    if (tx.source === 'recurring_bill' && tx.accountId !== null &&
-      tx.memo?.startsWith('Auto-recorded recurring bill (Charged to credit card)')) {
-      recordTransaction('charges', 'Charges', 'charge', tx);
-      continue;
-    }
-
-    if (matchedBill) {
-      const resolved = resolveRecurringBillBudgetCategory(matchedBill, customCategoryLabelsByBillId);
-      recordTransaction(resolved.categoryKey, resolved.label, 'bill', tx);
-      continue;
-    }
-
-    if (tx.category === 'debit_bill' || tx.source === 'recurring_bill') {
-      if (tx.category === 'subscription') {
-        recordTransaction('subscription', 'Subscriptions', 'bill', tx);
-      } else if (tx.category === 'utilities') {
-        recordTransaction('utilities', 'Utilities', 'bill', tx);
-      } else {
-        recordTransaction('other_bill', 'Other Bills', 'bill', tx);
-      }
-      continue;
-    }
-
-    // 3. Standalone charges (interest, fees, annual fees, standalone purchases/debit spending/non-bill charges).
-    if (
-      tx.category === 'purchase' ||
-      tx.category === 'debit_spending' ||
-      tx.category === 'subscription' ||
-      tx.category === 'utilities' ||
-      tx.category === 'interest' ||
-      tx.category === 'fee' ||
-      tx.category === 'annual_fee'
-    ) {
-      if (tx.accountId === null) recordTransaction('other_spending', 'Other spending', 'bill', tx);
-      else recordTransaction('charges', 'Charges', 'charge', tx);
-    }
-  }
+  });
+  paidEarlyForMonth.sort((a, b) =>
+    (a.tx.appliesToDate ?? '').localeCompare(b.tx.appliesToDate ?? '') ||
+    b.tx.date.localeCompare(a.tx.date) ||
+    b.tx.createdAt.localeCompare(a.tx.createdAt) ||
+    a.tx.id.localeCompare(b.tx.id),
+  );
 
   const categories: ExpenseCategoryBreakdown[] = [...buckets.values()]
     .map(bucket => {
@@ -599,6 +642,7 @@ export function summarizeMonthlyExpenses(params: {
     })).sort((a, b) => b.amount - a.amount),
     categories,
     transactions: sortedIncluded,
+    paidEarlyForMonth,
   };
 }
 

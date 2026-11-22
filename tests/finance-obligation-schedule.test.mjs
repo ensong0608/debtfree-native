@@ -1,9 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire, registerHooks } from 'node:module';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { initializeObligationSchedule as init, updateObligationSchedule as update, getObligationCycle as cycle, validateObligationSchedule, obligationScheduleKey } from '../src/finance/obligation-schedule.ts';
 import { prepareObligationEditorSchedule } from '../src/finance/obligation-editor-domain.ts';
 import { calculateOverdueObligations, getScheduledObligationRows } from '../src/finance/payment-matching.ts';
 import { findFutureRecurringBillTransactions, generateRecurringBillTransaction, processRecurringBills } from '../src/finance/recurring-bills.ts';
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (context.parentURL?.endsWith('/src/finance/obligation-editor.ts')) {
+      if (specifier === 'react-native') {
+        const mock = `export const Alert = { alert: (...args) => globalThis.__obligationAlertMock?.(...args) };`;
+        return { url: `data:text/javascript,${encodeURIComponent(mock)}`, shortCircuit: true };
+      }
+      if (specifier === '../onboarding-storage') {
+        const mock = `export class FinancialSettingsConflictError extends Error {} export const loadUserOnboardingData = async () => { throw new Error('unused'); }; export const saveUserOnboardingData = async () => { throw new Error('unused'); };`;
+        return { url: `data:text/javascript,${encodeURIComponent(mock)}`, shortCircuit: true };
+      }
+    }
+    if (specifier.startsWith('.') && context.parentURL?.startsWith('file:') && !/\.[a-z]+$/i.test(specifier)) {
+      const resolved = new URL(`${specifier}.ts`, context.parentURL);
+      if (existsSync(fileURLToPath(resolved))) return nextResolve(resolved.href, context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+
+const require = createRequire(import.meta.url);
+const { chooseObligationDueDateEdit } = require('../src/finance/obligation-editor.ts');
 const money = n => ({ currency: 'USD', minorUnits: n });
 const bill = { id:'a', name:'Bill', category:'utilities', amount:money(2000), dueDay:5, paymentMethod:'credit', creditAccountId:'card', autoPost:true, active:true, createdAt:'2026-11-20T00:00:00Z' };
 const overdue = (asOfDate, schedules, b = bill) => calculateOverdueObligations({ debts:[], recurringBills:[b], transactions:[], asOfDate, currencyCode:'USD', schedules });
@@ -172,4 +198,141 @@ test('cycle moves reject invalid dates, backward months, and dates before today'
   assert.throws(() => editSchedule(original, { cycleMove:{fromMonth:'2026-11', toDate:'2027-01-06'} }));
   assert.throws(() => validateObligationSchedule({ ...original, cycleDueDayOverrides:{'2026-10':6} }));
   assert.throws(() => validateObligationSchedule({ ...original, cycleDueDayOverrides:{'2026-11':32} }));
+});
+
+test('prepareObligationEditorSchedule restores suppressed current-month cycle for bills and debts', () => {
+  for (const kind of ['bill', 'debt']) {
+    const original = init({ today: '2026-11-20', dueDay: 25, amount: money(2000) });
+    const suppressed = prepareObligationEditorSchedule({
+      kind, id: 'ob-1', today: '2026-11-20', dueDay: 6, amount: money(2000),
+      createdAt: '2026-11-01T00:00:00Z', isNew: false, existing: original,
+      cycleMove: { fromMonth: '2026-11', toDate: '2026-12-06' },
+    });
+    assert.equal(cycle(suppressed, '2026-11'), null);
+
+    // Reverting to original due day omits empty cycleDueDayOverrides cleanly
+    const reverted = prepareObligationEditorSchedule({
+      kind, id: 'ob-1', today: '2026-11-21', dueDay: 25, amount: money(2000),
+      createdAt: '2026-11-01T00:00:00Z', isNew: false, existing: suppressed,
+      restoreSuppressedCycle: { month: '2026-11', dueDay: 25 },
+    });
+    assert.equal(reverted.cycleDueDayOverrides, undefined);
+    assert.equal(cycle(reverted, '2026-11')?.dueDate, '2026-11-25');
+    assert.equal(cycle(reverted, '2026-12')?.dueDate, '2026-12-25');
+
+    // Restoring to a different due day than the 2026-11 term stores a per-cycle override
+    const changedRestore = prepareObligationEditorSchedule({
+      kind, id: 'ob-1', today: '2026-11-21', dueDay: 22, amount: money(2000),
+      createdAt: '2026-11-01T00:00:00Z', isNew: false, existing: suppressed,
+      restoreSuppressedCycle: { month: '2026-11', dueDay: 22 },
+    });
+    assert.equal(cycle(changedRestore, '2026-11')?.dueDate, '2026-11-22');
+    assert.equal(cycle(changedRestore, '2026-12')?.dueDate, '2026-12-22');
+  }
+});
+
+test('chooseObligationDueDateEdit prompts before skipping current month and restores reverted due dates for bills and debts', async () => {
+  const baseBill = { ...bill, id: 'bill-1', dueDay: 25, createdAt: '2026-10-01T00:00:00Z' };
+  const baseDebt = {
+    id: 'debt-1', name: 'Card', category: 'Credit card', balance: 1000, originalBalance: 1000,
+    minimumPayment: 50, apr: 18, dueDay: 25, creditLimit: 2000,
+    createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
+  };
+
+  try {
+    for (const targetKind of ['bill', 'debt']) {
+      const key = targetKind === 'bill' ? 'bill:bill-1' : 'debt:debt-1';
+      const activeSchedule = init({ today: '2026-10-01', dueDay: 25, amount: money(2000) });
+      const baseData = {
+        debts: targetKind === 'debt' ? [baseDebt] : [],
+        loanBillPairingByDebtId: {},
+        obligationSchedules: { [key]: activeSchedule },
+      };
+      const targetArg = targetKind === 'bill' ? { bill: baseBill } : { debt: baseDebt };
+
+      // Same-month move stays automatic (no Alert)
+      let alertCalls = [];
+      globalThis.__obligationAlertMock = (title, message, buttons) => {
+        alertCalls.push({ title, message, buttons });
+      };
+      const sameMonth = await chooseObligationDueDateEdit({
+        current: baseData, today: '2026-11-20', dueDay: 22, currencyCode: 'USD',
+        transactions: [], recurringBills: targetKind === 'bill' ? [baseBill] : [], ...targetArg,
+      });
+      assert.equal(alertCalls.length, 0);
+      assert.deepEqual(sameMonth.cycleMove, { fromMonth: '2026-11', toDate: '2026-11-22' });
+
+      // Moving to an earlier day in the current month prompts via Alert: Keep vs Move
+      globalThis.__obligationAlertMock = (title, message, buttons) => {
+        alertCalls.push({ title, message, buttons });
+        buttons.find(b => b.text.startsWith('Keep')).onPress();
+      };
+      const keptCurrent = await chooseObligationDueDateEdit({
+        current: baseData, today: '2026-11-20', dueDay: 6, currencyCode: 'USD',
+        transactions: [], recurringBills: targetKind === 'bill' ? [baseBill] : [], ...targetArg,
+      });
+      assert.equal(alertCalls.length, 1);
+      assert.equal(alertCalls[0].title, 'Skip this month’s due date?');
+      assert.equal(keptCurrent.cycleMove, undefined);
+
+      alertCalls = [];
+      globalThis.__obligationAlertMock = (title, message, buttons) => {
+        alertCalls.push({ title, message, buttons });
+        buttons.find(b => b.text.startsWith('Move to')).onPress();
+      };
+      const movedNext = await chooseObligationDueDateEdit({
+        current: baseData, today: '2026-11-20', dueDay: 6, currencyCode: 'USD',
+        transactions: [], recurringBills: targetKind === 'bill' ? [baseBill] : [], ...targetArg,
+      });
+      assert.equal(alertCalls.length, 1);
+      assert.deepEqual(movedNext.cycleMove, { fromMonth: '2026-11', toDate: '2026-12-06' });
+
+      // Suppressed current month + reverting to dueDay >= today restores automatically
+      const suppressedSchedule = prepareObligationEditorSchedule({
+        kind: targetKind, id: targetKind === 'bill' ? 'bill-1' : 'debt-1',
+        today: '2026-11-20', dueDay: 6, amount: money(2000),
+        createdAt: '2026-11-01T00:00:00Z', isNew: false, existing: activeSchedule,
+        cycleMove: movedNext.cycleMove,
+      });
+      const suppressedData = { ...baseData, obligationSchedules: { [key]: suppressedSchedule } };
+
+      alertCalls = [];
+      globalThis.__obligationAlertMock = (title, message, buttons) => {
+        alertCalls.push({ title, message, buttons });
+      };
+      const autoRestored = await chooseObligationDueDateEdit({
+        current: suppressedData, today: '2026-11-21', dueDay: 25, currencyCode: 'USD',
+        transactions: [], recurringBills: targetKind === 'bill' ? [baseBill] : [], ...targetArg,
+      });
+      assert.equal(alertCalls.length, 0);
+      assert.deepEqual(autoRestored.restoreSuppressedCycle, { month: '2026-11', dueDay: 25 });
+
+      // Suppressed current month + reverting to dueDay < today prompts Keep skipped vs Restore
+      globalThis.__obligationAlertMock = (title, message, buttons) => {
+        alertCalls.push({ title, message, buttons });
+        buttons.find(b => b.text === 'Keep skipped').onPress();
+      };
+      const keptSkipped = await chooseObligationDueDateEdit({
+        current: suppressedData, today: '2026-11-21', dueDay: 18, currencyCode: 'USD',
+        transactions: [], recurringBills: targetKind === 'bill' ? [baseBill] : [], ...targetArg,
+      });
+      assert.equal(alertCalls.length, 1);
+      assert.equal(alertCalls[0].title, 'Restore this month’s due date?');
+      assert.equal(keptSkipped.restoreSuppressedCycle, undefined);
+
+      alertCalls = [];
+      globalThis.__obligationAlertMock = (title, message, buttons) => {
+        alertCalls.push({ title, message, buttons });
+        buttons.find(b => b.text.startsWith('Restore ')).onPress();
+      };
+      const confirmedRestore = await chooseObligationDueDateEdit({
+        current: suppressedData, today: '2026-11-21', dueDay: 18, currencyCode: 'USD',
+        transactions: [], recurringBills: targetKind === 'bill' ? [baseBill] : [], ...targetArg,
+      });
+      assert.equal(alertCalls.length, 1);
+      assert.deepEqual(confirmedRestore.restoreSuppressedCycle, { month: '2026-11', dueDay: 18 });
+    }
+  } finally {
+    delete globalThis.__obligationAlertMock;
+  }
 });

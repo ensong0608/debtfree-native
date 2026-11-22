@@ -507,6 +507,11 @@ export function findUnassignedPaymentsForObligation(
 ): LedgerTransaction[] {
   const targetName = obligation.name?.toLowerCase().trim() ?? '';
   const obligationCurrency = obligation.requiredAmount?.currency;
+  const targetCycleMonth = obligation.dueCycleMonth || obligation.dueDate.slice(0, 7);
+  const historicalBillIds = obligation.historicalBillIds ?? [];
+  const allowedBillIds = new Set<string>(
+    obligation.billId ? [obligation.billId, ...historicalBillIds] : historicalBillIds,
+  );
 
   return transactions.filter(tx => {
     if (tx.deletedAt !== null) return false;
@@ -516,61 +521,71 @@ export function findUnassignedPaymentsForObligation(
     // Don't show transactions already specifically assigned to this exact due date
     if (tx.appliesToDate === obligation.dueDate) return false;
 
-    if (obligation.kind === 'bill' && obligation.linkedDebtId && tx.accountId === obligation.linkedDebtId && tx.category === 'payment') {
-      return true;
-    }
-
-    const historicalBillIds = obligation.historicalBillIds ?? [];
-
-    // Don't show transactions that specifically belong to another bill
+    // Don't show transactions that specifically belong to another bill via ID or memo tag
     if (tx.id.startsWith('bill:')) {
       const idBillId = extractBillIdFromTxId(tx.id);
-      const matchesOwnBill = Boolean(obligation.billId && idBillId === obligation.billId);
-      const matchesHistBill = Boolean(idBillId && historicalBillIds.includes(idBillId));
-      if (!matchesOwnBill && !matchesHistBill) {
+      if (!idBillId || !allowedBillIds.has(idBillId)) {
         return false;
       }
+    }
+    const memoBillIds = extractBillIdsFromMemo(tx.memo);
+    for (const memoBillId of memoBillIds) {
+      if (!allowedBillIds.has(memoBillId)) {
+        return false;
+      }
+    }
+
+    if (obligation.kind === 'bill' && obligation.linkedDebtId && tx.accountId === obligation.linkedDebtId && tx.category === 'payment') {
+      return true;
     }
 
     if (obligation.kind === 'debt') {
       if (historicalBillIds.length > 0) {
         const idBillId = extractBillIdFromTxId(tx.id);
-        const memoIds = extractBillIdsFromMemo(tx.memo);
-        const isHistBillTx = historicalBillIds.some(histId => idBillId === histId || memoIds.has(histId));
+        const isHistBillTx = historicalBillIds.some(histId => idBillId === histId || memoBillIds.has(histId));
         if (isHistBillTx && (tx.accountId === null || tx.accountId === obligation.accountId) && (tx.category === 'payment' || tx.category === 'debit_bill')) {
           return !tx.appliesToDate;
         }
       }
       // Must be a payment
       if (tx.category !== 'payment') return false;
-      // Either already on this debt account without appliesToDate, or unassigned payee match
+      // Either on this debt account without appliesToDate (or in the same dueCycleMonth on another due day), or unassigned payee match
       if (obligation.accountId && tx.accountId === obligation.accountId) {
-        return !tx.appliesToDate;
+        return !tx.appliesToDate || (tx.appliesToDate.slice(0, 7) === targetCycleMonth && tx.appliesToDate !== obligation.dueDate);
       }
       return !tx.accountId && Boolean(targetName && tx.payee.toLowerCase().includes(targetName));
-    } else {
-      // Recurring bill
-      if (obligation.accountId) {
-        // Credit card bill: MUST be a merchant charge on the card, NEVER a debt repayment ('payment')
-        if (tx.category === 'payment') return false;
-        return (
-          tx.accountId === obligation.accountId &&
-          !tx.appliesToDate &&
-          Boolean(targetName && tx.payee.toLowerCase().includes(targetName))
-        );
-      } else {
-        // Debit bill: unassigned debit transaction matching bill payee
-        return (
-          tx.accountId === null &&
-          !tx.appliesToDate &&
-          Boolean(
-            targetName &&
-              (tx.payee.toLowerCase().includes(targetName) ||
-                Boolean(tx.memo && tx.memo.toLowerCase().includes(targetName)))
-          )
-        );
-      }
     }
+
+    // Recurring bill
+    const matchesCycleOrUnassigned =
+      !tx.appliesToDate || (tx.appliesToDate.slice(0, 7) === targetCycleMonth && tx.appliesToDate !== obligation.dueDate);
+    const matchesPayeeOrMemo = Boolean(
+      targetName &&
+        (tx.payee.toLowerCase().includes(targetName) ||
+          Boolean(tx.memo && tx.memo.toLowerCase().includes(targetName))),
+    );
+    const matchesAmountInMonth = Boolean(
+      obligation.requiredAmount &&
+        tx.amount.minorUnits === obligation.requiredAmount.minorUnits &&
+        tx.date.slice(0, 7) === targetCycleMonth,
+    );
+
+    if (obligation.accountId) {
+      // Credit card bill: MUST be a non-payment row on the card
+      if (tx.category === 'payment') return false;
+      return (
+        tx.accountId === obligation.accountId &&
+        matchesCycleOrUnassigned &&
+        (matchesPayeeOrMemo || matchesAmountInMonth)
+      );
+    }
+
+    // Debit bill: unassigned debit row matching bill name/memo or exact same-month bill/payment amount
+    return (
+      tx.accountId === null &&
+      matchesCycleOrUnassigned &&
+      (matchesPayeeOrMemo || (matchesAmountInMonth && (tx.category === 'debit_bill' || tx.category === 'payment')))
+    );
   });
 }
 

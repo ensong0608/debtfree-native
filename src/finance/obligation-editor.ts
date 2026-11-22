@@ -147,15 +147,61 @@ export async function chooseObligationDueDateEdit(params: {
   const cycle = currentCycle && currentCycle.dueDate !== nextDayThisMonth
     ? currentCycle : carryover ?? firstFutureCycle;
   const targetMonth = toDate.slice(0, 7);
-  if (!cycle || hasActivity(cycle) || schedule.acknowledgedPaidCycles.includes(targetMonth) ||
-      protectedDueDays[targetMonth] !== undefined) return edit;
-
-  const move = { fromMonth: cycle.dueCycleMonth, toDate };
-  if (cycle.dueDate >= today) return { ...edit, cycleMove: move };
-
   const displayDate = (date: DateOnly) => new Intl.DateTimeFormat(undefined, {
     month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
   }).format(new Date(`${date}T12:00:00Z`));
+  const shortDate = (date: DateOnly) => new Intl.DateTimeFormat(undefined, {
+    month: 'short', day: 'numeric', timeZone: 'UTC',
+  }).format(new Date(`${date}T12:00:00Z`));
+
+  if (!cycle) {
+    if (
+      schedule.cycleDueDayOverrides?.[month] === null &&
+      !schedule.acknowledgedPaidCycles.includes(month) &&
+      protectedDueDays[month] === undefined
+    ) {
+      const candidateDate = resolveRecurringBillDate(month, dueDay);
+      if (candidateDate >= schedule.firstDueDate) {
+        if (candidateDate >= today) {
+          return { ...edit, restoreSuppressedCycle: { month, dueDay } };
+        }
+        return new Promise(resolve => {
+          Alert.alert(
+            'Restore this month’s due date?',
+            `This month’s due date was skipped. Restore ${displayDate(candidateDate)}, or keep this month skipped and apply day ${dueDay} starting next month?`,
+            [
+              { text: 'Keep skipped', style: 'cancel', onPress: () => resolve(edit) },
+              { text: `Restore ${shortDate(candidateDate)}`, onPress: () => resolve({ ...edit, restoreSuppressedCycle: { month, dueDay } }) },
+            ],
+            { cancelable: false },
+          );
+        });
+      }
+    }
+    return edit;
+  }
+
+  if (hasActivity(cycle) || schedule.acknowledgedPaidCycles.includes(targetMonth) ||
+      protectedDueDays[targetMonth] !== undefined) return edit;
+
+  const move = { fromMonth: cycle.dueCycleMonth, toDate };
+  if (cycle.dueDate >= today) {
+    if (cycle.dueCycleMonth === month && targetMonth > month) {
+      return new Promise(resolve => {
+        Alert.alert(
+          'Skip this month’s due date?',
+          `Moving the due day to day ${dueDay} moves the reminder from ${displayDate(cycle.dueDate)} to ${displayDate(toDate)}, skipping this month.`,
+          [
+            { text: `Keep ${shortDate(cycle.dueDate)}`, style: 'cancel', onPress: () => resolve(edit) },
+            { text: `Move to ${shortDate(toDate)}`, onPress: () => resolve({ ...edit, cycleMove: move }) },
+          ],
+          { cancelable: false },
+        );
+      });
+    }
+    return { ...edit, cycleMove: move };
+  }
+
   return new Promise(resolve => {
     Alert.alert(
       'Move overdue reminder?',

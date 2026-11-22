@@ -71,23 +71,25 @@ test('with-android-pull-down-view plugin generates DFNPullDownViewManager and re
   assert.match(kotlin, /topPullRelease/);
 });
 
-test('Transactions History Filters modal matches owner-specified Account Type, Transaction Type, and Apply-only footer', () => {
+test('Transactions History filters use Direction 1 All chips, active chips, and a separate four-way sort sheet', () => {
   const source = readFileSync(new URL('../src/screens/TransactionsScreen.tsx', import.meta.url), 'utf8');
-  assert.match(source, /filterRadio\('All'/);
-  assert.doesNotMatch(source, /All account types/);
-  assert.doesNotMatch(source, /Debit Cards/);
-  assert.doesNotMatch(source, /All types/);
-  assert.doesNotMatch(source, /Debit only/);
-  assert.doesNotMatch(source, /Charges and fees/);
-
-  for (const label of ['Credit Card', 'Home', 'Auto', 'Subscriptions', 'Utilities', 'Insurance', 'Others']) {
-    assert.match(source, new RegExp(`label: '${label}'`));
-  }
-  for (const label of ['Payments', 'Purchase', 'Fees', 'Others']) {
-    assert.match(source, new RegExp(`label: '${label}'`));
-  }
+  assert.match(source, /filterChip\('All', draftTypes\.length === 0/);
+  assert.match(source, /filterChip\('All', draftAccountGroups\.length === 0 && draftAccountIds\.length === 0/);
+  assert.match(source, /Choose specific accounts/);
+  assert.match(source, /accessibilityLabel="Reset filters"/);
   assert.match(source, /accessibilityLabel="Apply filters"/);
-  assert.doesNotMatch(source, /accessibilityLabel="Cancel filters"/);
+  assert.match(source, /Show \$\{draftMatchCount\}/);
+  assert.match(source, /Active transaction filters/);
+  assert.match(source, /Clear all filters/);
+  assert.match(source, /Sort by/);
+  assert.match(source, /Highest amount/);
+  assert.match(source, /Lowest amount/);
+  assert.doesNotMatch(source, /Debit Cards/);
+  assert.doesNotMatch(source, /Cancel filters/);
+
+  for (const label of ['Payments', 'Bills', 'Purchases', 'Interest & fees', 'Refunds & adj.']) {
+    assert.match(source, new RegExp(`label: '${label}'`));
+  }
 });
 
 test('T-301: Sub-tabs persist across bottom-tab switches and Phase 3 clarity features are wired', () => {
@@ -185,8 +187,14 @@ test('T-312: BudgetScreen implements swipeable Budget and Expense segments with 
   assert.match(budget, /segments=\{?\['Budget',\s*'Expense'\]\}?/);
   assert.match(budget, /renderSegment=/);
   assert.match(budget, /summarizeMonthlyExpenses/);
-  assert.ok(['Actual Cash Flow', 'Cash to Debt Payments', 'Others', 'Charges', 'Net Balance Change']
-    .every(label => budget.includes(`label: '${label}'`)), 'Expense summary should expose all five metrics');
+  assert.match(budget, /CASH OUTFLOW/);
+  assert.match(budget, /DEBT TUG-OF-WAR/);
+  assert.match(budget, /Paid to Debt/);
+  assert.match(budget, /New Card Charges/);
+  assert.match(budget, /cashBreakdown[\s\S]*categoryKey !== 'charges'/);
+  assert.match(budget, /accessibilityLabel="Previous expense month"/);
+  assert.match(budget, /accessibilityLabel="Next expense month"/);
+  assert.doesNotMatch(budget, /Actual Cash Flow|Cash to Debt Payments|Net Balance Change/);
   assert.doesNotMatch(budget, /Recorded expenses|Preview extra payment/);
   assert.match(budget, /onOpenPurchase\?\.\(tx\.id\)/);
   assert.match(budget, /InspireCornerArt/);
@@ -199,4 +207,135 @@ test('T-312: BudgetScreen implements swipeable Budget and Expense segments with 
   assert.match(budget, /Checking \/ Debit/);
   assert.match(budget, /Annual card fee reserve/);
   assert.doesNotMatch(budget, />Debit Card</);
+});
+
+test('T-329B: Pull-to-refresh settles cleanly with bounded timeouts, search syncs safely, modals isolate drafts, and History memos/windowing stay stable', () => {
+  const onboard = readFileSync(new URL('../src/OnboardingAndHome.tsx', import.meta.url), 'utf8');
+  assert.match(onboard, /REFRESH_TIMEOUT_MS\s*=\s*15_000/);
+  assert.match(onboard, /withRefreshTimeout/);
+  assert.doesNotMatch(onboard, /void onRefreshHouseholdContexts\?\.\(\)/);
+  assert.match(onboard, /const OnboardingDebtFormCard = memo\(/);
+
+  const ptr = readFileSync(new URL('../src/components/PullToRefreshScrollView.tsx', import.meta.url), 'utf8');
+  assert.match(ptr, /settlingSafetyTimerRef/);
+  assert.match(ptr, /collapseSafetyTimerRef/);
+  assert.match(ptr, /Promise\.resolve\(\)\.then\(\(\) => onRefreshRef\.current\?\.\(\)\)/);
+  assert.doesNotMatch(ptr, /if \(finished && !refreshingRef\.current/);
+  assert.match(ptr, /pullY\.stopAnimation\(\)/);
+
+  const home = readFileSync(new URL('../src/screens/HomeScreen.tsx', import.meta.url), 'utf8');
+  assert.match(home, /REFRESH_SAFETY_TIMEOUT_MS\s*=\s*16_000/);
+  assert.match(home, /const DebtEditorModal = memo\(/);
+  assert.match(home, /actionBusyRef/);
+
+  const debt = readFileSync(new URL('../src/screens/DebtScreen.tsx', import.meta.url), 'utf8');
+  assert.match(debt, /export const DebtScreen = memo\(/);
+  assert.match(debt, /const AccountQuickTransactionModal = memo\(/);
+  assert.match(debt, /searchDirty/);
+  assert.match(debt, /clearSearch/);
+  assert.match(debt, /savingAccountTxRef/);
+
+  const tx = readFileSync(new URL('../src/screens/TransactionsScreen.tsx', import.meta.url), 'utf8');
+  assert.match(tx, /export const TransactionsScreen = memo\(/);
+  assert.match(tx, /const AddTransactionModal = memo\(/);
+  assert.match(tx, /const EditTransactionModal = memo\(/);
+  assert.match(tx, /searchDirty/);
+  assert.match(tx, /clearSearch/);
+  assert.match(tx, /const TYPE_FILTER_OPTIONS:/);
+  assert.match(tx, /\{\s*totalPaymentsMinor,\s*totalInterestFeesMinor\s*\}\s*=\s*useMemo\(/);
+  assert.match(tx, /savingTxRef/);
+  assert.match(tx, /savingEditRef/);
+  assert.match(tx, /deletingTxRef/);
+
+  const budget = readFileSync(new URL('../src/screens/BudgetScreen.tsx', import.meta.url), 'utf8');
+  assert.match(budget, /export const BudgetScreen = memo\(/);
+
+  const progress = readFileSync(new URL('../src/screens/ProgressScreen.tsx', import.meta.url), 'utf8');
+  assert.match(progress, /export const ProgressScreen = memo\(/);
+});
+
+test('T-336: Transactions distinguishes Auto-Bill from Bill Payment, Scheduled opens ObligationPaySheet, and ObligationPaySheet uses busyRef', () => {
+  const tx = readFileSync(new URL('../src/screens/TransactionsScreen.tsx', import.meta.url), 'utf8');
+  assert.match(tx, /const formatTransactionSourceLabel = \(source\?: string, memo\?: string \| null\): string =>/);
+  assert.match(tx, /memo\?\.startsWith\('Auto-recorded recurring bill'\) \? 'Auto-Bill' : 'Bill Payment'/);
+  assert.match(tx, /formatTransactionSourceLabel\(tx\.source, tx\.memo\)/);
+  assert.match(tx, /findUnassignedPaymentsForObligation\(match\.obligation, transactions\)/);
+  assert.match(tx, /hasMatchCandidates \? 'Match \/ Pay' : 'Pay'/);
+  assert.match(tx, /onPress=\{\(\) => onOpenPaySheet\(buildPayTarget\(\)\)\}/);
+  assert.match(tx, /<ObligationPaySheet[\s\S]*target=\{payTarget\}[\s\S]*onUpdateTransaction=\{onUpdateTransaction\}/);
+
+  const paySheet = readFileSync(new URL('../src/components/ObligationPaySheet.tsx', import.meta.url), 'utf8');
+  assert.match(paySheet, /const busyRef = useRef\(false\)/);
+  assert.match(paySheet, /handleMatchPayment[\s\S]*busyRef\.current/);
+  assert.match(paySheet, /handleRecordNewPayment[\s\S]*busyRef\.current/);
+});
+
+test('T-345: BudgetScreen and TransactionsScreen render cross-month For due-date clarity labels and PAID EARLIER card', () => {
+  const budget = readFileSync(new URL('../src/screens/BudgetScreen.tsx', import.meta.url), 'utf8');
+  assert.match(budget, /resolveExpenseTxDisplay/);
+  assert.match(budget, /tx\.appliesToDate && tx\.appliesToDate\.slice\(0, 7\) !== tx\.date\.slice\(0, 7\)/);
+  assert.match(budget, /' · For ' \+ formatShortDate\(tx\.appliesToDate\)/);
+  assert.match(budget, /expenseSummary\.paidEarlyForMonth\.length > 0/);
+  assert.match(budget, /PAID EARLIER/);
+  assert.match(budget, /Counted in the month paid/);
+  assert.match(budget, /'Paid ' \+ formatShortDate\(tx\.date\) \+ ' · For ' \+ formatShortDate\(tx\.appliesToDate!\)/);
+
+  const tx = readFileSync(new URL('../src/screens/TransactionsScreen.tsx', import.meta.url), 'utf8');
+  assert.match(tx, /tx\.appliesToDate && tx\.appliesToDate\.slice\(0, 7\) !== tx\.date\.slice\(0, 7\)/);
+  assert.match(tx, /· For \$\{formatShortMonthDay\(tx\.appliesToDate\)\}/);
+});
+
+test('T-346: ObligationPaySheet, SnapshotCard, HomeScreen, TransactionsScreen, and DebtScreen wire universal Mortgage/Auto P/I/Escrow splits cleanly', () => {
+  const paySheet = readFileSync(new URL('../src/components/ObligationPaySheet.tsx', import.meta.url), 'utf8');
+  assert.match(paySheet, /suggestLoanPaymentSplit/);
+  assert.match(paySheet, /canSuggestLoanPaymentSplit/);
+  assert.match(paySheet, /projectedLoanBalanceAfterPrincipal/);
+  assert.match(paySheet, /principalAmount/);
+  assert.match(paySheet, /interestAmount/);
+  assert.match(paySheet, /escrowAmount/);
+  assert.match(paySheet, /accountId:\s*loanDebt\.id/);
+  assert.match(paySheet, /\[bill:\$\{bill\.id\}\]/);
+
+  const home = readFileSync(new URL('../src/screens/HomeScreen.tsx', import.meta.url), 'utf8');
+  assert.match(home, /<ObligationPaySheet[\s\S]*debts=\{onboardingData\.debts\}[\s\S]*mortgageEscrowByDebtId=\{onboardingData\.mortgageEscrowByDebtId\}/);
+  assert.match(home, /<SnapshotCard[\s\S]*mortgageEscrowByDebtId=\{onboardingData\.mortgageEscrowByDebtId\}[\s\S]*currencyCode=\{currencyCode\}/);
+
+  const tx = readFileSync(new URL('../src/screens/TransactionsScreen.tsx', import.meta.url), 'utf8');
+  assert.match(tx, /<ObligationPaySheet[\s\S]*debts=\{debts\}[\s\S]*mortgageEscrowByDebtId=\{mortgageEscrowByDebtId\}/);
+  assert.match(tx, /canSuggestLoanPaymentSplit/);
+
+  const financial = readFileSync(new URL('../src/components/FinancialScreen.tsx', import.meta.url), 'utf8');
+  assert.match(financial, /Next payment est\./);
+  assert.match(financial, /canSuggestLoanPaymentSplit/);
+
+  const debt = readFileSync(new URL('../src/screens/DebtScreen.tsx', import.meta.url), 'utf8');
+  assert.match(debt, /Next payment estimate/);
+  assert.match(debt, /canSuggestLoanPaymentSplit/);
+});
+
+test('T-347: Auto loans use Actual/365 daily simple interest split with Daily/Monthly toggle across PaySheet, Overview, Add/Edit Tx, and Home Snapshot', () => {
+  const paySheet = readFileSync(new URL('../src/components/ObligationPaySheet.tsx', import.meta.url), 'utf8');
+  assert.match(paySheet, /resolveAutoLoanSplitSuggestion/);
+  assert.match(paySheet, /autoMethodOverride/);
+  assert.match(paySheet, /Daily \(\$\{rawDays\}d\)/);
+  assert.match(paySheet, /'Monthly'/);
+
+  const debt = readFileSync(new URL('../src/screens/DebtScreen.tsx', import.meta.url), 'utf8');
+  assert.match(debt, /resolveAutoLoanSplitSuggestion/);
+  assert.match(debt, /dailyInterestCost/);
+  assert.match(debt, /<AccountQuickTransactionModal[\s\S]*transactions=\{transactions\}[\s\S]*linkedBillIds=\{selectedLinkedBillIds\}/);
+
+  const tx = readFileSync(new URL('../src/screens/TransactionsScreen.tsx', import.meta.url), 'utf8');
+  assert.match(tx, /<AddTransactionModal[\s\S]*transactions=\{transactions\}[\s\S]*loanBillPairs=\{loanBillPairs\}/);
+  assert.match(tx, /<EditTransactionModal[\s\S]*transactions=\{transactions\}[\s\S]*loanBillPairs=\{loanBillPairs\}/);
+  assert.match(tx, /const AddTransactionModal = memo[\s\S]*?resolveAutoLoanSplitSuggestion[\s\S]*?Suggest P\/I split/);
+  assert.match(tx, /const EditTransactionModal = memo[\s\S]*?resolveAutoLoanSplitSuggestion[\s\S]*?Suggest P\/I split/);
+
+  const financial = readFileSync(new URL('../src/components/FinancialScreen.tsx', import.meta.url), 'utf8');
+  assert.match(financial, /autoSplitTotals/);
+  assert.match(financial, /Daily cost/);
+  assert.match(financial, /resolveAutoLoanSplitSuggestion/);
+
+  const home = readFileSync(new URL('../src/screens/HomeScreen.tsx', import.meta.url), 'utf8');
+  assert.match(home, /<SnapshotCard[\s\S]*transactions=\{transactions\}[\s\S]*loanBillPairs=\{loanBillPairs\}[\s\S]*historicalBillIdsByDebtId=\{historicalLoanBillIds\}[\s\S]*todayDate=\{todayKey\}/);
 });

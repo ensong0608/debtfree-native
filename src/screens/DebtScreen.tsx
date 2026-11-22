@@ -1,5 +1,5 @@
 import { transactionHasBillId } from '../finance/bill-identity';
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentRef, type ReactNode } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentRef, type ReactNode } from 'react';
 import * as Crypto from 'expo-crypto';
 import { Alert, Keyboard, Platform, StyleSheet, TouchableWithoutFeedback } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,7 +10,7 @@ import { Card, FinancialScreen, FloatingAddButton, Segments, SwipeProtectedHoriz
 import { HeroGradient } from '../components/HeroGradient';
 import { InspireCornerArt, InspireQuote, type InspireArtKind } from '../components/InspireArt';
 import { AppIcon, type AppIconName } from '../components/AppIcon';
-import { acceptAprEdit, calculateIndependentMortgageProjections, calculateStrategyScenario, comparePayoffStrategies, estimateMinimumPayment, formatCurrency, homeDebtFreeEstimateDate, isActiveDebtItem, acceptMoneyEdit, resolveOneTimePaymentPeriod, suggestLoanPaymentSplit, validateExtraPaymentInput, formatEditableMoney, parseMoneyInput, parsePercentInput, type DebtCategory, type DebtItem, type LoanBillPairing, type PayoffPlanResult, type PayoffStrategy } from '../onboarding-domain';
+import { acceptAprEdit, calculateIndependentMortgageProjections, calculateStrategyScenario, canSuggestLoanPaymentSplit, comparePayoffStrategies, estimateMinimumPayment, findPreviousLoanPaymentDate, formatCurrency, homeDebtFreeEstimateDate, isActiveDebtItem, acceptMoneyEdit, projectedLoanBalanceAfterPrincipal, resolveAutoLoanSplitSuggestion, resolveNextAutoDueDate, resolveOneTimePaymentPeriod, suggestLoanPaymentSplit, validateExtraPaymentInput, formatEditableMoney, parseMoneyInput, parsePercentInput, type DebtCategory, type DebtItem, type LoanBillPairing, type PayoffPlanResult, type PayoffStrategy } from '../onboarding-domain';
 import { currentHouseholdDate, currentHouseholdMonth, getNextMonthString, getPreviousMonthString, parseDateOnly, type DateOnly } from '../finance/calendar';
 import { getObligationCycle, type ObligationSchedules } from '../finance/obligation-schedule';
 import { addMoney, moneyFromMajor, moneyToMajor, parseMoney, type Money } from '../finance/money';
@@ -18,7 +18,7 @@ import { getCurrency } from '../finance/currencies';
 import { calculateTransactionBalanceDelta, classifyCategoryDirection, isPaidOffAccountArchived, type LedgerTransaction, type ReconciliationAnchor, type TransactionCategory } from '../finance/ledger';
 import { SelectDropdown, type DropdownOption } from '../components/SelectDropdown';
 import { CalendarDatePickerModal, DueDayPickerModal, formatShortDate } from '../components/DatePickerModal';
-import { uniqueHistoricalBillIdByDebtId } from '../finance/loan-bill-pairing';
+import { historicalBillIdsByDebtId, uniqueHistoricalBillIdByDebtId } from '../finance/loan-bill-pairing';
 import { resolveRecurringBillDate, type RecurringBill } from '../finance/recurring-bills';
 import { resolveEffectiveDebtSchedule } from '../finance/payment-matching';
 import type { DebtDetailsDraft } from './HomeScreen';
@@ -28,7 +28,7 @@ import { InformationButton as InfoButton, useInformationSheet } from '../compone
 import { AdaptiveModal } from '../components/ModalOverlay';
 import { SheetFormHeader, SheetModal } from '../components/SheetModal';
 import { bottomInsetPadding } from '../components/bottom-inset';
-import { DEFAULT_TAB_UI_PREFERENCES, useTabShell, type AccountsCategoryFilter, type TabUiPreferences } from '../components/TabShellContext';
+import { DEFAULT_TAB_UI_PREFERENCES, useAccountsUiPreferences, useSetTabUiPreferences, type AccountsCategoryFilter, type TabUiPreferences } from '../components/TabShellContext';
 
 function roundToCurrencyScale(amount: number, currencyCode: string): number {
   const factor = 10 ** getCurrency(currencyCode).scale;
@@ -104,6 +104,7 @@ function getAccountReductionDisplay(
 
 type AccountFilter = AccountsCategoryFilter;
 const accountFilterOrder: AccountFilter[] = ['All', 'Credit Cards', 'Personal Loans', 'Auto', 'Home', 'Paid Off'];
+const EMPTY_ARCHIVED_DEBT_IDS: readonly string[] = [];
 function AccountBalanceTrack({ percent }: { percent: number }) {
   const { isInspire, palette } = useNativeAppearance();
   const trackGradId = `acctTrack_${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -184,12 +185,22 @@ const ACCOUNT_TX_CATEGORY_CHOICES: readonly {
   { label: 'Refund', subtitle: 'Credit or refund reducing balance', category: 'refund', icon: 'check' },
 ];
 
+const DETAIL_MONEY_FORMATTERS = new Map<number, Intl.NumberFormat>();
+function getDetailMoneyFormatter(scale: number): Intl.NumberFormat {
+  let formatter = DETAIL_MONEY_FORMATTERS.get(scale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: scale, maximumFractionDigits: scale });
+    DETAIL_MONEY_FORMATTERS.set(scale, formatter);
+  }
+  return formatter;
+}
+
 function formatDetailMoneyDisplay(raw: string, currencyCode: string, focused: boolean): string {
   if (focused || !raw.trim()) return raw;
   const amount = parseMoneyInput(raw, currencyCode, true);
   if (amount === null) return raw;
   const scale = getCurrency(currencyCode).scale;
-  return new Intl.NumberFormat('en-US', { minimumFractionDigits: scale, maximumFractionDigits: scale }).format(amount);
+  return getDetailMoneyFormatter(scale).format(amount);
 }
 
 function BalanceSparkline({
@@ -294,10 +305,10 @@ function BalanceSparkline({
   );
 }
 
-export function DebtScreen({
+export const DebtScreen = memo(function DebtScreen({
   debts, plan, currencySymbol, editor, editorOpen = false, error, transactions, reconciliationAnchors = [],
   currencyCode = 'USD',
-  archivedPaidOffDebtIds = [],
+  archivedPaidOffDebtIds = EMPTY_ARCHIVED_DEBT_IDS,
   onAdd, onEdit: _onEdit, onSaveDebtDetails, onMarkPaid, onRemove, onReconcile, onSettings, initialSelectedId, initialSection, onDismiss,
   strategy = plan.strategy, extraMonthlyPayment = plan.extraMonthlyPayment, onStrategy, onExtra,
   mortgageEscrowByDebtId = {}, mortgageExtraPaymentByDebtId = {}, onMortgageExtra,
@@ -344,20 +355,65 @@ export function DebtScreen({
   onSelectTransaction?: (tx: LedgerTransaction) => void;
   onDismiss?: () => void;
 }) {
-  const shell = useTabShell();
+  const accountsUi = useAccountsUiPreferences();
+  const shellSetUiPreferences = useSetTabUiPreferences();
   const [localUiPreferences, setLocalUiPreferences] = useState<TabUiPreferences>(() => ({
     ...DEFAULT_TAB_UI_PREFERENCES,
     debtSection: initialSection === 'Strategy' ? 'Strategy' : DEFAULT_TAB_UI_PREFERENCES.debtSection,
   }));
-  const uiPreferences = shell?.uiPreferences ?? localUiPreferences;
-  const setUiPreferences = shell?.setUiPreferences ?? setLocalUiPreferences;
-  const updateUiPreferences = (updates: Partial<TabUiPreferences>) => setUiPreferences(current => ({ ...current, ...updates }));
+  const uiPreferences = accountsUi ?? localUiPreferences;
+  const setUiPreferences = shellSetUiPreferences ?? setLocalUiPreferences;
+  const updateUiPreferences = useCallback(
+    (updates: Partial<TabUiPreferences>) => setUiPreferences(current => ({ ...current, ...updates })),
+    [setUiPreferences],
+  );
   const filter = uiPreferences.accountsCategory;
-  const query = uiPreferences.accountsSearchQuery;
+  const externalSearchQuery = uiPreferences.accountsSearchQuery;
+  const [searchInput, setSearchInput] = useState(externalSearchQuery);
+  const [prevExternalSearchQuery, setPrevExternalSearchQuery] = useState(externalSearchQuery);
+  const [searchDirty, setSearchDirty] = useState(false);
+  if (externalSearchQuery !== prevExternalSearchQuery) {
+    setPrevExternalSearchQuery(externalSearchQuery);
+    if (!searchDirty && searchInput !== externalSearchQuery) {
+      setSearchInput(externalSearchQuery);
+    }
+  }
+  const query = useDeferredValue(searchInput);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushSearch = useCallback((value: string) => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    setSearchDirty(false);
+    setUiPreferences(current => current.accountsSearchQuery === value ? current : { ...current, accountsSearchQuery: value });
+  }, [setUiPreferences]);
+  useEffect(() => () => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+  }, []);
   const searchOpen = uiPreferences.accountsSearchOpen;
   const sort = uiPreferences.accountsSort;
   const setFilter = (value: AccountFilter) => updateUiPreferences({ accountsCategory: value });
-  const setQuery = (value: string) => updateUiPreferences({ accountsSearchQuery: value });
+  const setQuery = (value: string) => {
+    setSearchInput(value);
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    if (value === '') {
+      flushSearch('');
+      return;
+    }
+    setSearchDirty(true);
+    searchTimerRef.current = setTimeout(() => flushSearch(value), 180);
+  };
+  const clearSearch = () => {
+    setSearchInput('');
+    flushSearch('');
+  };
   const setSearchOpen = (value: boolean) => updateUiPreferences({ accountsSearchOpen: value });
   const setSort = (value: number) => updateUiPreferences({ accountsSort: value });
   const [markPaidBusy, setMarkPaidBusy] = useState(false);
@@ -551,20 +607,6 @@ export function DebtScreen({
   const [deleteConfirmDebt, setDeleteConfirmDebt] = useState<DebtItem | null>(null);
   const { opacity: detailFabOpacity, scrollHandlers: detailScrollHandlers } = useScrollFadeOpacity();
   const [showAccountTxModal, setShowAccountTxModal] = useState(false);
-  const [accountTxCategoryIdx, setAccountTxCategoryIdx] = useState(0);
-  const [accountTxDate, setAccountTxDate] = useState(() => currentHouseholdDate(householdTimeZone));
-  const [accountTxAppliesToDate, setAccountTxAppliesToDate] = useState('');
-  const [accountTxAmount, setAccountTxAmount] = useState('');
-  const [accountTxPayee, setAccountTxPayee] = useState('');
-  const [accountTxPrincipal, setAccountTxPrincipal] = useState('');
-  const [accountTxInterest, setAccountTxInterest] = useState('');
-  const [accountTxEscrow, setAccountTxEscrow] = useState('');
-  const [accountTxFee, setAccountTxFee] = useState('');
-  const [accountTxShowMoreDetails, setAccountTxShowMoreDetails] = useState(false);
-  const [showAccountTxCategoryPicker, setShowAccountTxCategoryPicker] = useState(false);
-  const [showAccountTxDatePicker, setShowAccountTxDatePicker] = useState(false);
-  const [savingAccountTx, setSavingAccountTx] = useState(false);
-  const [accountTxError, setAccountTxError] = useState('');
   const detailSavedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => {
@@ -584,113 +626,16 @@ export function DebtScreen({
     setReconcileError('');
     setDeleteConfirmDebt(null);
     setShowAccountTxModal(false);
-    setShowAccountTxCategoryPicker(false);
-    setShowAccountTxDatePicker(false);
-    setAccountTxShowMoreDetails(false);
-    setAccountTxError('');
-    setAccountTxAmount('');
-    setAccountTxPayee('');
-    setAccountTxAppliesToDate('');
-    setAccountTxPrincipal('');
-    setAccountTxInterest('');
-    setAccountTxEscrow('');
-    setAccountTxFee('');
   };
 
   const openAccountTxModal = () => {
     if (!canEdit || !selected || !onAddTransaction) return;
-    setAccountTxCategoryIdx(0);
-    setAccountTxDate(currentHouseholdDate(householdTimeZone));
-    setAccountTxAppliesToDate('');
-    setAccountTxAmount('');
-    setAccountTxPayee('');
-    setAccountTxPrincipal('');
-    setAccountTxInterest('');
-    setAccountTxEscrow('');
-    setAccountTxFee('');
-    setAccountTxShowMoreDetails(false);
-    setShowAccountTxCategoryPicker(false);
-    setShowAccountTxDatePicker(false);
-    setAccountTxError('');
     setShowAccountTxModal(true);
   };
 
-  const closeAccountTxModal = () => {
+  const closeAccountTxModal = useCallback(() => {
     setShowAccountTxModal(false);
-    setShowAccountTxCategoryPicker(false);
-    setShowAccountTxDatePicker(false);
-    setAccountTxShowMoreDetails(false);
-    setAccountTxError('');
-  };
-
-  const saveAccountTx = async () => {
-    if (!canEdit || !selected || !onAddTransaction || savingAccountTx) return;
-    setAccountTxError('');
-    const parsedAmt = parseMoneyInput(accountTxAmount, currencyCode, false);
-    if (parsedAmt === null || parsedAmt <= 0) {
-      setAccountTxError('Please enter a valid amount');
-      return;
-    }
-
-    const catOption = ACCOUNT_TX_CATEGORY_CHOICES[accountTxCategoryIdx] ?? ACCOUNT_TX_CATEGORY_CHOICES[0];
-    setSavingAccountTx(true);
-    try {
-      const actualDate = parseDateOnly(accountTxDate.trim());
-      const appliesToDate = accountTxAppliesToDate.trim() ? parseDateOnly(accountTxAppliesToDate.trim()) : null;
-      const moneyAmount = parseMoney(accountTxAmount, currencyCode);
-
-      const principalAmount = accountTxPrincipal.trim() ? parseMoney(accountTxPrincipal.trim(), currencyCode) : null;
-      const interestAmount = accountTxInterest.trim() ? parseMoney(accountTxInterest.trim(), currencyCode) : null;
-      const escrowAmount = accountTxEscrow.trim() ? parseMoney(accountTxEscrow.trim(), currencyCode) : null;
-      const feeAmount = accountTxFee.trim() ? parseMoney(accountTxFee.trim(), currencyCode) : null;
-
-      const tx: LedgerTransaction = {
-        id: `tx:${Crypto.randomUUID()}`,
-        accountId: selected.id,
-        date: actualDate,
-        appliesToDate,
-        amount: moneyAmount,
-        category: catOption.category,
-        payee: accountTxPayee.trim() || (catOption.category === 'payment' ? 'Payment' : catOption.label),
-        memo: `Manual entry (${catOption.label})`,
-        source: 'manual',
-        reconciled: false,
-        createdAt: new Date().toISOString(),
-        deletedAt: null,
-        principalAmount,
-        interestAmount,
-        escrowAmount,
-        feeAmount,
-      };
-
-      const res = await onAddTransaction(tx);
-      if (res && (res as { outcome?: string }).outcome === 'pending') {
-        Alert.alert(
-          'Saved Locally (Pending Confirmation)',
-          'Transaction recorded locally. Confirmation will be verified upon connecting to the server.',
-        );
-      }
-      setShowAccountTxModal(false);
-      setAccountTxShowMoreDetails(false);
-      setShowAccountTxCategoryPicker(false);
-      setShowAccountTxDatePicker(false);
-      setAccountTxPayee('');
-      setAccountTxAmount('');
-      setAccountTxAppliesToDate('');
-      setAccountTxPrincipal('');
-      setAccountTxInterest('');
-      setAccountTxEscrow('');
-      setAccountTxFee('');
-    } catch (e) {
-      const msg = (e as Error).message || 'Unable to save transaction';
-      setAccountTxError(msg);
-      if (msg.includes('conflict') || msg.includes('Conflict')) {
-        Alert.alert('Save Conflict', msg);
-      }
-    } finally {
-      setSavingAccountTx(false);
-    }
-  };
+  }, []);
 
   const [prevInitialId, setPrevInitialId] = useState(initialSelectedId);
   if (initialSelectedId !== prevInitialId) {
@@ -720,6 +665,8 @@ export function DebtScreen({
   useEffect(() => {
     if (!visibleFilters.includes(filter) && visibleFilters.length > 0) {
       setFilter(activeAccounts.length > 0 ? 'All' : archivedAccounts.length > 0 ? 'Paid Off' : 'All');
+      // Clear the local input when its selected category disappears.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setQuery('');
     }
   }, [filter, activeAccounts.length, archivedAccounts.length, visibleFilters]);
@@ -732,9 +679,13 @@ export function DebtScreen({
     ? `${scopedAccountCount} paid-off ${scopedAccountCount === 1 ? 'account' : 'accounts'}`
     : `${scopedAccountCount} active ${scopedAccountCount === 1 ? 'account' : 'accounts'}`;
   const stats = snapshot(activeScoped);
+  // Invalidate the cached projections when the household date rolls over.
+  const projectionDay = currentHouseholdDate(householdTimeZone);
   const oneTimeCycleInfo = useMemo(
     () => resolveOneTimePaymentPeriod(oneTimeDate, new Date(), householdTimeZone),
-    [oneTimeDate, householdTimeZone],
+    // Invalidate on household date rollover alongside inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [oneTimeDate, householdTimeZone, projectionDay],
   );
   const savedStrategyComparison = useMemo(
     () => comparePayoffStrategies(
@@ -746,7 +697,9 @@ export function DebtScreen({
       householdTimeZone,
       archivedPaidOffDebtIds,
     ),
-    [debts, strategy, extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffDebtIds],
+    // Invalidate on household date rollover alongside inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [debts, strategy, extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffDebtIds, projectionDay],
   );
   const monthlyParsed = useMemo(() => parseMoneyDraft(extraDraft, currencyCode), [extraDraft, currencyCode]);
   const oneTimeParsed = useMemo(() => parseMoneyDraft(oneTimeDraft, currencyCode), [oneTimeDraft, currencyCode]);
@@ -765,6 +718,8 @@ export function DebtScreen({
       previewOneTimeAmount,
       oneTimeCycleInfo.period,
     ),
+    // Invalidate on household date rollover alongside inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       debts,
       strategy,
@@ -774,6 +729,7 @@ export function DebtScreen({
       archivedPaidOffDebtIds,
       previewOneTimeAmount,
       oneTimeCycleInfo.period,
+      projectionDay,
     ],
   );
   const scenarioComparison = useMemo(() => calculateStrategyScenario({
@@ -787,6 +743,8 @@ export function DebtScreen({
     currencyCode,
     householdTimeZone,
     archivedPaidOffDebtIds,
+  // Invalidate on household date rollover alongside inputs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [
     debts,
     strategy,
@@ -797,6 +755,7 @@ export function DebtScreen({
     currencyCode,
     householdTimeZone,
     archivedPaidOffDebtIds,
+    projectionDay,
   ]);
   const extraStepAmount = getCurrency(currencyCode).scale === 0 ? 5000 : 50;
   const stepScenarioAmount = (
@@ -814,25 +773,63 @@ export function DebtScreen({
     setExtraSaved(false);
     setter(formatEditableMoney(next, currencyCode));
   };
-  const mortgageDebts = debts.filter(item => item.category === 'Mortgage');
-  const mortgagePlans = calculateIndependentMortgageProjections(debts, strategy, mortgageEscrowByDebtId, mortgageExtraPaymentByDebtId, new Date(), currencyCode, householdTimeZone);
-  const mortgageProjectionById = new Map(mortgagePlans.map(row => [row.debt.id, row.projection]));
-  const projectionFor = (debt: DebtItem) => debt.category === 'Mortgage'
-    ? mortgageProjectionById.get(debt.id)
-    : (plan.allProjections ?? plan.payoffOrder).find(item => item.id === debt.id);
-  const visible = categoryAccounts[filter].filter(d => d.name.toLowerCase().includes(query.toLowerCase())).sort((a, b) =>
-    sort === 0 ? a.name.localeCompare(b.name) : sort === 1 ? b.balance - a.balance : sort === 2 ? b.apr - a.apr :
-      ((projectionFor(a)?.monthsToPayoff ?? Infinity) - (projectionFor(b)?.monthsToPayoff ?? Infinity)));
-  const visibleActive = visible.filter(item => !isArchivedDebt(item));
-  const visibleArchived = visible.filter(isArchivedDebt);
-  const visibleGroups = filter === 'All'
-    ? [
-        { label: 'Credit Cards', items: visibleActive.filter(item => item.category === 'Credit card') },
-        { label: 'Personal Loans', items: visibleActive.filter(isPersonalLoan) },
-        { label: 'Auto', items: visibleActive.filter(item => item.category === 'Auto loan') },
-        { label: 'Home', items: visibleActive.filter(item => item.category === 'Mortgage') },
-      ]
-    : [{ label: filter, items: visibleActive }];
+  const mortgageDebts = useMemo(() => debts.filter(item => item.category === 'Mortgage'), [debts]);
+  const mortgagePlans = useMemo(
+    () => calculateIndependentMortgageProjections(
+      debts,
+      strategy,
+      mortgageEscrowByDebtId,
+      mortgageExtraPaymentByDebtId,
+      new Date(),
+      currencyCode,
+      householdTimeZone,
+    ),
+    // Invalidate on household date rollover alongside inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [debts, strategy, mortgageEscrowByDebtId, mortgageExtraPaymentByDebtId, currencyCode, householdTimeZone, projectionDay],
+  );
+  const mortgageProjectionById = useMemo(
+    () => new Map(mortgagePlans.map(row => [row.debt.id, row.projection])),
+    [mortgagePlans],
+  );
+  const planProjectionById = useMemo(
+    () => new Map((plan.allProjections ?? plan.payoffOrder).map(item => [item.id, item])),
+    [plan],
+  );
+  const projectionFor = useCallback(
+    (debt: DebtItem) => (debt.category === 'Mortgage' ? mortgageProjectionById.get(debt.id) : planProjectionById.get(debt.id)),
+    [mortgageProjectionById, planProjectionById],
+  );
+  const visible = useMemo(() => {
+    const normalizedQuery = query.toLowerCase();
+    return categoryAccounts[filter]
+      .filter(d => d.name.toLowerCase().includes(normalizedQuery))
+      .sort((a, b) =>
+        sort === 0 ? a.name.localeCompare(b.name)
+          : sort === 1 ? b.balance - a.balance
+            : sort === 2 ? b.apr - a.apr
+              : ((projectionFor(a)?.monthsToPayoff ?? Infinity) - (projectionFor(b)?.monthsToPayoff ?? Infinity)),
+      );
+  }, [categoryAccounts, filter, query, sort, projectionFor]);
+  const visibleActive = useMemo(
+    () => visible.filter(item => !isPaidOffAccountArchived(item, archivedPaidOffDebtIds)),
+    [visible, archivedPaidOffDebtIds],
+  );
+  const visibleArchived = useMemo(
+    () => visible.filter(item => isPaidOffAccountArchived(item, archivedPaidOffDebtIds)),
+    [visible, archivedPaidOffDebtIds],
+  );
+  const visibleGroups = useMemo(
+    () => (filter === 'All'
+      ? [
+          { label: 'Credit Cards', items: visibleActive.filter(item => item.category === 'Credit card') },
+          { label: 'Personal Loans', items: visibleActive.filter(isPersonalLoan) },
+          { label: 'Auto', items: visibleActive.filter(item => item.category === 'Auto loan') },
+          { label: 'Home', items: visibleActive.filter(item => item.category === 'Mortgage') },
+        ]
+      : [{ label: filter, items: visibleActive }]),
+    [filter, visibleActive],
+  );
   const renderAccountCard = (item: DebtItem, archived = false, cardIndex = 0) => {
     const itemProjection = projectionFor(item);
     const rawPayoff = itemProjection?.projectedPayoffLabel ?? '—';
@@ -971,8 +968,16 @@ export function DebtScreen({
   };
 
   const identityLinkedPairs = uniqueHistoricalBillIdByDebtId(loanBillPairings);
+  const allHistoricalBillIds = historicalBillIdsByDebtId(loanBillPairings);
   const selectedPairing = selected ? loanBillPairings[selected.id] : undefined;
   const selectedLinkedBillId = selected ? identityLinkedPairs[selected.id] : undefined;
+  const selectedLinkedBillIds = selected
+    ? Array.from(new Set([
+        selectedLinkedBillId,
+        selectedPairing?.billId,
+        ...(allHistoricalBillIds[selected.id] ?? []),
+      ].filter((value): value is string => Boolean(value))))
+    : [];
   const accountTransactions = selected ? transactions
     .filter(tx => tx.deletedAt === null && (tx.accountId === selected.id || Boolean(tx.accountId === null && selectedLinkedBillId && transactionHasBillId(tx, selectedLinkedBillId))))
     .sort((a, b) => b.date.localeCompare(a.date)) : [];
@@ -1108,8 +1113,8 @@ export function DebtScreen({
         {searchOpen ? (
           <View style={[ui.row, { width: 150, flexShrink: 0, minHeight: 40, gap: 6, paddingLeft: 10, paddingRight: 4, backgroundColor: palette.surface, borderWidth: isInspire ? 1.5 : 1, borderColor: palette.cardBorder, borderRadius: 12 }]}>
             <AppIcon name="search" size={16} color={palette.muted} />
-            <TextInput accessibilityLabel="Search accounts" placeholder="Search" placeholderTextColor={palette.muted} value={query} onChangeText={setQuery} autoFocus style={{ color: palette.text, fontSize: 14, flex: 1, minWidth: 0, minHeight: 38, paddingHorizontal: 2, borderWidth: 0, backgroundColor: 'transparent' }} />
-            <Pressable accessibilityRole="button" accessibilityLabel="Close account search" hitSlop={8} onPress={() => { setSearchOpen(false); setQuery(''); Keyboard.dismiss(); }} style={{ width: 30, height: 38, alignItems: 'center', justifyContent: 'center' }}>
+            <TextInput accessibilityLabel="Search accounts" placeholder="Search" placeholderTextColor={palette.muted} value={searchInput} onChangeText={setQuery} onBlur={() => flushSearch(searchInput)} onSubmitEditing={() => flushSearch(searchInput)} autoFocus style={{ color: palette.text, fontSize: 14, flex: 1, minWidth: 0, minHeight: 38, paddingHorizontal: 2, borderWidth: 0, backgroundColor: 'transparent' }} />
+            <Pressable accessibilityRole="button" accessibilityLabel="Close account search" hitSlop={8} onPress={() => { setSearchOpen(false); clearSearch(); Keyboard.dismiss(); }} style={{ width: 30, height: 38, alignItems: 'center', justifyContent: 'center' }}>
               <AppIcon name="close" size={16} color={palette.muted} />
             </Pressable>
           </View>
@@ -2000,6 +2005,103 @@ export function DebtScreen({
               <Term label="Monthly escrow" value={selectedEscrow !== undefined ? formatCurrency(selectedEscrow, currencySymbol) : 'Not set'} />
             ) : null}
           </Card>
+          {(selected.category === 'Mortgage' || selected.category === 'Auto loan') && selected.balance > 0 ? (() => {
+            const overviewEscrow = selected.category === 'Mortgage' ? selectedEscrow : undefined;
+            if (selected.minimumPayment > 0 && canSuggestLoanPaymentSplit(selected, overviewEscrow)) {
+              let autoEst: ReturnType<typeof resolveAutoLoanSplitSuggestion> | null = null;
+              let nextDueDate: DateOnly | null = null;
+              let nextSplit;
+              if (selected.category === 'Auto loan') {
+                const lastPaymentDate = findPreviousLoanPaymentDate({
+                  debtId: selected.id,
+                  transactions,
+                  onOrBeforeDate: projectionDay,
+                  linkedBillIds: selectedLinkedBillIds,
+                });
+                nextDueDate = resolveNextAutoDueDate({
+                  dueDay: selected.dueDay,
+                  today: projectionDay,
+                  lastPaymentDate,
+                });
+                autoEst = resolveAutoLoanSplitSuggestion({
+                  debt: selected,
+                  paymentAmount: selected.minimumPayment,
+                  paymentDate: nextDueDate ?? projectionDay,
+                  transactions,
+                  currencyCode,
+                  preferredMethod: nextDueDate === null ? 'monthly' : undefined,
+                  linkedBillIds: selectedLinkedBillIds,
+                });
+                nextSplit = autoEst.suggestion;
+              } else {
+                nextSplit = suggestLoanPaymentSplit({
+                  balance: selected.balance,
+                  aprPercent: selected.apr,
+                  paymentAmount: selected.minimumPayment,
+                  escrowAmount: overviewEscrow,
+                  currencyCode,
+                });
+              }
+              const estAfter = projectedLoanBalanceAfterPrincipal(selected.balance, nextSplit.principal, currencyCode);
+              return (
+                <Card style={{ paddingHorizontal: 16, paddingVertical: 14, borderRadius: 14, gap: 8 }}>
+                  <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
+                    <Text style={ui.heading}>Next payment estimate</Text>
+                    {selected.category === 'Mortgage' && selectedEscrow !== undefined ? (
+                      <Text style={[ui.small, { color: palette.muted }]}>{`P&I ${formatCurrency(Math.max(0, roundToCurrencyScale(selected.minimumPayment - nextSplit.escrow, currencyCode)), currencySymbol)}`}</Text>
+                    ) : autoEst ? (
+                      <Text style={[ui.small, { color: palette.muted }]}>{`${formatCurrency(autoEst.dailyInterestCost, currencySymbol)}/day`}</Text>
+                    ) : null}
+                  </View>
+                  {autoEst ? (
+                    <Text style={[ui.small, { color: palette.muted }]}>
+                      {autoEst.method === 'daily_simple' && nextDueDate
+                        ? `Daily · ${autoEst.daysElapsed}d to ${formatShortDate(nextDueDate)}`
+                        : !autoEst.lastPaymentDate
+                          ? 'Monthly est. · no prior payment yet'
+                          : 'Monthly est. (set due day for daily projection)'}
+                    </Text>
+                  ) : null}
+                  <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[ui.small, { color: palette.muted }]}>Principal</Text>
+                      <AmountText value={formatCurrency(nextSplit.principal, currencySymbol)} style={[ui.heading, { fontSize: 16, color: palette.posInk }]} />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[ui.small, { color: palette.muted }]}>Interest</Text>
+                      <AmountText value={formatCurrency(nextSplit.interest, currencySymbol)} style={[ui.heading, { fontSize: 16, color: palette.neg }]} />
+                    </View>
+                    {selected.category === 'Mortgage' ? (
+                      <View style={{ flex: 1, minWidth: 0, alignItems: 'flex-end' }}>
+                        <Text style={[ui.small, { color: palette.muted }]}>Escrow</Text>
+                        <AmountText value={formatCurrency(nextSplit.escrow, currencySymbol)} style={[ui.heading, { fontSize: 16, color: palette.text, textAlign: 'right' }]} />
+                      </View>
+                    ) : null}
+                  </View>
+                  <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', paddingTop: 4, borderTopWidth: 1, borderTopColor: palette.border }]}>
+                    <Text style={[ui.small, { color: palette.muted }]}>Est. balance after</Text>
+                    <AmountText value={formatCurrency(estAfter, currencySymbol)} style={[ui.small, { fontWeight: '700', color: palette.text }]} />
+                  </View>
+                </Card>
+              );
+            }
+            if (selected.category === 'Mortgage' && selectedEscrow === undefined) {
+              return (
+                <Card style={{ paddingHorizontal: 16, paddingVertical: 14, borderRadius: 14, gap: 8 }}>
+                  <Text style={ui.heading}>Next payment estimate</Text>
+                  <Text style={[ui.small, { color: palette.muted }]}>Add monthly escrow in Detail to estimate principal & interest.</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setSection('Detail')}
+                    style={[ui.button, { alignSelf: 'flex-start' }]}
+                  >
+                    <Text style={[ui.buttonText, { color: palette.brand }]}>Set escrow</Text>
+                  </Pressable>
+                </Card>
+              );
+            }
+            return null;
+          })() : null}
           {projection && projection.monthlySchedule.length > 0 ? (
             <Card style={{ paddingHorizontal: 16, paddingVertical: 12, borderRadius: 14, gap: 8 }}>
               <Pressable
@@ -2843,338 +2945,22 @@ export function DebtScreen({
 
 
 
-      {selected && canEdit && onAddTransaction ? (() => {
-        const chosenCat = ACCOUNT_TX_CATEGORY_CHOICES[accountTxCategoryIdx] ?? ACCOUNT_TX_CATEGORY_CHOICES[0];
-        const hhMonth = currentHouseholdMonth(householdTimeZone);
-        const schedule = resolveEffectiveDebtSchedule(obligationSchedules, selected.id, identityLinkedPairs[selected.id] ? [identityLinkedPairs[selected.id]] : []);
-        const dueCycleOptions: readonly DropdownOption<string>[] = [
-          { value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' },
-          ...[0, 1, 2].flatMap(monthOffset => {
-            let month = hhMonth;
-            for (let offset = 0; offset < monthOffset; offset++) month = getNextMonthString(month);
-            const cycle = schedule ? getObligationCycle(schedule, month) : undefined;
-            if (cycle === null || (!schedule && !selected.dueDay)) return [];
-            const date = cycle?.dueDate ?? resolveRecurringBillDate(month, selected.dueDay!);
-            const label = formatShortDate(date);
-            return {
-              value: date,
-              label: `Due ${label}`,
-              subtitle: selected.dueDay ? `Apply this payment to ${label}` : `Link this payment to the ${label} cycle`,
-            };
-          }),
-        ];
-        return (
-          <SheetModal
-            visible={showAccountTxModal}
-            onClose={closeAccountTxModal}
-            contentSized
-            closeLabel="Dismiss form"
-            footer={(
-              <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 18, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface }}>
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={savingAccountTx}
-                  onPress={() => { void saveAccountTx(); }}
-                  style={[ui.button, { minHeight: 46, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center', opacity: savingAccountTx ? 0.65 : 1 }]}
-                >
-                  <Text style={[ui.buttonText, { color: ctaFg, fontSize: 15, fontWeight: '700', textAlign: 'center' }]}>
-                    {savingAccountTx ? 'Saving\u2026' : 'Save Transaction'}
-                  </Text>
-                </Pressable>
-              </View>
-            )}
-          >
-            <View style={{ gap: 10 }}>
-              <SheetFormHeader
-                title="Add transaction"
-                subtitle={`${selected.name} \u00b7 ${selected.category}`}
-                centered
-                onClose={closeAccountTxModal}
-                closeLabel="Dismiss form"
-              />
-
-              {!!accountTxError && (
-                <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight) }]}>{accountTxError}</Text>
-              )}
-
-              <View style={{ borderRadius: 16, borderWidth: 1, borderColor: palette.border, backgroundColor: isLight ? palette.surface : palette.raised, paddingHorizontal: 15, overflow: 'hidden' }}>
-                <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}>
-                  <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Account</Text>
-                  <Text numberOfLines={1} style={{ color: palette.muted, fontSize: 15, fontWeight: '600', flexShrink: 1, textAlign: 'right' }}>
-                    {selected.name}
-                  </Text>
-                </View>
-
-                <View style={{ height: 1, backgroundColor: palette.border }} />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Transaction category: ${chosenCat.label}`}
-                  accessibilityHint="Required"
-                  onPress={() => setShowAccountTxCategoryPicker(true)}
-                  style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
-                >
-                  <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction category *</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
-                    <Text numberOfLines={1} style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>{chosenCat.label}</Text>
-                    <AppIcon name="chevronDown" size={14} color={palette.muted} />
-                  </View>
-                </Pressable>
-
-                <View style={{ height: 1, backgroundColor: palette.border }} />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Transaction date: ${accountTxDate}`}
-                  accessibilityHint="Required"
-                  onPress={() => setShowAccountTxDatePicker(true)}
-                  style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
-                >
-                  <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction date *</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                    <Text style={{ color: palette.brand, fontSize: 15, fontWeight: '600' }}>
-                      {formatShortDate(accountTxDate)}
-                    </Text>
-                    <AppIcon name="calendar" size={16} color={palette.brand} />
-                  </View>
-                </Pressable>
-
-                <View style={{ height: 1, backgroundColor: palette.border }} />
-                <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 2 }}>
-                  <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Amount *</Text>
-                  <TextInput
-                    accessibilityLabel="Transaction amount"
-                    accessibilityHint="Required"
-                    placeholder={formatEditableMoney(0, currencyCode)}
-                    placeholderTextColor={palette.muted}
-                    keyboardType="decimal-pad"
-                    textAlign="right"
-                    value={accountTxAmount}
-                    onChangeText={val => setAccountTxAmount(acceptMoneyEdit(accountTxAmount, val, currencyCode))}
-                    style={{ flex: 1, minWidth: 96, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 15, fontWeight: '600' }}
-                  />
-                </View>
-
-                <View style={{ height: 1, backgroundColor: palette.border }} />
-                <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 2 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-                    <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Add a note</Text>
-                    <Text style={{ color: palette.muted, fontSize: 12 }}>optional</Text>
-                  </View>
-                  <TextInput
-                    accessibilityLabel="Add a note"
-                    placeholder="Optional note"
-                    placeholderTextColor={palette.muted}
-                    textAlign="right"
-                    value={accountTxPayee}
-                    onChangeText={setAccountTxPayee}
-                    style={{ flex: 1, minWidth: 96, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 14 }}
-                  />
-                </View>
-              </View>
-
-              {accountTxAmount ? (() => {
-                try {
-                  const amount = parseMoney(accountTxAmount, currencyCode);
-                  if (moneyToMajor(amount) <= 0) return null;
-                  const preview: LedgerTransaction = {
-                    id: 'preview',
-                    accountId: selected.id,
-                    date: parseDateOnly(accountTxDate.trim()),
-                    appliesToDate: null,
-                    amount,
-                    category: chosenCat.category,
-                    payee: '',
-                    memo: '',
-                    source: 'manual',
-                    reconciled: false,
-                    createdAt: '',
-                    deletedAt: null,
-                    principalAmount: accountTxPrincipal.trim() ? parseMoney(accountTxPrincipal, currencyCode) : null,
-                    interestAmount: accountTxInterest.trim() ? parseMoney(accountTxInterest, currencyCode) : null,
-                    escrowAmount: accountTxEscrow.trim() ? parseMoney(accountTxEscrow, currencyCode) : null,
-                    feeAmount: accountTxFee.trim() ? parseMoney(accountTxFee, currencyCode) : null,
-                  };
-                  const after = addMoney(moneyFromMajor(selected.balance, currencyCode), calculateTransactionBalanceDelta(preview, selected.category));
-                  return (
-                    <View style={[ui.row, { justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: palette.tint }]}>
-                      <View><Text style={ui.small}>Current balance</Text><Text style={ui.heading}>{formatCurrency(selected.balance, currencySymbol)}</Text></View>
-                      <AppIcon name="chevronRight" size={16} color={palette.brand} />
-                      <View style={{ alignItems: 'flex-end' }}><Text style={ui.small}>After saving</Text><Text style={ui.heading}>{formatCurrency(moneyToMajor(after), currencySymbol)}</Text></View>
-                    </View>
-                  );
-                } catch {
-                  return null;
-                }
-              })() : null}
-
-              {chosenCat.category === 'payment' ? (
-                <View style={{ gap: 8 }}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ expanded: accountTxShowMoreDetails }}
-                    onPress={() => setAccountTxShowMoreDetails(prev => !prev)}
-                    style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}
-                  >
-                    <Text style={{ color: palette.brand, fontSize: 14, fontWeight: '600' }}>More details</Text>
-                    <AppIcon name={accountTxShowMoreDetails ? 'chevronDown' : 'chevronRight'} size={15} color={palette.brand} />
-                  </Pressable>
-
-                  {accountTxShowMoreDetails ? (
-                    <View style={{ gap: 10 }}>
-                      <SelectDropdown
-                        label="Applies to payment cycle (optional)"
-                        sheetTitle="Choose Payment Due Cycle"
-                        value={accountTxAppliesToDate}
-                        options={dueCycleOptions}
-                        onSelect={setAccountTxAppliesToDate}
-                        placeholder="Choose a due cycle"
-                      />
-
-                      {(selected.category === 'Mortgage' || selected.category === 'Auto loan') ? (
-                        <View style={{ padding: 12, backgroundColor: palette.raised, borderRadius: 12, borderWidth: 1, borderColor: palette.border, gap: 6 }}>
-                          <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
-                            <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700', flex: 1 }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
-                            <Pressable
-                              accessibilityRole="button"
-                              accessibilityLabel="Suggest principal and interest split"
-                              onPress={() => {
-                                const parsedAmt = parseMoneyInput(accountTxAmount, currencyCode, false);
-                                const targetAmount = parsedAmt !== null && parsedAmt > 0 ? parsedAmt : selected.minimumPayment;
-                                if (!Number.isFinite(targetAmount) || targetAmount <= 0) return;
-                                if (parsedAmt === null || parsedAmt <= 0) {
-                                  setAccountTxAmount(formatEditableMoney(targetAmount, currencyCode));
-                                }
-                                const suggestion = suggestLoanPaymentSplit({
-                                  balance: selected.balance,
-                                  aprPercent: selected.apr,
-                                  paymentAmount: targetAmount,
-                                  escrowAmount: selected.category === 'Mortgage' ? selectedEscrow : undefined,
-                                  currencyCode,
-                                });
-                                setAccountTxPrincipal(formatEditableMoney(suggestion.principal, currencyCode));
-                                setAccountTxInterest(formatEditableMoney(suggestion.interest, currencyCode));
-                                if (selected.category === 'Mortgage' && suggestion.escrow > 0) {
-                                  setAccountTxEscrow(formatEditableMoney(suggestion.escrow, currencyCode));
-                                }
-                              }}
-                              style={{
-                                paddingHorizontal: 10,
-                                paddingVertical: 5,
-                                borderRadius: 999,
-                                borderWidth: 1,
-                                borderColor: palette.brand,
-                                backgroundColor: palette.tint,
-                              }}
-                            >
-                              <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Suggest P/I split</Text>
-                            </Pressable>
-                          </View>
-                          <Text style={[ui.small, { color: palette.muted, marginBottom: 4 }]}>
-                            If unknown, full payment is recorded in cashflow while loan principal remains unchanged.
-                          </Text>
-                          <Text style={ui.small}>Principal reduction</Text>
-                          <TextInput
-                            placeholder={formatEditableMoney(0, currencyCode)}
-                            placeholderTextColor={palette.muted}
-                            keyboardType="decimal-pad"
-                            value={accountTxPrincipal}
-                            onChangeText={val => setAccountTxPrincipal(acceptMoneyEdit(accountTxPrincipal, val, currencyCode))}
-                            style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
-                          />
-                          <Text style={[ui.small, { marginTop: 4 }]}>Interest paid</Text>
-                          <TextInput
-                            placeholder={formatEditableMoney(0, currencyCode)}
-                            placeholderTextColor={palette.muted}
-                            keyboardType="decimal-pad"
-                            value={accountTxInterest}
-                            onChangeText={val => setAccountTxInterest(acceptMoneyEdit(accountTxInterest, val, currencyCode))}
-                            style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
-                          />
-                          {selected.category === 'Mortgage' ? (
-                            <>
-                              <Text style={[ui.small, { marginTop: 4 }]}>Escrow (taxes & insurance)</Text>
-                              <TextInput
-                                placeholder={formatEditableMoney(0, currencyCode)}
-                                placeholderTextColor={palette.muted}
-                                keyboardType="decimal-pad"
-                                value={accountTxEscrow}
-                                onChangeText={val => setAccountTxEscrow(acceptMoneyEdit(accountTxEscrow, val, currencyCode))}
-                                style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
-                              />
-                            </>
-                          ) : null}
-                          <Text style={[ui.small, { marginTop: 4 }]}>Fees</Text>
-                          <TextInput
-                            placeholder={formatEditableMoney(0, currencyCode)}
-                            placeholderTextColor={palette.muted}
-                            keyboardType="decimal-pad"
-                            value={accountTxFee}
-                            onChangeText={val => setAccountTxFee(acceptMoneyEdit(accountTxFee, val, currencyCode))}
-                            style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
-                          />
-                        </View>
-                      ) : null}
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-
-              <AdaptiveModal visible={showAccountTxCategoryPicker} transparent animationType="fade" onRequestClose={() => setShowAccountTxCategoryPicker(false)}>
-                <TouchableWithoutFeedback onPress={() => setShowAccountTxCategoryPicker(false)}>
-                  <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
-                    <TouchableWithoutFeedback>
-                      <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
-                          <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>Select Transaction Category</Text>
-                          <Pressable
-                            accessibilityRole="button"
-                            accessibilityLabel="Close picker"
-                            onPress={() => setShowAccountTxCategoryPicker(false)}
-                            style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
-                          >
-                            <AppIcon name="close" size={20} color={palette.muted} />
-                          </Pressable>
-                        </View>
-                        <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
-                          {ACCOUNT_TX_CATEGORY_CHOICES.map((option, idx) => {
-                            const isSelected = idx === accountTxCategoryIdx;
-                            return (
-                              <Pressable
-                                key={option.category}
-                                accessibilityRole="button"
-                                accessibilityState={{ selected: isSelected }}
-                                onPress={() => { setAccountTxCategoryIdx(idx); setShowAccountTxCategoryPicker(false); }}
-                                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                              >
-                                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                  <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} />
-                                  <View style={{ flex: 1 }}>
-                                    <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                    <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text>
-                                  </View>
-                                </View>
-                                {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                              </Pressable>
-                            );
-                          })}
-                        </ScrollView>
-                      </View>
-                    </TouchableWithoutFeedback>
-                  </View>
-                </TouchableWithoutFeedback>
-              </AdaptiveModal>
-
-              <CalendarDatePickerModal
-                visible={showAccountTxDatePicker}
-                value={accountTxDate}
-                timeZone={householdTimeZone}
-                title="Transaction date"
-                onSelect={date => { if (date) setAccountTxDate(date); }}
-                onClose={() => setShowAccountTxDatePicker(false)}
-              />
-            </View>
-          </SheetModal>
-        );
-      })() : null}
+      {selected && canEdit && onAddTransaction && showAccountTxModal ? (
+        <AccountQuickTransactionModal
+          key={selected.id}
+          selected={selected}
+          currencyCode={currencyCode}
+          currencySymbol={currencySymbol}
+          householdTimeZone={householdTimeZone}
+          selectedEscrow={selectedEscrow}
+          obligationSchedules={obligationSchedules}
+          linkedPairBillId={identityLinkedPairs[selected.id]}
+          transactions={transactions}
+          linkedBillIds={selectedLinkedBillIds}
+          onAddTransaction={onAddTransaction}
+          onClose={closeAccountTxModal}
+        />
+      ) : null}
     </AdaptiveModal>
     {showOneTimeDatePicker ? (
       <CalendarDatePickerModal
@@ -3189,7 +2975,467 @@ export function DebtScreen({
     {!selected ? informationSheet : null}
     </>
   );
-}
+});
+
+const AccountQuickTransactionModal = memo(function AccountQuickTransactionModal({
+  selected,
+  currencyCode,
+  currencySymbol,
+  householdTimeZone,
+  selectedEscrow,
+  obligationSchedules,
+  linkedPairBillId,
+  transactions,
+  linkedBillIds,
+  onAddTransaction,
+  onClose,
+}: {
+  selected: DebtItem;
+  currencyCode: string;
+  currencySymbol: string;
+  householdTimeZone?: string;
+  selectedEscrow?: number;
+  obligationSchedules?: ObligationSchedules;
+  linkedPairBillId?: string;
+  transactions: readonly LedgerTransaction[];
+  linkedBillIds?: readonly string[];
+  onAddTransaction: (tx: LedgerTransaction) => Promise<unknown> | unknown;
+  onClose: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const { isLight, palette, ctaBg, ctaFg } = useNativeAppearance();
+  const [accountTxCategoryIdx, setAccountTxCategoryIdx] = useState(0);
+  const [accountTxDate, setAccountTxDate] = useState(() => currentHouseholdDate(householdTimeZone));
+  const [accountTxAppliesToDate, setAccountTxAppliesToDate] = useState('');
+  const [accountTxAmount, setAccountTxAmount] = useState('');
+  const [accountTxPayee, setAccountTxPayee] = useState('');
+  const [accountTxPrincipal, setAccountTxPrincipal] = useState('');
+  const [accountTxInterest, setAccountTxInterest] = useState('');
+  const [accountTxEscrow, setAccountTxEscrow] = useState('');
+  const [accountTxFee, setAccountTxFee] = useState('');
+  const [accountTxShowMoreDetails, setAccountTxShowMoreDetails] = useState(false);
+  const [showAccountTxCategoryPicker, setShowAccountTxCategoryPicker] = useState(false);
+  const [showAccountTxDatePicker, setShowAccountTxDatePicker] = useState(false);
+  const [savingAccountTx, setSavingAccountTx] = useState(false);
+  const savingAccountTxRef = useRef(false);
+  const [accountTxError, setAccountTxError] = useState('');
+
+  const chosenCat = ACCOUNT_TX_CATEGORY_CHOICES[accountTxCategoryIdx] ?? ACCOUNT_TX_CATEGORY_CHOICES[0];
+  const dueCycleOptions = useMemo<readonly DropdownOption<string>[]>(() => {
+    const hhMonth = currentHouseholdMonth(householdTimeZone);
+    const schedule = resolveEffectiveDebtSchedule(obligationSchedules, selected.id, linkedPairBillId ? [linkedPairBillId] : []);
+    return [
+      { value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' },
+      ...[0, 1, 2].flatMap(monthOffset => {
+        let month = hhMonth;
+        for (let offset = 0; offset < monthOffset; offset++) month = getNextMonthString(month);
+        const cycle = schedule ? getObligationCycle(schedule, month) : undefined;
+        if (cycle === null || (!schedule && !selected.dueDay)) return [];
+        const date = cycle?.dueDate ?? resolveRecurringBillDate(month, selected.dueDay!);
+        const label = formatShortDate(date);
+        return {
+          value: date,
+          label: `Due ${label}`,
+          subtitle: selected.dueDay ? `Apply this payment to ${label}` : `Link this payment to the ${label} cycle`,
+        };
+      }),
+    ];
+  }, [householdTimeZone, linkedPairBillId, obligationSchedules, selected.dueDay, selected.id]);
+
+  const saveAccountTx = async () => {
+    if (savingAccountTx || savingAccountTxRef.current) return;
+    setAccountTxError('');
+    const parsedAmt = parseMoneyInput(accountTxAmount, currencyCode, false);
+    if (parsedAmt === null || parsedAmt <= 0) {
+      setAccountTxError('Please enter a valid amount');
+      return;
+    }
+
+    savingAccountTxRef.current = true;
+    setSavingAccountTx(true);
+    try {
+      const actualDate = parseDateOnly(accountTxDate.trim());
+      const appliesToDate = accountTxAppliesToDate.trim() ? parseDateOnly(accountTxAppliesToDate.trim()) : null;
+      const moneyAmount = parseMoney(accountTxAmount, currencyCode);
+
+      const principalAmount = accountTxPrincipal.trim() ? parseMoney(accountTxPrincipal.trim(), currencyCode) : null;
+      const interestAmount = accountTxInterest.trim() ? parseMoney(accountTxInterest.trim(), currencyCode) : null;
+      const escrowAmount = accountTxEscrow.trim() ? parseMoney(accountTxEscrow.trim(), currencyCode) : null;
+      const feeAmount = accountTxFee.trim() ? parseMoney(accountTxFee.trim(), currencyCode) : null;
+
+      const tx: LedgerTransaction = {
+        id: `tx:${Crypto.randomUUID()}`,
+        accountId: selected.id,
+        date: actualDate,
+        appliesToDate,
+        amount: moneyAmount,
+        category: chosenCat.category,
+        payee: accountTxPayee.trim() || (chosenCat.category === 'payment' ? 'Payment' : chosenCat.label),
+        memo: `Manual entry (${chosenCat.label})`,
+        source: 'manual',
+        reconciled: false,
+        createdAt: new Date().toISOString(),
+        deletedAt: null,
+        principalAmount,
+        interestAmount,
+        escrowAmount,
+        feeAmount,
+      };
+
+      const res = await onAddTransaction(tx);
+      if (res && (res as { outcome?: string }).outcome === 'pending') {
+        Alert.alert(
+          'Saved Locally (Pending Confirmation)',
+          'Transaction recorded locally. Confirmation will be verified upon connecting to the server.',
+        );
+      }
+      onClose();
+    } catch (e) {
+      const msg = (e as Error).message || 'Unable to save transaction';
+      setAccountTxError(msg);
+      if (msg.includes('conflict') || msg.includes('Conflict')) {
+        Alert.alert('Save Conflict', msg);
+      }
+    } finally {
+      savingAccountTxRef.current = false;
+      setSavingAccountTx(false);
+    }
+  };
+
+  return (
+    <SheetModal
+      visible
+      onClose={onClose}
+      contentSized
+      closeLabel="Dismiss form"
+      footer={(
+        <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 18, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface }}>
+          <Pressable
+            accessibilityRole="button"
+            disabled={savingAccountTx}
+            onPress={() => { void saveAccountTx(); }}
+            style={[ui.button, { minHeight: 46, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center', opacity: savingAccountTx ? 0.65 : 1 }]}
+          >
+            <Text style={[ui.buttonText, { color: ctaFg, fontSize: 15, fontWeight: '700', textAlign: 'center' }]}>
+              {savingAccountTx ? 'Saving\u2026' : 'Save Transaction'}
+            </Text>
+          </Pressable>
+        </View>
+      )}
+    >
+      <View style={{ gap: 10 }}>
+        <SheetFormHeader
+          title="Add transaction"
+          subtitle={`${selected.name} \u00b7 ${selected.category}`}
+          centered
+          onClose={onClose}
+          closeLabel="Dismiss form"
+        />
+
+        {!!accountTxError && (
+          <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight) }]}>{accountTxError}</Text>
+        )}
+
+        <View style={{ borderRadius: 16, borderWidth: 1, borderColor: palette.border, backgroundColor: isLight ? palette.surface : palette.raised, paddingHorizontal: 15, overflow: 'hidden' }}>
+          <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}>
+            <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Account</Text>
+            <Text numberOfLines={1} style={{ color: palette.muted, fontSize: 15, fontWeight: '600', flexShrink: 1, textAlign: 'right' }}>
+              {selected.name}
+            </Text>
+          </View>
+
+          <View style={{ height: 1, backgroundColor: palette.border }} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Transaction category: ${chosenCat.label}`}
+            accessibilityHint="Required"
+            onPress={() => setShowAccountTxCategoryPicker(true)}
+            style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
+          >
+            <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction category *</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
+              <Text numberOfLines={1} style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>{chosenCat.label}</Text>
+              <AppIcon name="chevronDown" size={14} color={palette.muted} />
+            </View>
+          </Pressable>
+
+          <View style={{ height: 1, backgroundColor: palette.border }} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Transaction date: ${accountTxDate}`}
+            accessibilityHint="Required"
+            onPress={() => setShowAccountTxDatePicker(true)}
+            style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
+          >
+            <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction date *</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+              <Text style={{ color: palette.brand, fontSize: 15, fontWeight: '600' }}>
+                {formatShortDate(accountTxDate)}
+              </Text>
+              <AppIcon name="calendar" size={16} color={palette.brand} />
+            </View>
+          </Pressable>
+
+          <View style={{ height: 1, backgroundColor: palette.border }} />
+          <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 2 }}>
+            <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Amount *</Text>
+            <TextInput
+              accessibilityLabel="Transaction amount"
+              accessibilityHint="Required"
+              placeholder={formatEditableMoney(0, currencyCode)}
+              placeholderTextColor={palette.muted}
+              keyboardType="decimal-pad"
+              textAlign="right"
+              value={accountTxAmount}
+              onChangeText={val => setAccountTxAmount(prev => acceptMoneyEdit(prev, val, currencyCode))}
+              style={{ flex: 1, minWidth: 96, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 15, fontWeight: '600' }}
+            />
+          </View>
+
+          <View style={{ height: 1, backgroundColor: palette.border }} />
+          <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 2 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
+              <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Add a note</Text>
+              <Text style={{ color: palette.muted, fontSize: 12 }}>optional</Text>
+            </View>
+            <TextInput
+              accessibilityLabel="Add a note"
+              placeholder="Optional note"
+              placeholderTextColor={palette.muted}
+              textAlign="right"
+              value={accountTxPayee}
+              onChangeText={setAccountTxPayee}
+              style={{ flex: 1, minWidth: 96, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 14 }}
+            />
+          </View>
+        </View>
+
+        {accountTxAmount ? (() => {
+          try {
+            const amount = parseMoney(accountTxAmount, currencyCode);
+            if (moneyToMajor(amount) <= 0) return null;
+            const preview: LedgerTransaction = {
+              id: 'preview',
+              accountId: selected.id,
+              date: parseDateOnly(accountTxDate.trim()),
+              appliesToDate: null,
+              amount,
+              category: chosenCat.category,
+              payee: '',
+              memo: '',
+              source: 'manual',
+              reconciled: false,
+              createdAt: '',
+              deletedAt: null,
+              principalAmount: accountTxPrincipal.trim() ? parseMoney(accountTxPrincipal, currencyCode) : null,
+              interestAmount: accountTxInterest.trim() ? parseMoney(accountTxInterest, currencyCode) : null,
+              escrowAmount: accountTxEscrow.trim() ? parseMoney(accountTxEscrow, currencyCode) : null,
+              feeAmount: accountTxFee.trim() ? parseMoney(accountTxFee, currencyCode) : null,
+            };
+            const after = addMoney(moneyFromMajor(selected.balance, currencyCode), calculateTransactionBalanceDelta(preview, selected.category));
+            return (
+              <View style={[ui.row, { justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: palette.tint }]}>
+                <View><Text style={ui.small}>Current balance</Text><Text style={ui.heading}>{formatCurrency(selected.balance, currencySymbol)}</Text></View>
+                <AppIcon name="chevronRight" size={16} color={palette.brand} />
+                <View style={{ alignItems: 'flex-end' }}><Text style={ui.small}>After saving</Text><Text style={ui.heading}>{formatCurrency(moneyToMajor(after), currencySymbol)}</Text></View>
+              </View>
+            );
+          } catch {
+            return null;
+          }
+        })() : null}
+
+        {chosenCat.category === 'payment' ? (
+          <View style={{ gap: 8 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: accountTxShowMoreDetails }}
+              onPress={() => setAccountTxShowMoreDetails(prev => !prev)}
+              style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}
+            >
+              <Text style={{ color: palette.brand, fontSize: 14, fontWeight: '600' }}>More details</Text>
+              <AppIcon name={accountTxShowMoreDetails ? 'chevronDown' : 'chevronRight'} size={15} color={palette.brand} />
+            </Pressable>
+
+            {accountTxShowMoreDetails ? (
+              <View style={{ gap: 10 }}>
+                <SelectDropdown
+                  label="Applies to payment cycle (optional)"
+                  sheetTitle="Choose Payment Due Cycle"
+                  value={accountTxAppliesToDate}
+                  options={dueCycleOptions}
+                  onSelect={setAccountTxAppliesToDate}
+                  placeholder="Choose a due cycle"
+                />
+
+                {(selected.category === 'Mortgage' || selected.category === 'Auto loan') ? (
+                  <View style={{ padding: 12, backgroundColor: palette.raised, borderRadius: 12, borderWidth: 1, borderColor: palette.border, gap: 6 }}>
+                    <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
+                      <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700', flex: 1 }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+                      {canSuggestLoanPaymentSplit(selected, selected.category === 'Mortgage' ? selectedEscrow : undefined) ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Suggest principal and interest split"
+                          onPress={() => {
+                            const parsedAmt = parseMoneyInput(accountTxAmount, currencyCode, false);
+                            const targetAmount = parsedAmt !== null && parsedAmt > 0 ? parsedAmt : selected.minimumPayment;
+                            if (!Number.isFinite(targetAmount) || targetAmount <= 0) return;
+                            if (parsedAmt === null || parsedAmt <= 0) {
+                              setAccountTxAmount(formatEditableMoney(targetAmount, currencyCode));
+                            }
+                            let suggestion;
+                            if (selected.category === 'Auto loan') {
+                              let paymentDate = currentHouseholdDate(householdTimeZone);
+                              try {
+                                paymentDate = parseDateOnly(accountTxDate.trim());
+                              } catch {
+                                // Fallback to household today if draft date is invalid.
+                              }
+                              suggestion = resolveAutoLoanSplitSuggestion({
+                                debt: selected,
+                                paymentAmount: targetAmount,
+                                paymentDate,
+                                transactions,
+                                currencyCode,
+                                linkedBillIds,
+                              }).suggestion;
+                            } else {
+                              suggestion = suggestLoanPaymentSplit({
+                                balance: selected.balance,
+                                aprPercent: selected.apr,
+                                paymentAmount: targetAmount,
+                                escrowAmount: selected.category === 'Mortgage' ? selectedEscrow : undefined,
+                                currencyCode,
+                              });
+                            }
+                            setAccountTxPrincipal(formatEditableMoney(suggestion.principal, currencyCode));
+                            setAccountTxInterest(formatEditableMoney(suggestion.interest, currencyCode));
+                            if (selected.category === 'Mortgage') {
+                              setAccountTxEscrow(formatEditableMoney(suggestion.escrow, currencyCode));
+                            }
+                          }}
+                          style={{
+                            paddingHorizontal: 10,
+                            paddingVertical: 5,
+                            borderRadius: 999,
+                            borderWidth: 1,
+                            borderColor: palette.brand,
+                            backgroundColor: palette.tint,
+                          }}
+                        >
+                          <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Suggest P/I split</Text>
+                        </Pressable>
+                      ) : selected.category === 'Mortgage' && selectedEscrow === undefined ? (
+                        <Text style={[ui.small, { color: palette.muted }]}>Set monthly escrow to suggest split</Text>
+                      ) : null}
+                    </View>
+                    <Text style={[ui.small, { color: palette.muted, marginBottom: 4 }]}>
+                      If unknown, full payment is recorded in cashflow while loan principal remains unchanged.
+                    </Text>
+                    <Text style={ui.small}>Principal reduction</Text>
+                    <TextInput
+                      placeholder={formatEditableMoney(0, currencyCode)}
+                      placeholderTextColor={palette.muted}
+                      keyboardType="decimal-pad"
+                      value={accountTxPrincipal}
+                      onChangeText={val => setAccountTxPrincipal(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                      style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
+                    />
+                    <Text style={[ui.small, { marginTop: 4 }]}>Interest paid</Text>
+                    <TextInput
+                      placeholder={formatEditableMoney(0, currencyCode)}
+                      placeholderTextColor={palette.muted}
+                      keyboardType="decimal-pad"
+                      value={accountTxInterest}
+                      onChangeText={val => setAccountTxInterest(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                      style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
+                    />
+                    {selected.category === 'Mortgage' ? (
+                      <>
+                        <Text style={[ui.small, { marginTop: 4 }]}>Escrow (taxes & insurance)</Text>
+                        <TextInput
+                          placeholder={formatEditableMoney(0, currencyCode)}
+                          placeholderTextColor={palette.muted}
+                          keyboardType="decimal-pad"
+                          value={accountTxEscrow}
+                          onChangeText={val => setAccountTxEscrow(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                          style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
+                        />
+                      </>
+                    ) : null}
+                    <Text style={[ui.small, { marginTop: 4 }]}>Fees</Text>
+                    <TextInput
+                      placeholder={formatEditableMoney(0, currencyCode)}
+                      placeholderTextColor={palette.muted}
+                      keyboardType="decimal-pad"
+                      value={accountTxFee}
+                      onChangeText={val => setAccountTxFee(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                      style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        <AdaptiveModal visible={showAccountTxCategoryPicker} transparent animationType="fade" onRequestClose={() => setShowAccountTxCategoryPicker(false)}>
+          <TouchableWithoutFeedback onPress={() => setShowAccountTxCategoryPicker(false)}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
+              <TouchableWithoutFeedback>
+                <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
+                    <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>Select Transaction Category</Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Close picker"
+                      onPress={() => setShowAccountTxCategoryPicker(false)}
+                      style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      <AppIcon name="close" size={20} color={palette.muted} />
+                    </Pressable>
+                  </View>
+                  <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
+                    {ACCOUNT_TX_CATEGORY_CHOICES.map((option, idx) => {
+                      const isSelected = idx === accountTxCategoryIdx;
+                      return (
+                        <Pressable
+                          key={option.category}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: isSelected }}
+                          onPress={() => { setAccountTxCategoryIdx(idx); setShowAccountTxCategoryPicker(false); }}
+                          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                        >
+                          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                            <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} />
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                              <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text>
+                            </View>
+                          </View>
+                          {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </AdaptiveModal>
+
+        <CalendarDatePickerModal
+          visible={showAccountTxDatePicker}
+          value={accountTxDate}
+          timeZone={householdTimeZone}
+          title="Transaction date"
+          onSelect={date => { if (date) setAccountTxDate(date); }}
+          onClose={() => setShowAccountTxDatePicker(false)}
+        />
+      </View>
+    </SheetModal>
+  );
+});
 
 function ExtraAmountRow({
   label,

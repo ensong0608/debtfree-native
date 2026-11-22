@@ -1,5 +1,5 @@
-import React, { createContext, forwardRef, useContext, useEffect, useRef, useState } from 'react';
-import { Pressable as NativePressable, ScrollView as NativeScrollView, StyleSheet, Switch as NativeSwitch, Text as NativeText, TextInput as NativeTextInput, View as NativeView, useColorScheme, type PressableProps, type ScrollViewProps, type SwitchProps, type TextInputProps, type TextProps, type ViewProps } from 'react-native';
+import React, { createContext, forwardRef, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Pressable as NativePressable, ScrollView as NativeScrollView, StyleSheet, Switch as NativeSwitch, Text as NativeText, TextInput as NativeTextInput, View as NativeView, useColorScheme, type PressableProps, type PressableStateCallbackType, type ScrollViewProps, type SwitchProps, type TextInputProps, type TextProps, type TextStyle, type ViewProps } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
 import {
@@ -65,7 +65,7 @@ export function NativeAppearanceProvider({ userId, children }: { userId?: string
     };
   }, [userId]);
 
-  const updatePreferences = async (change: Partial<AppearancePreferences>) => {
+  const updatePreferences = useCallback(async (change: Partial<AppearancePreferences>) => {
     if (!userId) throw new Error('Sign in to save appearance settings.');
     const revision = ++preferenceRevision.current;
     const queued = preferenceWrites.get(userId);
@@ -94,7 +94,7 @@ export function NativeAppearanceProvider({ userId, children }: { userId?: string
     } finally {
       if (preferenceWrites.get(userId) === write) preferenceWrites.delete(userId);
     }
-  };
+  }, [userId]);
 
   useEffect(() => {
     const revision = ++scalingRevision.current;
@@ -104,26 +104,35 @@ export function NativeAppearanceProvider({ userId, children }: { userId?: string
     }).catch(() => {});
     return () => { active = false; };
   }, [userId]);
-  const setTextScaling = (enabled: boolean) => {
+  const setTextScaling = useCallback((enabled: boolean) => {
     scalingRevision.current++;
     setScalingState({ userId, enabled });
     if (userId) void SecureStore.setItemAsync(scalingKey(userId), String(enabled), secureOptions).catch(() => {});
-  };
+  }, [userId]);
+
+  const setThemeStyle = useCallback((style: ThemeStyle) => updatePreferences({ style }), [updatePreferences]);
+  const setThemeMode = useCallback((mode: ThemeMode) => updatePreferences({ mode }), [updatePreferences]);
+  const setAccentColor = useCallback((accent: AccentColor) => updatePreferences({ accent }), [updatePreferences]);
 
   const { style: themeStyle, mode: themeMode, accent: accentColor } = state.userId === userId ? state.preferences : DEFAULT_APPEARANCE;
   const isInspire = themeStyle === 'Inspire';
   const isLight = isLightMode(themeMode, scheme);
-  const palette = getAppearancePalette(themeStyle, accentColor, isLight);
-  const appearance: Appearance = {
+  const palette = useMemo(() => getAppearancePalette(themeStyle, accentColor, isLight), [themeStyle, accentColor, isLight]);
+  const appearanceError = errorState.userId === userId ? errorState.message : null;
+  const textScaling = scalingState.userId === userId ? scalingState.enabled : true;
+  const appearance = useMemo<Appearance>(() => ({
     themeStyle, themeMode, accentColor, isInspire, isLight, palette,
-    appearanceError: errorState.userId === userId ? errorState.message : null,
-    textScaling: scalingState.userId === userId ? scalingState.enabled : true,
+    appearanceError,
+    textScaling,
     setTextScaling,
-    setThemeStyle: style => updatePreferences({ style }),
-    setThemeMode: mode => updatePreferences({ mode }),
-    setAccentColor: accent => updatePreferences({ accent }),
+    setThemeStyle,
+    setThemeMode,
+    setAccentColor,
     ctaBg: palette.brand, ctaFg: palette.onBrand,
-  };
+  }), [
+    themeStyle, themeMode, accentColor, isInspire, isLight, palette,
+    appearanceError, textScaling, setTextScaling, setThemeStyle, setThemeMode, setAccentColor,
+  ]);
   return <AppearanceContext.Provider value={appearance}><StatusBar style={isLight ? 'dark' : 'light'} />{children}</AppearanceContext.Provider>;
 }
 
@@ -155,61 +164,144 @@ neutralTokens['#28372e'] = 'border';
 for (const color of ['#353d38', '#353d39', '#353a37', '#37413b', '#3c443f', '#414743', '#414a45', '#323935', '#343c37', '#3a423e', '#3b453f']) neutralTokens[color] = 'border';
 for (const color of ['#f1f5f2', '#f9f9f6', '#d8dfda', '#d4dbd7', '#d5ddd8']) neutralTokens[color] = 'text';
 for (const color of ['#a6b2aa', '#728078', '#77847d', '#aab3ad', '#b5bdb7', '#8a9690', '#8e9992', '#7e8982', '#6e7571']) neutralTokens[color] = 'muted';
-export function appearanceColor(color: string, isLight: boolean, accentColor: AccentColor = defaultAccentColor, isInspire = false): string {
+const COLOR_STYLE_KEYS = [
+  'color', 'backgroundColor', 'borderColor', 'borderTopColor', 'borderBottomColor',
+  'borderLeftColor', 'borderRightColor', 'shadowColor', 'textDecorationColor',
+] as const;
+type MappedStyleEntry = { mapped: unknown; flattened: Record<string, unknown> | undefined };
+const mappedStyleIdCaches = new Map<string, Map<number, MappedStyleEntry>>();
+function getMappedStyleIdCache(isLight: boolean, isInspire: boolean, accentColor: AccentColor): Map<number, MappedStyleEntry> {
+  const key = `${isLight ? 1 : 0}:${isInspire ? 1 : 0}:${accentColor}`;
+  let cache = mappedStyleIdCaches.get(key);
+  if (!cache) {
+    cache = new Map<number, MappedStyleEntry>();
+    mappedStyleIdCaches.set(key, cache);
+  }
+  return cache;
+}
+function resolveAppearanceColor(color: string, isLight: boolean, palette: AppearancePalette): string {
   const key = color.toLowerCase();
   const token = neutralTokens[key];
-  const palette = getAppearancePalette(isInspire ? 'Inspire' : 'Fresh', accentColor, isLight);
   if (token) return palette[token];
   if (key === '#86e3b8') return palette.posInk;
   if (key === '#f08b78') return palette.neg;
   return isLight ? lightColors[key] ?? color : color;
 }
-function mapStyle<T>(style: T, isLight: boolean, accentColor: AccentColor, isInspire: boolean): T {
-  if (!style) return style;
-  const flattened = StyleSheet.flatten(style as any);
-  if (!flattened) return style;
-  const result: Record<string, unknown> = { ...flattened };
-  for (const key of ['color', 'backgroundColor', 'borderColor', 'borderTopColor', 'borderBottomColor', 'borderLeftColor', 'borderRightColor', 'shadowColor', 'textDecorationColor']) {
-    const value = result[key];
-    if (typeof value === 'string') result[key] = appearanceColor(value, isLight, accentColor, isInspire);
-  }
-  return result as T;
+export function appearanceColor(color: string, isLight: boolean, accentColor: AccentColor = defaultAccentColor, isInspire = false): string {
+  const palette = getAppearancePalette(isInspire ? 'Inspire' : 'Fresh', accentColor, isLight);
+  return resolveAppearanceColor(color, isLight, palette);
 }
-export const View = forwardRef<React.ComponentRef<typeof NativeView>, ViewProps>(({ style, ...props }, ref) => { const { isLight, isInspire, accentColor } = useNativeAppearance(); return <NativeView ref={ref} {...props} style={mapStyle(style, isLight, accentColor, isInspire)} />; });
+function remapFlattenedStyle<T>(style: T, isLight: boolean, palette: AppearancePalette): MappedStyleEntry {
+  const flattened = StyleSheet.flatten(style as any) as Record<string, unknown> | undefined;
+  if (!flattened) return { mapped: style, flattened: undefined };
+  let cloned: Record<string, unknown> | null = null;
+  for (let i = 0; i < COLOR_STYLE_KEYS.length; i += 1) {
+    const key = COLOR_STYLE_KEYS[i];
+    const value = flattened[key];
+    if (typeof value === 'string') {
+      const mapped = resolveAppearanceColor(value, isLight, palette);
+      if (mapped !== value) {
+        if (!cloned) cloned = { ...flattened };
+        cloned[key] = mapped;
+      }
+    }
+  }
+  return { mapped: (cloned ?? style) as T, flattened };
+}
+function mapStyleDetails<T>(
+  style: T,
+  isLight: boolean,
+  accentColor: AccentColor,
+  isInspire: boolean,
+  palette: AppearancePalette,
+): { mapped: T; flattened: Record<string, unknown> | undefined } {
+  if (!style) return { mapped: style, flattened: undefined };
+  if (typeof style === 'number') {
+    const cache = getMappedStyleIdCache(isLight, isInspire, accentColor);
+    const cached = cache.get(style);
+    if (cached) return cached as { mapped: T; flattened: Record<string, unknown> | undefined };
+    const entry = remapFlattenedStyle(style, isLight, palette);
+    cache.set(style, entry);
+    return entry as { mapped: T; flattened: Record<string, unknown> | undefined };
+  }
+  return remapFlattenedStyle(style, isLight, palette) as { mapped: T; flattened: Record<string, unknown> | undefined };
+}
+function mapStyle<T>(
+  style: T,
+  isLight: boolean,
+  accentColor: AccentColor,
+  isInspire: boolean,
+  palette: AppearancePalette,
+): T {
+  return mapStyleDetails(style, isLight, accentColor, isInspire, palette).mapped;
+}
+export const View = forwardRef<React.ComponentRef<typeof NativeView>, ViewProps>(({ style, ...props }, ref) => { const { isLight, isInspire, accentColor, palette } = useNativeAppearance(); return <NativeView ref={ref} {...props} style={mapStyle(style, isLight, accentColor, isInspire, palette)} />; });
 View.displayName = 'NativeAppearanceView';
 type FontWeight = 'regular' | 'medium' | 'bold';
 const InheritedFontWeight = createContext<FontWeight>('regular');
-function montserratStyle(style: TextProps['style'], inherited: FontWeight) {
-  const flattened = StyleSheet.flatten(style);
+function montserratStyleFromFlattened(flattened: TextStyle | undefined, inherited: FontWeight) {
   const weight = flattened?.fontWeight;
   const numeric = weight === 'bold' ? 700 : weight === 'normal' ? 400 : Number(weight);
   const resolved: FontWeight = weight == null ? inherited : numeric >= 600 ? 'bold' : numeric >= 500 ? 'medium' : 'regular';
   const family = resolved === 'bold' ? 'Montserrat_700Bold' : resolved === 'medium' ? 'Montserrat_500Medium' : 'Montserrat_400Regular';
   return { resolved, style: flattened?.fontFamily ? { fontFamily: flattened.fontFamily, fontWeight: weight } : { fontFamily: family, fontWeight: 'normal' as const } };
 }
+function hasNestedElements(children: React.ReactNode): boolean {
+  if (children == null || typeof children === 'string' || typeof children === 'number' || typeof children === 'boolean') return false;
+  if (Array.isArray(children)) {
+    for (let i = 0; i < children.length; i += 1) {
+      const item = children[i];
+      if (item != null && typeof item !== 'string' && typeof item !== 'number' && typeof item !== 'boolean') return true;
+    }
+    return false;
+  }
+  return true;
+}
+function resolveFontTextProps(
+  inherited: FontWeight,
+  flattened: TextStyle | undefined,
+  children: React.ReactNode,
+) {
+  const font = montserratStyleFromFlattened(flattened, inherited);
+  const wrapChildren = font.resolved !== inherited && hasNestedElements(children);
+  return { font, wrapChildren };
+}
 export const FontText = forwardRef<React.ComponentRef<typeof NativeText>, TextProps>(({ style, children, ...props }, ref) => {
   const inherited = useContext(InheritedFontWeight);
-  const font = montserratStyle(style, inherited);
-  return <NativeText ref={ref} {...props} style={[style, font.style]}><InheritedFontWeight.Provider value={font.resolved}>{children}</InheritedFontWeight.Provider></NativeText>;
+  const flattened = style ? (StyleSheet.flatten(style) as TextStyle | undefined) : undefined;
+  const { font, wrapChildren } = resolveFontTextProps(inherited, flattened, children);
+  return (
+    <NativeText ref={ref} {...props} style={[style, font.style]}>
+      {wrapChildren ? <InheritedFontWeight.Provider value={font.resolved}>{children}</InheritedFontWeight.Provider> : children}
+    </NativeText>
+  );
 });
 FontText.displayName = 'MontserratText';
-export const Text = forwardRef<React.ComponentRef<typeof NativeText>, TextProps>(({ style, ...props }, ref) => {
-  const { isLight, isInspire, textScaling, accentColor } = useNativeAppearance();
-  return <FontText ref={ref} {...props} allowFontScaling={textScaling} style={mapStyle(style, isLight, accentColor, isInspire)} />;
+export const Text = forwardRef<React.ComponentRef<typeof NativeText>, TextProps>(({ style, children, ...props }, ref) => {
+  const { isLight, isInspire, textScaling, accentColor, palette } = useNativeAppearance();
+  const { mapped, flattened } = mapStyleDetails(style, isLight, accentColor, isInspire, palette);
+  const inherited = useContext(InheritedFontWeight);
+  const { font, wrapChildren } = resolveFontTextProps(inherited, flattened as TextStyle | undefined, children);
+  return (
+    <NativeText ref={ref} {...props} allowFontScaling={textScaling} style={[mapped, font.style]}>
+      {wrapChildren ? <InheritedFontWeight.Provider value={font.resolved}>{children}</InheritedFontWeight.Provider> : children}
+    </NativeText>
+  );
 });
 Text.displayName = 'NativeAppearanceText';
 export const TextInput = forwardRef<React.ComponentRef<typeof NativeTextInput>, TextInputProps>(({ style, placeholderTextColor, ...props }, ref) => {
   const { isLight, isInspire, textScaling, accentColor, palette } = useNativeAppearance();
-  const color = typeof placeholderTextColor === 'string' ? appearanceColor(placeholderTextColor, isLight, accentColor, isInspire) : placeholderTextColor;
-  const border = StyleSheet.flatten(style)?.borderColor;
+  const color = typeof placeholderTextColor === 'string' ? resolveAppearanceColor(placeholderTextColor, isLight, palette) : placeholderTextColor;
+  const { mapped, flattened } = mapStyleDetails(style, isLight, accentColor, isInspire, palette);
+  const border = flattened?.borderColor;
   const neutralBorder = typeof border === 'string' && Boolean(neutralTokens[border.toLowerCase()]);
-  const font = montserratStyle(style, 'regular');
-  return <NativeTextInput ref={ref} {...props} allowFontScaling={textScaling} placeholderTextColor={color} style={[mapStyle(style, isLight, accentColor, isInspire), neutralBorder && { borderColor: palette.inputBorder }, font.style]} />;
+  const font = montserratStyleFromFlattened(flattened as TextStyle | undefined, 'regular');
+  return <NativeTextInput ref={ref} {...props} allowFontScaling={textScaling} placeholderTextColor={color} style={[mapped, neutralBorder && { borderColor: palette.inputBorder }, font.style]} />;
 });
 TextInput.displayName = 'NativeAppearanceTextInput';
-export const Pressable = forwardRef<React.ComponentRef<typeof NativePressable>, PressableProps>(({ style, ...props }, ref) => { const { isLight, isInspire, accentColor } = useNativeAppearance(); return <NativePressable ref={ref} {...props} style={typeof style === 'function' ? state => mapStyle(style(state), isLight, accentColor, isInspire) : mapStyle(style, isLight, accentColor, isInspire)} />; });
+export const Pressable = forwardRef<React.ComponentRef<typeof NativePressable>, PressableProps>(({ style, ...props }, ref) => { const { isLight, isInspire, accentColor, palette } = useNativeAppearance(); return <NativePressable ref={ref} {...props} style={typeof style === 'function' ? (state: PressableStateCallbackType) => mapStyle(style(state), isLight, accentColor, isInspire, palette) : mapStyle(style, isLight, accentColor, isInspire, palette)} />; });
 Pressable.displayName = 'NativeAppearancePressable';
-export const ScrollView = forwardRef<React.ComponentRef<typeof NativeScrollView>, ScrollViewProps>(({ style, contentContainerStyle, ...props }, ref) => { const { isLight, isInspire, accentColor } = useNativeAppearance(); return <NativeScrollView ref={ref} {...props} style={mapStyle(style, isLight, accentColor, isInspire)} contentContainerStyle={mapStyle(contentContainerStyle, isLight, accentColor, isInspire)} />; });
+export const ScrollView = forwardRef<React.ComponentRef<typeof NativeScrollView>, ScrollViewProps>(({ style, contentContainerStyle, ...props }, ref) => { const { isLight, isInspire, accentColor, palette } = useNativeAppearance(); return <NativeScrollView ref={ref} {...props} style={mapStyle(style, isLight, accentColor, isInspire, palette)} contentContainerStyle={mapStyle(contentContainerStyle, isLight, accentColor, isInspire, palette)} />; });
 ScrollView.displayName = 'NativeAppearanceScrollView';
-export const Switch = forwardRef<React.ComponentRef<typeof NativeSwitch>, SwitchProps>((props, ref) => { const { isLight, isInspire, accentColor } = useNativeAppearance(); return <NativeSwitch ref={ref} {...props} style={mapStyle(props.style, isLight, accentColor, isInspire)} />; });
+export const Switch = forwardRef<React.ComponentRef<typeof NativeSwitch>, SwitchProps>((props, ref) => { const { isLight, isInspire, accentColor, palette } = useNativeAppearance(); return <NativeSwitch ref={ref} {...props} style={mapStyle(props.style, isLight, accentColor, isInspire, palette)} />; });
 Switch.displayName = 'NativeAppearanceSwitch';

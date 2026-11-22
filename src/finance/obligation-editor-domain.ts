@@ -17,6 +17,7 @@ export type ObligationCycleMove = Readonly<{ fromMonth: string; toDate: DateOnly
 export type ObligationDueDateEdit = Readonly<{
   cycleMove?: ObligationCycleMove;
   protectedDueDays?: Readonly<Record<string, number>>;
+  restoreSuppressedCycle?: Readonly<{ month: string; dueDay: number }>;
 }>;
 
 type ScheduleEdit = {
@@ -50,7 +51,7 @@ function legacySchedule(params: ScheduleEdit, historicalDueDay: number): Obligat
 
 /** Prepare an editor schedule while anchoring first-time tracking on today. */
 export function prepareObligationEditorSchedule(params: ScheduleEdit): ObligationSchedule {
-  const { today, dueDay, amount, cycleMove, protectedDueDays } = params;
+  const { today, dueDay, amount, cycleMove, protectedDueDays, restoreSuppressedCycle } = params;
   obligationScheduleKey(params.kind, params.id);
   if (!params.existing && (params.isNew || params.legacyDueDay == null)) {
     return initializeObligationSchedule({ today, dueDay, amount, paidToday: params.paidToday });
@@ -67,6 +68,25 @@ export function prepareObligationEditorSchedule(params: ScheduleEdit): Obligatio
   }, today);
   if (protectedDueDays && Object.keys(protectedDueDays).length > 0) {
     updated = { ...updated, cycleDueDayOverrides: { ...updated.cycleDueDayOverrides, ...protectedDueDays } };
+    validateObligationSchedule(updated);
+  }
+  if (restoreSuppressedCycle && updated.cycleDueDayOverrides?.[restoreSuppressedCycle.month] === null) {
+    const { month: restoreMonth, dueDay: restoreDueDay } = restoreSuppressedCycle;
+    const overrides: Record<string, number | null> = { ...updated.cycleDueDayOverrides };
+    delete overrides[restoreMonth];
+    const applyOverrides = (nextOverrides: Record<string, number | null>): ObligationSchedule => {
+      if (Object.keys(nextOverrides).length > 0) {
+        return { ...updated, cycleDueDayOverrides: nextOverrides };
+      }
+      const { cycleDueDayOverrides: _omitted, ...rest } = updated;
+      return rest;
+    };
+    const candidate = applyOverrides(overrides);
+    const resolvedCycle = getObligationCycle(candidate, restoreMonth);
+    if (resolvedCycle?.dueDay !== restoreDueDay) {
+      overrides[restoreMonth] = restoreDueDay;
+    }
+    updated = applyOverrides(overrides);
     validateObligationSchedule(updated);
   }
   if (!cycleMove) return updated;

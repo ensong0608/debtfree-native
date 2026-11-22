@@ -14,6 +14,23 @@ export interface KeyValueStore {
 
 const MANIFEST = /^dfchunks:v1:([A-Za-z0-9]+):(\d{1,4})$/;
 export const MAX_CHUNK_BYTES = 1800;
+export const MAX_CHUNKS = 9999;
+export const CHUNK_IO_BATCH_SIZE = 8;
+
+async function runBatched<T, R>(
+  items: readonly T[],
+  batchSize: number,
+  work: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = await Promise.all(
+      items.slice(i, i + batchSize).map((item, offset) => work(item, i + offset)),
+    );
+    results.push(...batch);
+  }
+  return results;
+}
 
 function utf8Length(codePoint: number): number {
   return codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
@@ -44,7 +61,8 @@ export function createChunkedStorage(store: KeyValueStore, newGeneration: () => 
     return { raw, manifest: match ? { generation: match[1], count: Number(match[2]) } : null };
   }
   async function removeChunks(key: string, generation: string, count: number) {
-    await Promise.all(Array.from({ length: count }, (_, i) => store.removeItem(chunkKey(key, generation, i)).catch(() => undefined)));
+    const indices = Array.from({ length: count }, (_, i) => i);
+    await runBatched(indices, CHUNK_IO_BATCH_SIZE, i => store.removeItem(chunkKey(key, generation, i)).catch(() => undefined));
   }
   return {
     async getItem(key: string): Promise<string | null> {
@@ -52,7 +70,8 @@ export function createChunkedStorage(store: KeyValueStore, newGeneration: () => 
       if (raw === null) return null;
       // Values written before chunking was introduced are returned unchanged.
       if (!manifest) return raw;
-      const parts = await Promise.all(Array.from({ length: manifest.count }, (_, i) => store.getItem(chunkKey(key, manifest.generation, i))));
+      const indices = Array.from({ length: manifest.count }, (_, i) => i);
+      const parts = await runBatched(indices, CHUNK_IO_BATCH_SIZE, i => store.getItem(chunkKey(key, manifest.generation, i)));
       // A missing chunk means the value cannot be trusted; treat it as absent rather than returning a fragment.
       return parts.some(part => part === null) ? null : parts.join('');
     },
@@ -61,15 +80,20 @@ export function createChunkedStorage(store: KeyValueStore, newGeneration: () => 
       const generation = newGeneration().replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
       if (!generation) throw new Error('Secure storage generation id is empty.');
       const parts = splitByBytes(value, maxBytes);
+      if (parts.length > MAX_CHUNKS) {
+        throw new Error(`Secure storage value exceeds maximum chunk limit (${MAX_CHUNKS}).`);
+      }
       try {
-        for (let i = 0; i < parts.length; i++) await store.setItem(chunkKey(key, generation, i), parts[i]);
+        await runBatched(parts, CHUNK_IO_BATCH_SIZE, (part, index) =>
+          store.setItem(chunkKey(key, generation, index), part),
+        );
         await store.setItem(key, `dfchunks:v1:${generation}:${parts.length}`);
       } catch (error) {
         await removeChunks(key, generation, parts.length);
         throw error;
       }
       if (previous.manifest && previous.manifest.generation !== generation) {
-        await removeChunks(key, previous.manifest.generation, previous.manifest.count);
+        void removeChunks(key, previous.manifest.generation, previous.manifest.count).catch(() => undefined);
       }
     },
     async removeItem(key: string): Promise<void> {
