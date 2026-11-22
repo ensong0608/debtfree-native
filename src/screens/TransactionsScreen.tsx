@@ -2,7 +2,7 @@ import { PeriodDateSheet } from '../components/PeriodDateSheet';
 import { AdaptiveModal } from '../components/ModalOverlay';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { extractBillIdFromTxId, extractBillIdsFromMemo, transactionHasBillId } from '../finance/bill-identity';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import * as Crypto from 'expo-crypto';
 import { Alert, TouchableWithoutFeedback } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,9 +14,10 @@ import { AmountText } from '../components/AmountText';
 import { Card, FinancialScreen, ui } from '../components/FinancialScreen';
 import { InspireCornerArt } from '../components/InspireArt';
 import { ObligationCalendar } from '../components/ObligationCalendar';
+import { ObligationPaySheet, type PayNowTarget } from '../components/ObligationPaySheet';
 import { SelectDropdown, type DropdownOption } from '../components/SelectDropdown';
 import { SheetFormHeader, SheetModal } from '../components/SheetModal';
-import { formatCurrency, acceptMoneyEdit, formatEditableMoney, parseMoneyInput, suggestLoanPaymentSplit, type DebtItem } from '../onboarding-domain';
+import { formatCurrency, acceptMoneyEdit, canSuggestLoanPaymentSplit, formatEditableMoney, parseMoneyInput, resolveAutoLoanSplitSuggestion, suggestLoanPaymentSplit, type DebtItem } from '../onboarding-domain';
 import {
   classifyCategoryDirection,
   calculateTransactionBalanceDelta,
@@ -27,13 +28,13 @@ import {
 import { makeMoney, moneyFromMajor, moneyToMajor, parseMoney, addMoney, type Money } from '../finance/money';
 import { currentHouseholdDate, currentHouseholdMonth, getNextMonthString, getPreviousMonthString, parseDateOnly, type DateOnly } from '../finance/calendar';
 import { resolveRecurringBillDate, type RecurringBill } from '../finance/recurring-bills';
-import { createDebtMinimumPaymentTransaction, getScheduledObligationRows, resolveEffectiveDebtSchedule, type ScheduledObligationRow } from '../finance/payment-matching';
+import { findUnassignedPaymentsForObligation, getScheduledObligationRows, resolveEffectiveDebtSchedule, type ScheduledObligationRow } from '../finance/payment-matching';
 import { getObligationCycle, type ObligationSchedules } from '../finance/obligation-schedule';
 import { AnnualFeeSchedule, getAnnualFeeRows } from '../components/AnnualFeeSchedule';
 import { clampDate, firstEligibleSplitTerm, getPlannedDebtInstallments, resolveDebtSplitPlanState, type DebtPaymentSplitPlansByDebtId, type BillPaymentSplitPlansByBillId } from '../finance/debt-payment-split';
 import { getCurrency } from '../finance/currencies';
 import { bottomInsetPadding } from '../components/bottom-inset';
-import { DEFAULT_TAB_UI_PREFERENCES, useTabShell, type TabUiPreferences, type TransactionsDateFilter } from '../components/TabShellContext';
+import { DEFAULT_TAB_UI_PREFERENCES, useSetTabUiPreferences, useTransactionsUiPreferences, type HistorySortOption, type HistoryTransactionTypeFilter, type TabUiPreferences, type TransactionsDateFilter } from '../components/TabShellContext';
 
 const SHORT_MONTH_DAY_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const HISTORY_DATE_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
@@ -91,8 +92,10 @@ const formatTransactionCategoryLabel = (category: TransactionCategory): string =
   }
 };
 
-const formatTransactionSourceLabel = (source?: string): string => {
-  if (source === 'recurring_bill') return 'Auto-Bill';
+const formatTransactionSourceLabel = (source?: string, memo?: string | null): string => {
+  if (source === 'recurring_bill') {
+    return memo?.startsWith('Auto-recorded recurring bill') ? 'Auto-Bill' : 'Bill Payment';
+  }
   if (source === 'reconciliation') return 'Reconciliation';
   if (source === 'manual') return 'Manual';
   return source ? source.replace(/_/g, ' ') : 'Manual';
@@ -112,9 +115,23 @@ const EMPTY_TRANSACTIONS: LedgerTransaction[] = [];
 const EMPTY_BILLS: RecurringBill[] = [];
 const EMPTY_STRING_LIST: readonly string[] = [];
 
-type AccountTypeKey = 'credit_cards' | 'home' | 'auto' | 'subscriptions' | 'utilities' | 'insurance' | 'others' | 'paid_off';
+const TYPE_FILTER_OPTIONS: readonly {
+  key: HistoryTransactionTypeFilter;
+  label: string;
+  categories: readonly TransactionCategory[];
+}[] = [
+  { key: 'payments', label: 'Payments', categories: ['payment'] },
+  { key: 'bills', label: 'Bills', categories: ['debit_bill', 'subscription', 'utilities'] },
+  { key: 'purchases', label: 'Purchases', categories: ['purchase', 'debit_spending'] },
+  { key: 'interest_fees', label: 'Interest & fees', categories: ['interest', 'fee', 'annual_fee'] },
+  { key: 'refunds_adjustments', label: 'Refunds & adj.', categories: ['refund', 'credit_adjustment', 'balance_adjustment', 'interest_adjustment'] },
+];
+
+type AccountTypeKey = 'credit_cards' | 'home' | 'auto' | 'subscriptions' | 'utilities' | 'insurance' | 'other' | 'paid_off';
+type AccountQuickGroupKey = 'credit_cards' | 'home' | 'auto' | 'bills' | 'other' | 'paid_off';
 type AccountTypeOption = { id: string; label: string };
 type AccountTypeGroup = { key: AccountTypeKey; label: string; options: AccountTypeOption[] };
+type AccountQuickGroup = { key: AccountQuickGroupKey; label: string; options: AccountTypeOption[] };
 
 const TransactionHistoryRow = memo(function TransactionHistoryRow({
   tx,
@@ -154,6 +171,9 @@ const TransactionHistoryRow = memo(function TransactionHistoryRow({
   const categoryLabel = formatTransactionCategoryLabel(tx.category);
   const amountFormatted = formatCurrency(moneyToMajor(tx.amount), currencySymbol);
   const formattedDate = formatHistoryDate(tx.date);
+  const appliesTag = tx.appliesToDate && tx.appliesToDate.slice(0, 7) !== tx.date.slice(0, 7)
+    ? ` · For ${formatShortMonthDay(tx.appliesToDate)}`
+    : '';
 
   return (
     <Pressable
@@ -163,7 +183,7 @@ const TransactionHistoryRow = memo(function TransactionHistoryRow({
     >
       <Card style={{ paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, gap: 9, overflow: 'hidden' }}>
         {isInspire ? <InspireCornerArt kind={rowIndex % 2 === 0 ? 'corner-wave' : 'corner-leaf'} borderRadius={16} /> : null}
-        <Text style={[ui.small, { fontSize: 12.5, fontWeight: '600', color: mutedColor }]}>{formattedDate}</Text>
+        <Text style={[ui.small, { fontSize: 12.5, fontWeight: '600', color: mutedColor }]}>{`${formattedDate}${appliesTag}`}</Text>
         <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 12 }]}>
           <View style={[ui.row, { gap: 12, flex: 1, minWidth: 0, alignItems: 'center' }]}>
             <AccountMark name={accountLabel} category={targetDebt?.category} size={38} />
@@ -185,7 +205,9 @@ const TransactionHistoryRow = memo(function TransactionHistoryRow({
               ) : tx.source === 'recurring_bill' ? (
                 <View style={[ui.row, { gap: 4 }]}>
                   <AppIcon name="check" size={13} color={palette.posInk} />
-                  <Text style={{ color: mutedColor, fontSize: 12.5, fontWeight: '500' }}>Auto-Bill</Text>
+                  <Text style={{ color: mutedColor, fontSize: 12.5, fontWeight: '500' }}>
+                    {formatTransactionSourceLabel(tx.source, tx.memo)}
+                  </Text>
                 </View>
               ) : tx.source === 'reconciliation' ? (
                 <Text style={{ color: palette.neg, fontSize: 12.5, fontWeight: '500' }}>Reconciled</Text>
@@ -221,11 +243,10 @@ const ScheduledSegment = memo(function ScheduledSegment({
   onSelectDate,
   canEdit,
   billError,
-  onSetBillError,
-  pendingBillCycle,
-  onSetPendingBillCycle,
   onAddTransaction,
+  onUpdateTransaction,
   onRecordBillPayment,
+  onOpenPaySheet,
   onConfirmAnnualFee,
   onSaveDebtPaymentSplitPlans,
   onSaveBillPaymentSplitPlans,
@@ -252,11 +273,10 @@ const ScheduledSegment = memo(function ScheduledSegment({
   onSelectDate: (next: string | null) => void;
   canEdit: boolean;
   billError: string;
-  onSetBillError: (msg: string) => void;
-  pendingBillCycle: string | null;
-  onSetPendingBillCycle: (key: string | null) => void;
   onAddTransaction?: (tx: LedgerTransaction) => unknown;
+  onUpdateTransaction?: (tx: LedgerTransaction) => unknown;
   onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly, amount?: Money) => unknown;
+  onOpenPaySheet: (target: PayNowTarget) => void;
   onConfirmAnnualFee?: (debtId: string, renewalDate: DateOnly) => Promise<{ outcome: 'confirmed' | 'pending' } | void> | { outcome: 'confirmed' | 'pending' } | void;
   onSaveDebtPaymentSplitPlans?: (plans: DebtPaymentSplitPlansByDebtId) => Promise<void>;
   onSaveBillPaymentSplitPlans?: (plans: BillPaymentSplitPlansByBillId) => Promise<void>;
@@ -421,7 +441,6 @@ const ScheduledSegment = memo(function ScheduledSegment({
               const match = state.confirmedMatch;
               const isPending = state.status === 'pending_confirmation';
               const isPastDue = due < todayStr && state.status !== 'paid';
-              const busyKey = `${row.kind}:${row.kind === 'debt' ? debt?.id : bill?.id}:${due}`;
               const displayName = normalizeDisplayName(
                 row.kind === 'debt'
                   ? (debt?.name ?? row.name.replace(/\s+minimum$/i, ''))
@@ -434,30 +453,26 @@ const ScheduledSegment = memo(function ScheduledSegment({
               const isExpanded = expandedPlans[row.id] ?? true;
               const confirmedPaidMinor = Math.max(0, row.requiredAmount.minorUnits - match.remainingAmount.minorUnits);
               const rightAmountMoney = match.isPartiallyPaid ? match.remainingAmount : row.requiredAmount;
-
-              const recordPaymentAmount = async (amountToRecord: Money, lockKey: string) => {
-                if (!canEdit || pendingBillCycle !== null) return;
-                onSetPendingBillCycle(lockKey);
-                onSetBillError('');
-                try {
-                  if (row.kind === 'debt' && debt && onAddTransaction) {
-                    await onAddTransaction(createDebtMinimumPaymentTransaction({
-                      id: `tx:${Crypto.randomUUID()}`,
-                      debt,
-                      today: todayStr,
-                      dueDate: due,
-                      amount: amountToRecord,
-                      createdAt: new Date().toISOString(),
-                    }));
-                  } else if (row.kind === 'bill' && bill) {
-                    await onRecordBillPayment?.(bill, due, amountToRecord);
-                  }
-                } catch (error) {
-                  onSetBillError(error instanceof Error ? error.message : 'Unable to record this payment.');
-                } finally {
-                  onSetPendingBillCycle(null);
-                }
-              };
+              const canPayRow = Boolean(
+                row.kind === 'debt'
+                  ? (onAddTransaction || onUpdateTransaction)
+                  : (onRecordBillPayment || onAddTransaction || onUpdateTransaction),
+              );
+              const accountId = row.kind === 'debt' ? debt?.id : bill?.creditAccountId;
+              const hasMatchCandidates = canEdit && !match.isSatisfied && !isPending
+                ? findUnassignedPaymentsForObligation(match.obligation, transactions).length > 0
+                : false;
+              const buildPayTarget = (overridePayAmount?: number, installmentLabel?: string): PayNowTarget => ({
+                type: row.kind,
+                name: displayName,
+                dueDate: due,
+                requiredAmount: moneyToMajor(row.requiredAmount),
+                overridePayAmount,
+                installmentLabel,
+                accountId,
+                bill,
+                debt,
+              });
 
               const statusText = match.isSatisfied
                 ? 'Paid'
@@ -502,9 +517,9 @@ const ScheduledSegment = memo(function ScheduledSegment({
                         {canEdit && !match.isSatisfied && !isPending ? (
                           <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel={`Pay ${displayName} due ${due}`}
-                            disabled={(row.kind === 'debt' ? !onAddTransaction : !onRecordBillPayment) || pendingBillCycle !== null}
-                            onPress={() => void recordPaymentAmount(match.remainingAmount, busyKey)}
+                            accessibilityLabel={`${hasMatchCandidates ? 'Match or pay' : 'Pay'} ${displayName} due ${due}`}
+                            disabled={!canPayRow}
+                            onPress={() => onOpenPaySheet(buildPayTarget())}
                             style={{
                               backgroundColor: payBackground,
                               borderColor: isInspire ? (isLight ? 'rgba(255,255,255,0.42)' : 'rgba(9,13,20,0.3)') : payBackground,
@@ -518,7 +533,7 @@ const ScheduledSegment = memo(function ScheduledSegment({
                             }}
                           >
                             <Text style={{ color: payText, fontSize: 13, fontWeight: '700', textAlign: 'center' }}>
-                              {pendingBillCycle === busyKey ? 'Saving…' : 'Pay'}
+                              {hasMatchCandidates ? 'Match / Pay' : 'Pay'}
                             </Text>
                           </Pressable>
                         ) : null}
@@ -579,7 +594,6 @@ const ScheduledSegment = memo(function ScheduledSegment({
                       {isExpanded ? rowEvents.map(event => {
                         const neededForTargetMinor = Math.max(0, event.cumulativeTargetMinor - confirmedPaidMinor);
                         const installmentPayMinor = Math.min(event.amountMinor, match.remainingAmount.minorUnits, neededForTargetMinor);
-                        const instBusyKey = `${busyKey}:inst:${event.installment}`;
                         const canPayInstallment = canEdit && !match.isSatisfied && event.status !== 'covered' && event.status !== 'pending' && installmentPayMinor > 0;
                         const instStatusLabel = event.status === 'covered'
                           ? 'Paid'
@@ -627,10 +641,10 @@ const ScheduledSegment = memo(function ScheduledSegment({
                                 <Pressable
                                   accessibilityRole="button"
                                   accessibilityLabel={`Pay installment ${event.installment} for ${displayName}`}
-                                  disabled={(row.kind === 'debt' ? !onAddTransaction : !onRecordBillPayment) || pendingBillCycle !== null}
+                                  disabled={!canPayRow}
                                   onPress={eventPress => {
                                     eventPress?.stopPropagation?.();
-                                    void recordPaymentAmount(makeMoney(currencyCode, installmentPayMinor), instBusyKey);
+                                    onOpenPaySheet(buildPayTarget(installmentPayMinor / 10 ** scale, `Installment ${event.installment} (${event.date})`));
                                   }}
                                   style={{
                                     backgroundColor: payBackground,
@@ -645,7 +659,7 @@ const ScheduledSegment = memo(function ScheduledSegment({
                                   }}
                                 >
                                   <Text style={{ color: payText, fontSize: 12, fontWeight: '700', textAlign: 'center' }}>
-                                    {pendingBillCycle === instBusyKey ? 'Saving…' : 'Pay'}
+                                    {hasMatchCandidates ? 'Match / Pay' : 'Pay'}
                                   </Text>
                                 </Pressable>
                               ) : null}
@@ -674,7 +688,7 @@ const ScheduledSegment = memo(function ScheduledSegment({
   );
 });
 
-export function TransactionsScreen({
+export const TransactionsScreen = memo(function TransactionsScreen({
   debts,
   mortgageEscrowByDebtId = {},
   transactions = EMPTY_TRANSACTIONS,
@@ -733,15 +747,18 @@ export function TransactionsScreen({
   onConfirmAnnualFee?: (debtId: string, renewalDate: DateOnly) => Promise<{ outcome: 'confirmed' | 'pending' } | void> | { outcome: 'confirmed' | 'pending' } | void;
 }) {
   const { isLight, isInspire, palette, ctaBg, ctaFg } = useNativeAppearance();
-  const insets = useSafeAreaInsets();
-  const shell = useTabShell();
+  const transactionsUi = useTransactionsUiPreferences();
+  const shellSetUiPreferences = useSetTabUiPreferences();
   const [localUiPreferences, setLocalUiPreferences] = useState<TabUiPreferences>(() => ({
     ...DEFAULT_TAB_UI_PREFERENCES,
     transactionsSection: initialSection === 'Scheduled' ? 'Scheduled' : DEFAULT_TAB_UI_PREFERENCES.transactionsSection,
   }));
-  const uiPreferences = shell?.uiPreferences ?? localUiPreferences;
-  const setUiPreferences = shell?.setUiPreferences ?? setLocalUiPreferences;
-  const updateUiPreferences = (updates: Partial<TabUiPreferences>) => setUiPreferences(current => ({ ...current, ...updates }));
+  const uiPreferences = transactionsUi ?? localUiPreferences;
+  const setUiPreferences = shellSetUiPreferences ?? setLocalUiPreferences;
+  const updateUiPreferences = useCallback(
+    (updates: Partial<TabUiPreferences>) => setUiPreferences(current => ({ ...current, ...updates })),
+    [setUiPreferences],
+  );
   const initialEditingTx = initialTransactionId
     ? transactions.find(tx => tx.id === initialTransactionId && tx.deletedAt === null) ?? null
     : null;
@@ -749,45 +766,69 @@ export function TransactionsScreen({
   const setTab = (value: 'History' | 'Scheduled') => updateUiPreferences({ transactionsSection: value });
   const [scheduledMonthOffset, setScheduledMonthOffset] = useState(0);
   const [scheduledDate, setScheduledDate] = useState<string | null>(null);
-  const accountId = uiPreferences.transactionsAccountFilter;
-  const typeIdx = uiPreferences.transactionsTypeFilter;
+  const transactionsTypeFilters = uiPreferences.transactionsTypeFilters;
+  const transactionsAccountGroups = uiPreferences.transactionsAccountGroups;
+  const transactionsAccountIds = uiPreferences.transactionsAccountIds;
   const dateFilter = uiPreferences.transactionsDateFilter;
-  const search = uiPreferences.transactionsSearchQuery;
+  const externalSearchQuery = uiPreferences.transactionsSearchQuery;
+  const [searchInput, setSearchInput] = useState(externalSearchQuery);
+  const [prevExternalSearchQuery, setPrevExternalSearchQuery] = useState(externalSearchQuery);
+  const [searchDirty, setSearchDirty] = useState(false);
+  if (externalSearchQuery !== prevExternalSearchQuery) {
+    setPrevExternalSearchQuery(externalSearchQuery);
+    if (!searchDirty && searchInput !== externalSearchQuery) {
+      setSearchInput(externalSearchQuery);
+    }
+  }
+  const search = useDeferredValue(searchInput);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushSearch = useCallback((value: string) => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    setSearchDirty(false);
+    setUiPreferences(current => current.transactionsSearchQuery === value ? current : { ...current, transactionsSearchQuery: value });
+  }, [setUiPreferences]);
+  useEffect(() => () => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+  }, []);
   const searchOpen = uiPreferences.transactionsSearchOpen;
-  const sortAsc = uiPreferences.transactionsSortAsc;
-  const setAccountId = (value: string) => updateUiPreferences({ transactionsAccountFilter: value });
-  const setTypeIdx = (value: number) => updateUiPreferences({ transactionsTypeFilter: value });
+  const sort = uiPreferences.transactionsSort;
+  const setSort = (value: HistorySortOption) => updateUiPreferences({ transactionsSort: value });
   const setDateFilter = (value: TransactionsDateFilter) => updateUiPreferences({ transactionsDateFilter: value });
-  const setSearch = (value: string) => updateUiPreferences({ transactionsSearchQuery: value });
+  const setSearch = (value: string) => {
+    setSearchInput(value);
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    if (value === '') {
+      flushSearch('');
+      return;
+    }
+    setSearchDirty(true);
+    searchTimerRef.current = setTimeout(() => flushSearch(value), 180);
+  };
+  const clearSearch = () => {
+    setSearchInput('');
+    flushSearch('');
+  };
   const setSearchOpen = (value: boolean) => updateUiPreferences({ transactionsSearchOpen: value });
-  const setSortAsc = (value: boolean | ((current: boolean) => boolean)) => updateUiPreferences({ transactionsSortAsc: typeof value === 'function' ? value(sortAsc) : value });
   const [draftAccountIds, setDraftAccountIds] = useState<string[]>([]);
-  const [draftTypeIdx, setDraftTypeIdx] = useState(0);
+  const [draftAccountGroups, setDraftAccountGroups] = useState<AccountQuickGroupKey[]>([]);
+  const [draftTypes, setDraftTypes] = useState<HistoryTransactionTypeFilter[]>([]);
   const [showFilters, setShowFilters] = useState(false);
-  const [expandedAccountType, setExpandedAccountType] = useState<AccountTypeKey | null>(null);
+  const [showSpecificAccountPicker, setShowSpecificAccountPicker] = useState(false);
+  const [specificAccountSearch, setSpecificAccountSearch] = useState('');
+  const [showSortSheet, setShowSortSheet] = useState(false);
   const [showHistoryDatePicker, setShowHistoryDatePicker] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
-
-  // Add Transaction Form State
-  const [newPayee, setNewPayee] = useState('');
-  const [newNote, setNewNote] = useState('');
-  const [newAmount, setNewAmount] = useState('');
-  const [newCategoryIdx, setNewCategoryIdx] = useState(0);
-  const [newAccountId, setNewAccountId] = useState(debts[0]?.id ?? '');
-  const [newDate, setNewDate] = useState(() => currentHouseholdDate(householdTimeZone));
-  const [newAppliesToDate, setNewAppliesToDate] = useState('');
-  const [newPrincipal, setNewPrincipal] = useState('');
-  const [newInterest, setNewInterest] = useState('');
-  const [newEscrow, setNewEscrow] = useState('');
-  const [newFee, setNewFee] = useState('');
-  const [savingTx, setSavingTx] = useState(false);
-  const [showMoreDetails, setShowMoreDetails] = useState(false);
-  const [addPicker, setAddPicker] = useState<'category' | 'debt' | null>(null);
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [datePickerMonth, setDatePickerMonth] = useState(() => currentHouseholdMonth(householdTimeZone));
-  const [formError, setFormError] = useState('');
   const [billError, setBillError] = useState('');
-  const [pendingBillCycle, setPendingBillCycle] = useState<string | null>(null);
+  const [payTarget, setPayTarget] = useState<PayNowTarget | null>(null);
   const [splitPlanState, setSplitPlanState] = useState<{
     row: ScheduledObligationRow;
     candidateRows: ScheduledObligationRow[];
@@ -834,22 +875,10 @@ export function TransactionsScreen({
     }
   }, [canEdit, debtPaymentSplitPlansByDebtId, billPaymentSplitPlansByBillId]);
 
-  // Edit Transaction Form State
+  // Edit Transaction Modal Selection & Delete State
   const [editingTx, setEditingTx] = useState<LedgerTransaction | null>(initialEditingTx);
-  const [editPayee, setEditPayee] = useState(initialEditingTx?.payee ?? '');
-  const [editAmount, setEditAmount] = useState(initialEditingTx ? formatEditableMoney(moneyToMajor(initialEditingTx.amount), currencyCode) : '');
-  const [editCategoryIdx, setEditCategoryIdx] = useState(() => initialEditingTx ? CATEGORY_CHOICES.findIndex(item => item.category === initialEditingTx.category) : 0);
-  const [editAccountId, setEditAccountId] = useState<string | null>(initialEditingTx?.accountId ?? null);
-  const [editDate, setEditDate] = useState(initialEditingTx?.date ?? '');
-  const [editMemo, setEditMemo] = useState(initialEditingTx?.memo ?? '');
-  const [editPrincipal, setEditPrincipal] = useState(initialEditingTx?.principalAmount ? formatEditableMoney(moneyToMajor(initialEditingTx.principalAmount), currencyCode) : '');
-  const [editInterest, setEditInterest] = useState(initialEditingTx?.interestAmount ? formatEditableMoney(moneyToMajor(initialEditingTx.interestAmount), currencyCode) : '');
-  const [editEscrow, setEditEscrow] = useState(initialEditingTx?.escrowAmount ? formatEditableMoney(moneyToMajor(initialEditingTx.escrowAmount), currencyCode) : '');
-  const [editFee, setEditFee] = useState(initialEditingTx?.feeAmount ? formatEditableMoney(moneyToMajor(initialEditingTx.feeAmount), currencyCode) : '');
-  const [editPicker, setEditPicker] = useState<'category' | 'debt' | null>(null);
-  const [editError, setEditError] = useState('');
-  const [savingEdit, setSavingEdit] = useState(false);
   const [deletingTx, setDeletingTx] = useState(false);
+  const deletingTxRef = useRef(false);
   const [confirmDeleteTx, setConfirmDeleteTx] = useState<LedgerTransaction | null>(null);
   const [confirmRemoveSplitRow, setConfirmRemoveSplitRow] = useState<ScheduledObligationRow | null>(null);
 
@@ -883,81 +912,67 @@ export function TransactionsScreen({
     const debtOptions = (matches: (debt: DebtItem) => boolean): AccountTypeOption[] => debts
       .filter(debt => !archived.has(debt.id) && matches(debt))
       .map(debt => ({ label: debt.name, id: `debt:${debt.id}` }));
+    const archivedOptions = debts.filter(debt => archived.has(debt.id)).map(debt => ({ label: debt.name, id: `debt:${debt.id}` }));
     const billOptions = (matches: (bill: RecurringBill) => boolean): AccountTypeOption[] => recurringBills
       .filter(bill => !pairedBillIds.has(bill.id) && matches(bill))
       .map(bill => ({ label: bill.name, id: `bill:${bill.id}` }));
     return ([
-      { key: 'credit_cards', label: 'Credit Card', options: debtOptions(debt => debt.category === 'Credit card') },
-      {
-        key: 'home', label: 'Home',
-        options: [
-          ...debtOptions(debt => debt.category === 'Mortgage'),
-          ...billOptions(bill => bill.category === 'housing'),
-        ],
-      },
+      { key: 'credit_cards', label: 'Credit cards', options: debtOptions(debt => debt.category === 'Credit card') },
+      { key: 'home', label: 'Home', options: [...debtOptions(debt => debt.category === 'Mortgage'), ...billOptions(bill => bill.category === 'housing')] },
       { key: 'auto', label: 'Auto', options: debtOptions(debt => debt.category === 'Auto loan') },
       { key: 'subscriptions', label: 'Subscriptions', options: billOptions(bill => bill.category === 'subscription') },
       { key: 'utilities', label: 'Utilities', options: billOptions(bill => bill.category === 'utilities') },
       { key: 'insurance', label: 'Insurance', options: billOptions(bill => bill.category === 'insurance') },
-      {
-        key: 'others', label: 'Others',
-        options: [
-          ...debtOptions(debt => ['Personal loan', 'Student loan', 'Medical debt', 'Other loan'].includes(debt.category)),
-          ...billOptions(bill => bill.category === 'other_bill'),
-        ],
-      },
-      { key: 'paid_off', label: 'Paid off accounts', options: debts.filter(debt => archived.has(debt.id)).map(debt => ({ label: debt.name, id: `debt:${debt.id}` })) },
+      { key: 'other', label: 'Other', options: [...debtOptions(debt => ['Personal loan', 'Student loan', 'Medical debt', 'Other loan'].includes(debt.category)), ...billOptions(bill => bill.category === 'other_bill')] },
+      { key: 'paid_off', label: 'Paid off accounts', options: archivedOptions },
     ] satisfies AccountTypeGroup[]).filter(group => group.options.length > 0);
   }, [debts, recurringBills, identityLoanBillPairs, archivedPaidOffDebtIds]);
 
-  const validAccountIds = useMemo(
-    () => new Set(accountTypeGroups.flatMap(group => group.options.map(option => option.id))),
-    [accountTypeGroups],
-  );
-  const selectedAccountIds = useMemo((): string[] => {
-    if (accountId === 'all') return [];
-    if (accountId.startsWith('type:')) {
-      return accountTypeGroups.find(group => `type:${group.key}` === accountId)?.options.map(option => option.id) ?? [];
-    }
-    if (validAccountIds.has(accountId)) return [accountId];
-    try {
-      const parsed: unknown = JSON.parse(accountId);
-      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string' && validAccountIds.has(id)) : [];
-    } catch {
-      return [];
-    }
-  }, [accountId, accountTypeGroups, validAccountIds]);
-  const encodeAccountIds = (ids: string[]) => ids.length ? JSON.stringify(ids) : 'all';
-  const effectiveAccountId = encodeAccountIds(selectedAccountIds);
-  const effectiveDraftAccountId = encodeAccountIds(draftAccountIds.filter(id => validAccountIds.has(id)));
+  const accountQuickGroups = useMemo(() => {
+    const pairedBillIds = new Set(Object.values(identityLoanBillPairs));
+    const archived = new Set(debts.filter(debt => isPaidOffAccountArchived(debt, archivedPaidOffDebtIds)).map(debt => debt.id));
+    const activeDebtOptions = (matches: (debt: DebtItem) => boolean): AccountTypeOption[] => debts
+      .filter(debt => !archived.has(debt.id) && matches(debt)).map(debt => ({ label: debt.name, id: `debt:${debt.id}` }));
+    const unpairedBillOptions = (matches: (bill: RecurringBill) => boolean): AccountTypeOption[] => recurringBills
+      .filter(bill => !pairedBillIds.has(bill.id) && matches(bill)).map(bill => ({ label: bill.name, id: `bill:${bill.id}` }));
+    return ([
+      { key: 'credit_cards', label: 'Credit cards', options: activeDebtOptions(debt => debt.category === 'Credit card') },
+      { key: 'home', label: 'Home', options: [...activeDebtOptions(debt => debt.category === 'Mortgage'), ...unpairedBillOptions(bill => bill.category === 'housing')] },
+      { key: 'auto', label: 'Auto', options: activeDebtOptions(debt => debt.category === 'Auto loan') },
+      { key: 'bills', label: 'Bills', options: unpairedBillOptions(bill => ['subscription', 'utilities', 'insurance', 'other_bill'].includes(bill.category)) },
+      { key: 'other', label: 'Other', options: activeDebtOptions(debt => ['Personal loan', 'Student loan', 'Medical debt', 'Other loan'].includes(debt.category)) },
+      { key: 'paid_off', label: 'Paid off', options: debts.filter(debt => archived.has(debt.id)).map(debt => ({ label: debt.name, id: `debt:${debt.id}` })) },
+    ] satisfies AccountQuickGroup[]).filter(group => group.options.length > 0);
+  }, [debts, recurringBills, identityLoanBillPairs, archivedPaidOffDebtIds]);
 
-  const typeFilterOptions = [
-    { value: 1, label: 'Payments' },
-    { value: 2, label: 'Purchase' },
-    { value: 3, label: 'Fees' },
-    { value: 4, label: 'Others' },
-  ] as const;
-  const effectiveTypeIdx = typeIdx >= 1 && typeIdx <= 4 ? typeIdx : 0;
-  const effectiveDraftTypeIdx = draftTypeIdx >= 1 && draftTypeIdx <= 4 ? draftTypeIdx : 0;
+  const validAccountIds = useMemo(() => new Set(accountTypeGroups.flatMap(group => group.options.map(option => option.id))), [accountTypeGroups]);
+  const resolveAccountIds = useCallback((groups: readonly string[], ids: readonly string[]) => [...new Set([
+    ...accountQuickGroups.filter(group => groups.includes(group.key)).flatMap(group => group.options.map(option => option.id)),
+    ...ids.filter(id => validAccountIds.has(id)),
+  ])], [accountQuickGroups, validAccountIds]);
+  const typeFilterOptions = TYPE_FILTER_OPTIONS;
+  const effectiveTypes = useMemo(
+    () => transactionsTypeFilters.filter(type => TYPE_FILTER_OPTIONS.some(option => option.key === type)),
+    [transactionsTypeFilters],
+  );
+  const effectiveAccountGroups = useMemo(
+    () => transactionsAccountGroups.filter(group => accountQuickGroups.some(option => option.key === group)),
+    [transactionsAccountGroups, accountQuickGroups],
+  );
   const openFilters = () => {
-    setDraftAccountIds(selectedAccountIds);
-    setDraftTypeIdx(effectiveTypeIdx);
-    const selectedGroup = accountTypeGroups.find(group => group.options.some(option => selectedAccountIds.includes(option.id)));
-    setExpandedAccountType(selectedGroup?.key ?? null);
+    setDraftAccountIds(transactionsAccountIds.filter(id => validAccountIds.has(id)));
+    setDraftAccountGroups(effectiveAccountGroups as AccountQuickGroupKey[]);
+    setDraftTypes(effectiveTypes);
+    setShowSpecificAccountPicker(false);
     setShowFilters(true);
   };
-  const filterRadio = (label: string, checked: boolean, onPress: () => void, key: string) => (
-    <Pressable key={key} accessibilityRole="radio" accessibilityLabel={label} accessibilityState={{ checked }} onPress={onPress}
-      style={{ minHeight: 44, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 10, backgroundColor: checked ? palette.tint : 'transparent' }}>
-      <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: checked ? palette.brand : palette.muted, alignItems: 'center', justifyContent: 'center' }}>
-        {checked ? <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: palette.brand }} /> : null}
-      </View>
-      <Text style={[ui.text, { flex: 1 }]}>{label}</Text>
+  const filterChip = (label: string, selected: boolean, onPress: () => void, key: string) => (
+    <Pressable key={key} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected }} onPress={onPress}
+      style={{ minHeight: 36, paddingHorizontal: 13, borderRadius: 18, borderWidth: 1, borderColor: selected ? (label === 'All' ? ctaBg : palette.brand) : palette.cardBorder, backgroundColor: selected ? (label === 'All' ? ctaBg : palette.tint) : palette.surface, alignItems: 'center', justifyContent: 'center' }}>
+      <Text style={[ui.small, { color: selected ? (label === 'All' ? ctaFg : palette.brand) : palette.text, fontWeight: selected ? '700' : '600' }]}>{label}</Text>
     </Pressable>
   );
 
-  const selectedDebtId = newAccountId || debts[0]?.id || '';
-  const selectedDebt = useMemo(() => debts.find(debt => debt.id === selectedDebtId), [debts, selectedDebtId]);
   // Older manual payees may actually be notes, so reuse only the account and category.
   const recentPurchase = useMemo(() => transactions
     .filter(tx => tx.source === 'manual' && tx.category === 'purchase' && !tx.isPending && !tx.deletedAt && debts.some(debt => debt.id === tx.accountId && !isPaidOffAccountArchived(debt, archivedPaidOffDebtIds)))
@@ -986,36 +1001,12 @@ export function TransactionsScreen({
     [debts, currencySymbol],
   );
 
-  const dueCycleOptions = useMemo<readonly DropdownOption<string>[]>(() => {
-    if (!showAddForm || !showMoreDetails) {
-      return [{ value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' }];
-    }
-    const selectedDebtSchedule = selectedDebt
-      ? resolveEffectiveDebtSchedule(obligationSchedules, selectedDebt.id, historicalBillIdsByDebtId?.[selectedDebt.id])
-      : undefined;
-    return [
-      { value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' },
-      ...(selectedDebt
-        ? [0, 1, 2].flatMap(monthOffset => {
-            let month = currentMonthStr;
-            for (let offset = 0; offset < monthOffset; offset++) month = getNextMonthString(month);
-            const cycle = selectedDebtSchedule ? getObligationCycle(selectedDebtSchedule, month) : undefined;
-            if (cycle === null || (!selectedDebtSchedule && !selectedDebt.dueDay)) return [];
-            const date = cycle?.dueDate ?? resolveRecurringBillDate(month, selectedDebt.dueDay!);
-            const label = formatHistoryDate(date);
-            return { value: date, label: `Due ${label}`, subtitle: selectedDebt.dueDay ? `Apply this payment to ${label}` : `Link this payment to the ${label} cycle` };
-          })
-        : []),
-    ];
-  }, [showAddForm, showMoreDetails, selectedDebt, obligationSchedules, historicalBillIdsByDebtId, currentMonthStr]);
-
-  // Filter transactions and compute summary metrics in one memoized pass
-  const { filtered, totalPaymentsMinor, totalInterestFeesMinor } = useMemo(() => {
-    const selectedMonth = dateFilter.value || currentMonthStr;
-    const trimmedSearch = search.trim().toLowerCase();
-    let paymentsMinor = 0;
-    let interestFeesMinor = 0;
-
+  const filterHistoryTransactions = useCallback((
+    types: readonly HistoryTransactionTypeFilter[], groups: readonly string[], ids: readonly string[], period: TransactionsDateFilter, query: string,
+  ) => {
+    const accountIds = resolveAccountIds(groups, ids);
+    const selectedMonth = period.value || currentMonthStr;
+    const trimmedSearch = query.trim().toLowerCase();
     const matchesIdentity = (tx: LedgerTransaction, id: string): boolean => {
       if (id.startsWith('debt:')) {
         const targetDebtId = id.slice(5);
@@ -1023,60 +1014,71 @@ export function TransactionsScreen({
         const pairedBillId = identityLoanBillPairs[targetDebtId];
         return tx.accountId === null && [pairedBillId, ...(historicalBillIdsByDebtId[targetDebtId] ?? [])].some(billId => Boolean(billId && transactionHasBillId(tx, billId)));
       }
-      if (id.startsWith('bill:')) return transactionHasBillId(tx, id.slice(5));
-      return false;
+      return id.startsWith('bill:') && transactionHasBillId(tx, id.slice(5));
     };
+    return transactions.filter(tx => {
+      if (tx.deletedAt !== null) return false;
+      if (period.scope === 'month' && !tx.date.startsWith(selectedMonth)) return false;
+      if (period.scope === 'year' && !tx.date.startsWith(period.value)) return false;
+      if (accountIds.length && !accountIds.some(id => matchesIdentity(tx, id))) return false;
+      if (types.length && !types.some(type => TYPE_FILTER_OPTIONS.find(option => option.key === type)?.categories.includes(tx.category))) return false;
+      if (trimmedSearch && !tx.payee.toLowerCase().includes(trimmedSearch) && !tx.category.toLowerCase().includes(trimmedSearch) && !(tx.memo?.toLowerCase().includes(trimmedSearch))) return false;
+      return true;
+    });
+  }, [resolveAccountIds, currentMonthStr, identityLoanBillPairs, historicalBillIdsByDebtId, transactions]);
 
-    const matchesAccount = (tx: LedgerTransaction): boolean =>
-      selectedAccountIds.length === 0 || selectedAccountIds.some(id => matchesIdentity(tx, id));
-
-    const list: LedgerTransaction[] = [];
-    for (let i = 0; i < transactions.length; i += 1) {
-      const tx = transactions[i];
-      if (tx.deletedAt !== null) continue;
-
-      if (dateFilter.scope === 'month' && !tx.date.startsWith(selectedMonth)) continue;
-      if (dateFilter.scope === 'year' && !tx.date.startsWith(dateFilter.value)) continue;
-
-      if (!matchesAccount(tx)) continue;
-
-      if (effectiveTypeIdx === 1 && tx.category !== 'payment' && tx.category !== 'refund') continue;
-      if (effectiveTypeIdx === 2 && tx.category !== 'purchase' && tx.category !== 'debit_spending') continue;
-      if (effectiveTypeIdx === 3 && tx.category !== 'interest' && tx.category !== 'fee' && tx.category !== 'annual_fee') continue;
-      if (effectiveTypeIdx === 4 && (
-        tx.category === 'payment' || tx.category === 'refund' || tx.category === 'purchase' ||
-        tx.category === 'debit_spending' || tx.category === 'interest' || tx.category === 'fee' || tx.category === 'annual_fee'
-      )) continue;
-
-      if (trimmedSearch) {
-        const matchPayee = tx.payee.toLowerCase().includes(trimmedSearch);
-        const matchCategory = tx.category.toLowerCase().includes(trimmedSearch);
-        const matchMemo = tx.memo ? tx.memo.toLowerCase().includes(trimmedSearch) : false;
-        if (!matchPayee && !matchCategory && !matchMemo) continue;
-      }
-
-      list.push(tx);
+  const filtered = useMemo(
+    () => filterHistoryTransactions(effectiveTypes, effectiveAccountGroups, transactionsAccountIds, dateFilter, search),
+    [filterHistoryTransactions, effectiveTypes, effectiveAccountGroups, transactionsAccountIds, dateFilter, search],
+  );
+  const { totalPaymentsMinor, totalInterestFeesMinor } = useMemo(() => {
+    let payments = 0;
+    let interestFees = 0;
+    for (let i = 0; i < filtered.length; i += 1) {
+      const tx = filtered[i];
       if (tx.category === 'payment') {
-        paymentsMinor += tx.amount.minorUnits;
+        payments += tx.amount.minorUnits;
       } else if (tx.category === 'interest' || tx.category === 'fee' || tx.category === 'annual_fee') {
-        interestFeesMinor += tx.amount.minorUnits;
+        interestFees += tx.amount.minorUnits;
       }
     }
-
-    return {
-      filtered: list,
-      totalPaymentsMinor: paymentsMinor,
-      totalInterestFeesMinor: interestFeesMinor,
-    };
-  }, [transactions, dateFilter, currentMonthStr, selectedAccountIds, effectiveTypeIdx, search, identityLoanBillPairs, historicalBillIdsByDebtId]);
-
-  // Sort transactions by date
-  const sorted = useMemo(
-    () => [...filtered].sort((a, b) => (sortAsc ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date))),
-    [filtered, sortAsc],
+    return { totalPaymentsMinor: payments, totalInterestFeesMinor: interestFees };
+  }, [filtered]);
+  const draftMatchCount = useMemo(
+    () => (showFilters ? filterHistoryTransactions(draftTypes, draftAccountGroups, draftAccountIds, dateFilter, search).length : filtered.length),
+    [showFilters, filterHistoryTransactions, draftTypes, draftAccountGroups, draftAccountIds, dateFilter, search, filtered.length],
   );
+  const accountFiltersActive = effectiveAccountGroups.length > 0 || transactionsAccountIds.some(id => validAccountIds.has(id));
+  const typeFiltersActive = effectiveTypes.length > 0;
+  const activeFilterCount = Number(typeFiltersActive) + Number(accountFiltersActive);
+  const clearHistoryFilters = useCallback(
+    () => updateUiPreferences({ transactionsTypeFilters: [], transactionsAccountGroups: [], transactionsAccountIds: [] }),
+    [updateUiPreferences],
+  );
+  const activeFilterChips = useMemo<{ key: string; label: string; remove: () => void }[]>(() => [
+    ...effectiveTypes.map(type => {
+      const option = TYPE_FILTER_OPTIONS.find(item => item.key === type)!;
+      return { key: `type:${type}`, label: option.label, remove: () => updateUiPreferences({ transactionsTypeFilters: effectiveTypes.filter(value => value !== type) }) };
+    }),
+    ...effectiveAccountGroups.map(groupKey => {
+      const group = accountQuickGroups.find(item => item.key === groupKey)!;
+      return { key: `group:${groupKey}`, label: group.label, remove: () => updateUiPreferences({ transactionsAccountGroups: effectiveAccountGroups.filter(value => value !== groupKey) }) };
+    }),
+    ...transactionsAccountIds.filter(id => validAccountIds.has(id)).map(id => {
+      const option = accountTypeGroups.flatMap(group => group.options).find(item => item.id === id);
+      return { key: id, label: option?.label ?? id, remove: () => updateUiPreferences({ transactionsAccountIds: transactionsAccountIds.filter(value => value !== id) }) };
+    }),
+  ], [effectiveTypes, effectiveAccountGroups, transactionsAccountIds, validAccountIds, accountQuickGroups, accountTypeGroups, updateUiPreferences]);
 
-  const historyFilterKey = `${dateFilter.scope}|${dateFilter.value}|${effectiveAccountId}|${effectiveTypeIdx}|${search}|${sortAsc ? '1' : '0'}`;
+  const sortByDateNewest = (a: LedgerTransaction, b: LedgerTransaction) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt);
+  const sorted = useMemo(() => [...filtered].sort((a, b) => {
+    if (sort === 'oldest') return a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt);
+    if (sort === 'highest_amount') return b.amount.minorUnits - a.amount.minorUnits || sortByDateNewest(a, b);
+    if (sort === 'lowest_amount') return a.amount.minorUnits - b.amount.minorUnits || sortByDateNewest(a, b);
+    return sortByDateNewest(a, b);
+  }), [filtered, sort]);
+
+  const historyFilterKey = `${dateFilter.scope}|${dateFilter.value}|${effectiveAccountGroups.join(',')}|${transactionsAccountIds.join(',')}|${effectiveTypes.join(',')}|${search}|${sort}`;
   const [visibleState, setVisibleState] = useState<{ filterKey: string; limit: number }>(() => ({
     filterKey: historyFilterKey,
     limit: HISTORY_PAGE_SIZE,
@@ -1103,128 +1105,27 @@ export function TransactionsScreen({
     [historyFilterKey, sorted.length],
   );
 
-  const handleSaveTransaction = async () => {
+  const handleAddTxRecord = useCallback(async (tx: LedgerTransaction) => {
     if (!canEdit) return;
-    setFormError('');
-    const parsedNewAmount = parseMoneyInput(newAmount, currencyCode, false);
-    if (!newAmount || parsedNewAmount === null || !Number.isFinite(parsedNewAmount) || parsedNewAmount <= 0) {
-      setFormError('Please enter a valid amount');
-      return;
-    }
-
-    const catOption = CATEGORY_CHOICES[newCategoryIdx];
-    let accountId: string | null = null;
-
-    if (catOption.isDebt) {
-      if (!selectedDebt) {
-        setFormError(debts.length === 0 ? 'Please add a debt account on the Debt tab first' : 'Select a debt account for this transaction');
-        return;
+    if (onAddTransaction) {
+      const res = await onAddTransaction(tx);
+      if (res && (res as { outcome?: string }).outcome === 'pending') {
+        Alert.alert(
+          'Saved Locally (Pending Confirmation)',
+          'Transaction recorded locally. Confirmation will be verified upon connecting to the server.',
+        );
       }
-      accountId = selectedDebt.id;
     }
-
-    setSavingTx(true);
-    try {
-      const actualDate = parseDateOnly(newDate.trim());
-      const appliesToDate = newAppliesToDate.trim() ? parseDateOnly(newAppliesToDate.trim()) : null;
-      const moneyAmount = parseMoney(newAmount, currencyCode);
-
-      const principalAmount = newPrincipal.trim() ? parseMoney(newPrincipal.trim(), currencyCode) : null;
-      const interestAmount = newInterest.trim() ? parseMoney(newInterest.trim(), currencyCode) : null;
-      const escrowAmount = newEscrow.trim() ? parseMoney(newEscrow.trim(), currencyCode) : null;
-      const feeAmount = newFee.trim() ? parseMoney(newFee.trim(), currencyCode) : null;
-
-      const tx: LedgerTransaction = {
-        id: `tx:${Crypto.randomUUID()}`,
-        accountId,
-        date: actualDate,
-        appliesToDate,
-        amount: moneyAmount,
-        category: catOption.category,
-        payee: newPayee.trim() || (catOption.category === 'payment' ? 'Payment' : catOption.label),
-        memo: newNote.trim() || undefined,
-        source: 'manual',
-        reconciled: false,
-        createdAt: new Date().toISOString(),
-        deletedAt: null,
-        principalAmount,
-        interestAmount,
-        escrowAmount,
-        feeAmount,
-      };
-
-      if (onAddTransaction) {
-        const res = await onAddTransaction(tx);
-        if (res && (res as { outcome?: string }).outcome === 'pending') {
-          Alert.alert(
-            'Saved Locally (Pending Confirmation)',
-            'Transaction recorded locally. Confirmation will be verified upon connecting to the server.',
-          );
-        }
-      }
-      setShowAddForm(false);
-      setShowMoreDetails(false);
-      setAddPicker(null);
-      setShowDatePicker(false);
-      setNewPayee('');
-      setNewNote('');
-      setNewAmount('');
-      setNewCategoryIdx(0);
-      setNewAccountId(debts[0]?.id ?? '');
-      setNewDate(currentHouseholdDate(householdTimeZone));
-      setNewAppliesToDate('');
-      setNewPrincipal('');
-      setNewInterest('');
-      setNewEscrow('');
-      setNewFee('');
-    } catch (e) {
-      const msg = (e as Error).message || 'Unable to save transaction';
-      setFormError(msg);
-      if (msg.includes('conflict') || msg.includes('Conflict')) {
-        Alert.alert('Save Conflict', msg);
-      }
-    } finally {
-      setSavingTx(false);
-    }
-  };
-
-  const closeAddForm = () => {
     setShowAddForm(false);
-    setShowMoreDetails(false);
-    setAddPicker(null);
-    setShowDatePicker(false);
-    setFormError('');
-    setNewPayee('');
-    setNewNote('');
-    setNewAmount('');
-    setNewCategoryIdx(0);
-    setNewAccountId(debts[0]?.id ?? '');
-    setNewDate(currentHouseholdDate(householdTimeZone));
-    setNewAppliesToDate('');
-    setNewPrincipal('');
-    setNewInterest('');
-    setNewEscrow('');
-    setNewFee('');
-  };
+  }, [canEdit, onAddTransaction]);
+
+  const closeAddForm = useCallback(() => {
+    setShowAddForm(false);
+  }, []);
 
   const handleOpenEdit = useCallback((tx: LedgerTransaction) => {
-    const isPaymentLike = tx.category === 'payment' && (!tx.payee || /^Payment to\b/i.test(tx.payee));
-    const isBalanceAdj = tx.category === 'credit_adjustment' || tx.category === 'balance_adjustment' || /^Reconciliation credit adjustment$/i.test(tx.payee || '');
     setEditingTx(tx);
-    setEditPayee(isPaymentLike ? 'Payment' : isBalanceAdj ? 'Balance Adjustment' : tx.payee);
-    setEditAmount(formatEditableMoney(moneyToMajor(tx.amount), currencyCode));
-    const catIdx = CATEGORY_CHOICES.findIndex(c => c.category === tx.category);
-    setEditCategoryIdx(catIdx);
-    setEditAccountId(tx.accountId);
-    setEditDate(tx.date);
-    setEditMemo(tx.memo || '');
-    setEditPrincipal(tx.principalAmount ? formatEditableMoney(moneyToMajor(tx.principalAmount), currencyCode) : '');
-    setEditInterest(tx.interestAmount ? formatEditableMoney(moneyToMajor(tx.interestAmount), currencyCode) : '');
-    setEditEscrow(tx.escrowAmount ? formatEditableMoney(moneyToMajor(tx.escrowAmount), currencyCode) : '');
-    setEditFee(tx.feeAmount ? formatEditableMoney(moneyToMajor(tx.feeAmount), currencyCode) : '');
-    setEditPicker(null);
-    setEditError('');
-  }, [currencyCode]);
+  }, []);
 
   const lastAppliedInitialTxIdRef = useRef<string | null>(initialTransactionId ?? null);
   useEffect(() => {
@@ -1242,73 +1143,25 @@ export function TransactionsScreen({
     return () => cancelAnimationFrame(frameId);
   }, [initialTransactionId, transactions, handleOpenEdit]);
 
-  const handleSaveEdit = async () => {
-    if (!canEdit || !editingTx || savingEdit) return;
-    setEditError('');
-    const parsedAmt = parseMoneyInput(editAmount, currencyCode, false);
-    if (parsedAmt === null || !Number.isFinite(parsedAmt) || parsedAmt <= 0) {
-      setEditError('Please enter a valid amount');
-      return;
-    }
-    const catOption = editCategoryIdx >= 0
-      ? CATEGORY_CHOICES[editCategoryIdx]
-      : {
-          label: formatTransactionCategoryLabel(editingTx.category),
-          category: editingTx.category,
-          isDebt: editingTx.category !== 'debit_bill' && editingTx.category !== 'debit_spending',
-        };
-    if (catOption.isDebt && !editAccountId) {
-      setEditError(debts.length === 0 ? 'Please add a debt account on the Debt tab first' : 'Select a debt account for this transaction');
-      return;
-    }
-
-    setSavingEdit(true);
-    try {
-      const actualDate = parseDateOnly(editDate.trim());
-      const moneyAmount = parseMoney(editAmount, currencyCode);
-      const principalAmount = editPrincipal.trim() ? parseMoney(editPrincipal.trim(), currencyCode) : null;
-      const interestAmount = editInterest.trim() ? parseMoney(editInterest.trim(), currencyCode) : null;
-      const escrowAmount = editEscrow.trim() ? parseMoney(editEscrow.trim(), currencyCode) : null;
-      const feeAmount = editFee.trim() ? parseMoney(editFee.trim(), currencyCode) : null;
-
-      const updatedTx: LedgerTransaction = {
-        ...editingTx,
-        accountId: catOption.isDebt ? editAccountId : null,
-        date: actualDate,
-        amount: moneyAmount,
-        category: catOption.category,
-        payee: editPayee.trim() || (catOption.category === 'payment' ? 'Payment' : catOption.label),
-        memo: editMemo.trim() || undefined,
-        principalAmount,
-        interestAmount,
-        escrowAmount,
-        feeAmount,
-      };
-
-      if (onUpdateTransaction) {
-        const res = await onUpdateTransaction(updatedTx);
-        if (res && (res as { outcome?: string }).outcome === 'pending') {
-          Alert.alert(
-            'Updated Locally (Pending Confirmation)',
-            'Transaction update saved locally. Confirmation will be verified upon connecting to the server.',
-          );
-        }
+  const handleUpdateTxRecord = useCallback(async (updatedTx: LedgerTransaction) => {
+    if (!canEdit) return;
+    if (onUpdateTransaction) {
+      const res = await onUpdateTransaction(updatedTx);
+      if (res && (res as { outcome?: string }).outcome === 'pending') {
+        Alert.alert(
+          'Updated Locally (Pending Confirmation)',
+          'Transaction update saved locally. Confirmation will be verified upon connecting to the server.',
+        );
       }
-      setEditingTx(null); onEditDismiss?.();
-    } catch (e) {
-      const msg = (e as Error).message || 'Unable to save transaction';
-      setEditError(msg);
-      if (msg.includes('conflict') || msg.includes('Conflict')) {
-        Alert.alert('Update Conflict', msg);
-      }
-    } finally {
-      setSavingEdit(false);
     }
-  };
+    setEditingTx(null);
+    onEditDismiss?.();
+  }, [canEdit, onEditDismiss, onUpdateTransaction]);
 
   const handleDeleteTx = async () => {
     const target = confirmDeleteTx ?? editingTx;
-    if (!canEdit || !target || deletingTx) return;
+    if (!canEdit || !target || deletingTx || deletingTxRef.current) return;
+    deletingTxRef.current = true;
     setDeletingTx(true);
     try {
       if (onDeleteTransaction) {
@@ -1329,396 +1182,33 @@ export function TransactionsScreen({
       setEditingTx(null); onEditDismiss?.();
     } catch (e) {
       const msg = (e as Error).message || 'Unable to delete transaction';
-      setEditError(msg);
       setConfirmDeleteTx(null);
-      if (msg.includes('conflict') || msg.includes('Conflict')) {
-        Alert.alert('Delete Conflict', msg);
-      }
+      Alert.alert(msg.includes('conflict') || msg.includes('Conflict') ? 'Delete Conflict' : 'Unable to delete transaction', msg);
     } finally {
+      deletingTxRef.current = false;
       setDeletingTx(false);
     }
   };
 
   const addTransactionModal = canEdit && showAddForm ? (
-        <SheetModal
-          visible={canEdit && showAddForm}
-          onClose={closeAddForm}
-          contentSized
-          closeLabel="Dismiss form"
-          footer={(
-            <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 18, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface }}>
-              <Pressable
-                accessibilityRole="button"
-                disabled={savingTx}
-                onPress={handleSaveTransaction}
-                style={[ui.button, { minHeight: 46, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center', opacity: savingTx ? 0.65 : 1 }]}
-              >
-                <Text style={[ui.buttonText, { color: ctaFg, fontSize: 15, fontWeight: '700', textAlign: 'center' }]}>
-                  {savingTx ? 'Saving\u2026' : 'Save Transaction'}
-                </Text>
-              </Pressable>
-            </View>
-          )}
-        >
-        <View style={{ gap: 10 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
-            <View style={{ width: 44, height: 44 }} accessible={false} />
-            <Text accessibilityRole="header" style={{ color: palette.text, fontSize: 17, fontWeight: '700', textAlign: 'center', flex: 1 }}>Add transaction</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Dismiss form"
-              hitSlop={10}
-              onPress={closeAddForm}
-              style={{ width: 44, height: 44, borderRadius: 18, alignItems: 'center', justifyContent: 'center' }}
-            >
-              <AppIcon name="close" size={20} color={palette.muted} />
-            </Pressable>
-          </View>
-
-          {!!formError && (
-            <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight) }]}>{formError}</Text>
-          )}
-
-          <View style={{ borderRadius: 16, borderWidth: 1, borderColor: palette.border, backgroundColor: isLight ? palette.surface : palette.raised, paddingHorizontal: 15, overflow: 'hidden' }}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Transaction category: ${CATEGORY_CHOICES[newCategoryIdx].label}`}
-              accessibilityHint="Required"
-              onPress={() => setAddPicker('category')}
-              style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
-            >
-              <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction category *</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
-                <Text numberOfLines={1} style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>{CATEGORY_CHOICES[newCategoryIdx].label}</Text>
-                <AppIcon name="chevronDown" size={14} color={palette.muted} />
-              </View>
-            </Pressable>
-
-            {CATEGORY_CHOICES[newCategoryIdx].isDebt && debts.length > 0 ? (
-              <>
-                <View style={{ height: 1, backgroundColor: palette.border }} />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Debt account: ${selectedDebt?.name ?? 'Select account'}`}
-                  accessibilityHint="Required"
-                  onPress={() => setAddPicker('debt')}
-                  style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
-                >
-                  <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Debt account *</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
-                    <Text numberOfLines={1} style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>{selectedDebt?.name ?? 'Select account'}</Text>
-                    <AppIcon name="chevronDown" size={14} color={palette.muted} />
-                  </View>
-                </Pressable>
-              </>
-            ) : null}
-
-            <View style={{ height: 1, backgroundColor: palette.border }} />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Transaction date: ${newDate}`}
-              accessibilityHint="Required"
-              onPress={() => { setDatePickerMonth(newDate.slice(0, 7)); setShowDatePicker(true); }}
-              style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
-            >
-              <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction date *</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                <Text style={{ color: palette.brand, fontSize: 15, fontWeight: '600' }}>
-                  {formatHistoryDate(newDate)}
-                </Text>
-                <AppIcon name="calendar" size={16} color={palette.brand} />
-              </View>
-            </Pressable>
-
-            <View style={{ height: 1, backgroundColor: palette.border }} />
-            <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 2 }}>
-              <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Amount *</Text>
-              <TextInput
-                accessibilityLabel="Transaction amount"
-                accessibilityHint="Required"
-                placeholder={formatEditableMoney(0, currencyCode)}
-                placeholderTextColor={palette.muted}
-                keyboardType="decimal-pad"
-                textAlign="right"
-                value={newAmount}
-                onChangeText={val => setNewAmount(acceptMoneyEdit(newAmount, val, currencyCode))}
-                style={{ flex: 1, minWidth: 96, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 15, fontWeight: '600' }}
-              />
-            </View>
-
-          </View>
-
-          {CATEGORY_CHOICES[newCategoryIdx].isDebt && selectedDebt && newAmount ? (() => {
-            try {
-              const amount = parseMoney(newAmount, currencyCode);
-              if (moneyToMajor(amount) <= 0) return null;
-              const preview: LedgerTransaction = {
-                id: 'preview', accountId: selectedDebt.id, date: todayStr,
-                appliesToDate: null, amount, category: CATEGORY_CHOICES[newCategoryIdx].category,
-                payee: '', memo: '', source: 'manual', reconciled: false, createdAt: '', deletedAt: null,
-                principalAmount: newPrincipal.trim() ? parseMoney(newPrincipal, currencyCode) : null,
-                interestAmount: newInterest.trim() ? parseMoney(newInterest, currencyCode) : null,
-                escrowAmount: newEscrow.trim() ? parseMoney(newEscrow, currencyCode) : null,
-                feeAmount: newFee.trim() ? parseMoney(newFee, currencyCode) : null,
-              };
-              const after = addMoney(moneyFromMajor(selectedDebt.balance, currencyCode), calculateTransactionBalanceDelta(preview, selectedDebt.category));
-              return <View style={[ui.row, { justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: palette.tint }]}>
-                <View><Text style={ui.small}>Current balance</Text><Text style={ui.heading}>{formatCurrency(selectedDebt.balance, currencySymbol)}</Text></View>
-                <AppIcon name="chevronRight" size={16} color={palette.brand} />
-                <View style={{ alignItems: 'flex-end' }}><Text style={ui.small}>After saving</Text><Text style={ui.heading}>{formatCurrency(moneyToMajor(after), currencySymbol)}</Text></View>
-              </View>;
-            } catch { return null; }
-          })() : null}
-
-          {recentPurchase?.accountId && CATEGORY_CHOICES[newCategoryIdx].category === 'purchase' ? (
-            <Pressable accessibilityRole="button" onPress={() => setNewAccountId(recentPurchase.accountId ?? '')} style={{ alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', paddingHorizontal: 10, borderRadius: 12, backgroundColor: palette.tint }}>
-              <Text style={{ color: palette.brand, fontSize: 13 }}>Use recent purchase account ? {debts.find(debt => debt.id === recentPurchase.accountId)?.name}</Text>
-            </Pressable>
-          ) : null}
-          <View style={{ gap: 8 }}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ expanded: showMoreDetails }}
-                onPress={() => setShowMoreDetails(prev => !prev)}
-                style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}
-              >
-                <Text style={{ color: palette.brand, fontSize: 14, fontWeight: '600' }}>More details</Text>
-                <AppIcon name={showMoreDetails ? 'chevronDown' : 'chevronRight'} size={15} color={palette.brand} />
-              </Pressable>
-
-              {showMoreDetails ? (
-                <View style={{ gap: 10 }}>
-                  <Text style={ui.small}>Payee (optional)</Text>
-                  <TextInput accessibilityLabel="Payee" placeholder="Payee" placeholderTextColor={palette.muted} value={newPayee} onChangeText={setNewPayee} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
-                  <Text style={ui.small}>Note (optional)</Text>
-                  <TextInput accessibilityLabel="Note" placeholder="Note" placeholderTextColor={palette.muted} value={newNote} onChangeText={setNewNote} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
-                  {CATEGORY_CHOICES[newCategoryIdx].category === 'payment' ? <>
-                  <SelectDropdown
-                    label="Applies to payment cycle (optional)"
-                    sheetTitle="Choose Payment Due Cycle"
-                    value={newAppliesToDate}
-                    options={dueCycleOptions}
-                    onSelect={setNewAppliesToDate}
-                    placeholder="Choose a due cycle"
-                  />
-
-                  {selectedDebt && (selectedDebt.category === 'Mortgage' || selectedDebt.category === 'Auto loan') ? (
-                    <View style={{ padding: 12, backgroundColor: palette.raised, borderRadius: 12, borderWidth: 1, borderColor: palette.border, gap: 6 }}>
-                      <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
-                        <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700', flex: 1 }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Suggest principal and interest split"
-                          onPress={() => {
-                            const parsedAmt = parseMoneyInput(newAmount, currencyCode, false);
-                            const targetAmount = parsedAmt !== null && parsedAmt > 0 ? parsedAmt : selectedDebt.minimumPayment;
-                            if (!Number.isFinite(targetAmount) || targetAmount <= 0) return;
-                            if (parsedAmt === null || parsedAmt <= 0) {
-                              setNewAmount(formatEditableMoney(targetAmount, currencyCode));
-                            }
-                            const suggestion = suggestLoanPaymentSplit({
-                              balance: selectedDebt.balance,
-                              aprPercent: selectedDebt.apr,
-                              paymentAmount: targetAmount,
-                              escrowAmount: selectedDebt.category === 'Mortgage' ? mortgageEscrowByDebtId[selectedDebt.id] : undefined,
-                              currencyCode,
-                            });
-                            setNewPrincipal(formatEditableMoney(suggestion.principal, currencyCode));
-                            setNewInterest(formatEditableMoney(suggestion.interest, currencyCode));
-                            if (selectedDebt.category === 'Mortgage' && suggestion.escrow > 0) {
-                              setNewEscrow(formatEditableMoney(suggestion.escrow, currencyCode));
-                            }
-                          }}
-                          style={{
-                            paddingHorizontal: 10,
-                            paddingVertical: 5,
-                            borderRadius: 999,
-                            borderWidth: 1,
-                            borderColor: palette.brand,
-                            backgroundColor: palette.tint,
-                          }}
-                        >
-                          <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Suggest P/I split</Text>
-                        </Pressable>
-                      </View>
-                      <Text style={[ui.small, { color: palette.muted, marginBottom: 4 }]}>
-                        If unknown, full payment is recorded in cashflow while loan principal remains unchanged.
-                      </Text>
-                      <Text style={ui.small}>Principal reduction</Text>
-                      <TextInput
-                        placeholder={formatEditableMoney(0, currencyCode)}
-                        placeholderTextColor={palette.muted}
-                        keyboardType="decimal-pad"
-                        value={newPrincipal}
-                        onChangeText={val => setNewPrincipal(acceptMoneyEdit(newPrincipal, val, currencyCode))}
-                        style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
-                      />
-                      <Text style={[ui.small, { marginTop: 4 }]}>Interest paid</Text>
-                      <TextInput
-                        placeholder={formatEditableMoney(0, currencyCode)}
-                        placeholderTextColor={palette.muted}
-                        keyboardType="decimal-pad"
-                        value={newInterest}
-                        onChangeText={val => setNewInterest(acceptMoneyEdit(newInterest, val, currencyCode))}
-                        style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
-                      />
-                      {selectedDebt.category === 'Mortgage' ? (
-                        <>
-                          <Text style={[ui.small, { marginTop: 4 }]}>Escrow (taxes & insurance)</Text>
-                          <TextInput
-                            placeholder={formatEditableMoney(0, currencyCode)}
-                            placeholderTextColor={palette.muted}
-                            keyboardType="decimal-pad"
-                            value={newEscrow}
-                            onChangeText={val => setNewEscrow(acceptMoneyEdit(newEscrow, val, currencyCode))}
-                            style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
-                          />
-                        </>
-                      ) : null}
-                      <Text style={[ui.small, { marginTop: 4 }]}>Fees</Text>
-                      <TextInput
-                        placeholder={formatEditableMoney(0, currencyCode)}
-                        placeholderTextColor={palette.muted}
-                        keyboardType="decimal-pad"
-                        value={newFee}
-                        onChangeText={val => setNewFee(acceptMoneyEdit(newFee, val, currencyCode))}
-                        style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
-                      />
-                    </View>
-                  ) : null}
-                  </> : null}
-                </View>
-              ) : null}
-            </View>
-
-          {addPicker !== null ? (
-            <AdaptiveModal visible transparent animationType="fade" onRequestClose={() => setAddPicker(null)}>
-              <TouchableWithoutFeedback onPress={() => setAddPicker(null)}>
-                <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
-                  <TouchableWithoutFeedback>
-                    <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
-                        <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
-                          {addPicker === 'category' ? 'Select Transaction Category' : 'Select Target Debt Account'}
-                        </Text>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel="Close picker"
-                          onPress={() => setAddPicker(null)}
-                          style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
-                        >
-                          <AppIcon name="close" size={20} color={palette.muted} />
-                        </Pressable>
-                      </View>
-                      <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
-                        {addPicker === 'category'
-                          ? categoryDropdownOptions.map(option => {
-                              const isSelected = option.value === newCategoryIdx;
-                              return (
-                                <Pressable
-                                  key={String(option.value)}
-                                  accessibilityRole="button"
-                                  accessibilityState={{ selected: isSelected }}
-                                  onPress={() => { setNewCategoryIdx(option.value); setAddPicker(null); }}
-                                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                                >
-                                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                    {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
-                                    <View style={{ flex: 1 }}>
-                                      <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                      {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
-                                    </View>
-                                  </View>
-                                  {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                                </Pressable>
-                              );
-                            })
-                          : debtAccountDropdownOptions.map(option => {
-                              const isSelected = option.value === selectedDebtId;
-                              return (
-                                <Pressable
-                                  key={String(option.value)}
-                                  accessibilityRole="button"
-                                  accessibilityState={{ selected: isSelected }}
-                                  onPress={() => { setNewAccountId(option.value); setNewAppliesToDate(''); setAddPicker(null); }}
-                                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                                >
-                                  <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                    {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
-                                    <View style={{ flex: 1 }}>
-                                      <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                      {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
-                                    </View>
-                                  </View>
-                                  {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                                </Pressable>
-                              );
-                            })}
-                      </ScrollView>
-                    </View>
-                  </TouchableWithoutFeedback>
-                </View>
-              </TouchableWithoutFeedback>
-            </AdaptiveModal>
-          ) : null}
-
-          {showDatePicker ? (
-            <AdaptiveModal visible transparent animationType="slide" onRequestClose={() => setShowDatePicker(false)}>
-              <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
-                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' }}>
-                  <TouchableWithoutFeedback>
-                    <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, padding: 18, paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
-                      <View style={[ui.row, { justifyContent: 'space-between', marginBottom: 16 }]}>
-                        <Pressable accessibilityRole="button" accessibilityLabel="Previous month" onPress={() => {
-                          const [year, month] = datePickerMonth.split('-').map(Number);
-                          const previous = new Date(year, month - 2, 1);
-                          setDatePickerMonth(`${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`);
-                        }} style={ui.button}><AppIcon name="chevronLeft" size={17} color={palette.brand} /></Pressable>
-                        <Text style={ui.heading}>{LONG_MONTH_FMT.format(new Date(`${datePickerMonth}-01T12:00:00`))}</Text>
-                        <Pressable accessibilityRole="button" accessibilityLabel="Next month" onPress={() => {
-                          const [year, month] = datePickerMonth.split('-').map(Number);
-                          const next = new Date(year, month, 1);
-                          setDatePickerMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`);
-                        }} style={ui.button}><AppIcon name="chevronRight" size={17} color={palette.brand} /></Pressable>
-                      </View>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 }}>
-                        {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => <Text key={`${day}-${index}`} style={[ui.small, { width: '13%', textAlign: 'center' }]}>{day}</Text>)}
-                      </View>
-                      {(() => {
-                        const [year, month] = datePickerMonth.split('-').map(Number);
-                        const offset = new Date(year, month - 1, 1).getDay();
-                        const count = new Date(year, month, 0).getDate();
-                        const cells: (number | null)[] = [...Array(offset).fill(null), ...Array.from({ length: count }, (_, index) => index + 1)];
-                        while (cells.length % 7) cells.push(null);
-                        const weeks = Array.from({ length: cells.length / 7 }, (_, index) => cells.slice(index * 7, index * 7 + 7));
-                        return weeks.map((week, weekIndex) => (
-                          <View key={`week-${weekIndex}`} style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 5 }}>
-                            {week.map((day, dayIndex) => {
-                              if (day === null) return <View key={`blank-${weekIndex}-${dayIndex}`} style={{ width: '13%', height: 42 }} />;
-                              const value = `${datePickerMonth}-${String(day).padStart(2, '0')}`;
-                              const selected = value === newDate;
-                              return (
-                                <Pressable key={value} accessibilityRole="button" accessibilityLabel={value} accessibilityState={{ selected }}
-                                  onPress={() => { setNewDate(parseDateOnly(value)); setShowDatePicker(false); }}
-                                  style={{ width: '13%', height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: selected ? palette.brand : 'transparent' }}>
-                                  <Text style={[ui.text, selected ? { color: palette.onBrand, fontWeight: '700' } : null]}>{day}</Text>
-                                </Pressable>
-                              );
-                            })}
-                          </View>
-                        ));
-                      })()}
-                      <Pressable accessibilityRole="button" onPress={() => { setNewDate(todayStr); setShowDatePicker(false); }} style={[ui.button, { alignSelf: 'center', marginTop: 8 }]}>
-                        <Text style={[ui.buttonText, { color: palette.brand, textAlign: 'center' }]}>Today</Text>
-                      </Pressable>
-                    </View>
-                  </TouchableWithoutFeedback>
-                </View>
-              </TouchableWithoutFeedback>
-            </AdaptiveModal>
-          ) : null}
-        </View>
-        </SheetModal>
+    <AddTransactionModal
+      debts={debts}
+      transactions={transactions}
+      loanBillPairs={loanBillPairs}
+      mortgageEscrowByDebtId={mortgageEscrowByDebtId}
+      obligationSchedules={obligationSchedules}
+      historicalBillIdsByDebtId={historicalBillIdsByDebtId}
+      recentPurchase={recentPurchase}
+      todayStr={todayStr}
+      currentMonthStr={currentMonthStr}
+      currencyCode={currencyCode}
+      currencySymbol={currencySymbol}
+      householdTimeZone={householdTimeZone}
+      categoryDropdownOptions={categoryDropdownOptions}
+      debtAccountDropdownOptions={debtAccountDropdownOptions}
+      onSave={handleAddTxRecord}
+      onClose={closeAddForm}
+    />
   ) : null;
 
   return (
@@ -1736,7 +1226,7 @@ export function TransactionsScreen({
         if (resolvedTab !== 'History') closeAddForm();
       }}
       onSettings={onSettings}
-      onAdd={canEdit && !showAddForm ? () => { setFormError(''); setShowMoreDetails(false); setAddPicker(null); setShowAddForm(true); } : undefined}
+      onAdd={canEdit && !showAddForm ? () => { setShowAddForm(true); } : undefined}
       addLabel="Add Transaction"
       onSegmentScrollNearEnd={handleSegmentScrollNearEnd}
       renderSegment={segment => (segment === 'Scheduled' ? (
@@ -1762,11 +1252,10 @@ export function TransactionsScreen({
           onSelectDate={setScheduledDate}
           canEdit={canEdit}
           billError={billError}
-          onSetBillError={setBillError}
-          pendingBillCycle={pendingBillCycle}
-          onSetPendingBillCycle={setPendingBillCycle}
           onAddTransaction={onAddTransaction}
+          onUpdateTransaction={onUpdateTransaction}
           onRecordBillPayment={onRecordBillPayment}
+          onOpenPaySheet={setPayTarget}
           onConfirmAnnualFee={onConfirmAnnualFee}
           onSaveDebtPaymentSplitPlans={onSaveDebtPaymentSplitPlans}
           onSaveBillPaymentSplitPlans={onSaveBillPaymentSplitPlans}
@@ -1830,7 +1319,7 @@ export function TransactionsScreen({
               accessibilityRole="button"
               accessibilityLabel="Search transactions"
               accessibilityState={{ expanded: searchOpen }}
-              onPress={() => { if (searchOpen) { setSearchOpen(false); setSearch(''); } else setSearchOpen(true); }}
+              onPress={() => { if (searchOpen) { setSearchOpen(false); clearSearch(); } else setSearchOpen(true); }}
               style={[
                 ui.button,
                 {
@@ -1861,21 +1350,23 @@ export function TransactionsScreen({
                   height: 42,
                   minHeight: 42,
                   borderRadius: 21,
-                  backgroundColor: effectiveAccountId !== 'all' || effectiveTypeIdx !== 0 ? palette.tint : palette.surface,
+                  backgroundColor: activeFilterCount > 0 ? palette.tint : palette.surface,
                   borderWidth: isInspire ? 1.5 : 1,
-                  borderColor: effectiveAccountId !== 'all' || effectiveTypeIdx !== 0 ? palette.brand : palette.cardBorder,
+                  borderColor: activeFilterCount > 0 ? palette.brand : palette.cardBorder,
                   alignItems: 'center',
                   justifyContent: 'center',
                   paddingHorizontal: 0,
                 },
               ]}
             >
-              <AppIcon name="filter" size={18} color={effectiveAccountId !== 'all' || effectiveTypeIdx !== 0 ? palette.brand : palette.accentInk} />
+              <AppIcon name="filter" size={18} color={activeFilterCount > 0 ? palette.brand : palette.accentInk} />
+              {activeFilterCount > 0 ? <View style={{ position: 'absolute', top: -4, right: -4, minWidth: 17, height: 17, paddingHorizontal: 4, borderRadius: 9, backgroundColor: ctaBg, alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: ctaFg, fontSize: 10, lineHeight: 13, fontWeight: '700' }}>{activeFilterCount}</Text></View> : null}
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={sortAsc ? 'Sort newest first' : 'Sort oldest first'}
-              onPress={() => setSortAsc(!sortAsc)}
+              accessibilityLabel="Sort"
+              accessibilityState={{ expanded: showSortSheet, selected: sort !== 'newest' }}
+              onPress={() => setShowSortSheet(true)}
               style={[
                 ui.button,
                 {
@@ -1883,16 +1374,16 @@ export function TransactionsScreen({
                   height: 42,
                   minHeight: 42,
                   borderRadius: 21,
-                  backgroundColor: palette.surface,
+                  backgroundColor: sort !== 'newest' ? palette.tint : palette.surface,
                   borderWidth: isInspire ? 1.5 : 1,
-                  borderColor: palette.cardBorder,
+                  borderColor: sort !== 'newest' ? palette.brand : palette.cardBorder,
                   alignItems: 'center',
                   justifyContent: 'center',
                   paddingHorizontal: 0,
                 },
               ]}
             >
-              <AppIcon name="sort" size={18} color={palette.accentInk} />
+              <AppIcon name="sort" size={18} color={sort !== 'newest' ? palette.brand : palette.accentInk} />
             </Pressable>
           </View>
           {searchOpen ? (
@@ -1902,16 +1393,25 @@ export function TransactionsScreen({
                 accessibilityLabel="Search transactions"
                 placeholder="Search transactions"
                 placeholderTextColor={palette.muted}
-                value={search}
+                value={searchInput}
                 onChangeText={setSearch}
+                onBlur={() => flushSearch(searchInput)}
+                onSubmitEditing={() => flushSearch(searchInput)}
                 autoFocus
                 style={[ui.input, { borderWidth: 0, paddingHorizontal: 0, paddingVertical: 8, flex: 1, fontSize: 15 }]}
               />
-              <Pressable accessibilityRole="button" accessibilityLabel="Close transaction search" hitSlop={8} onPress={() => { setSearchOpen(false); setSearch(''); }} style={{ width: 32, height: 40, alignItems: 'center', justifyContent: 'center' }}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close transaction search" hitSlop={8} onPress={() => { setSearchOpen(false); clearSearch(); }} style={{ width: 32, height: 40, alignItems: 'center', justifyContent: 'center' }}>
                 <AppIcon name="close" size={16} color={palette.muted} />
               </Pressable>
             </View>
           ) : null}
+
+          {activeFilterChips.length > 0 ? <View accessibilityLabel="Active transaction filters" style={[ui.row, { flexWrap: 'wrap', gap: 7, marginTop: 2, marginBottom: 4 }]}>
+            {activeFilterChips.map(chip => <Pressable key={chip.key} accessibilityRole="button" accessibilityLabel={`Remove ${chip.label} filter`} onPress={chip.remove} style={{ minHeight: 30, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, borderRadius: 15, borderWidth: 1, borderColor: palette.cardBorder, backgroundColor: palette.tint }}>
+              <Text style={[ui.small, { color: palette.brand, fontWeight: '600' }]}>{chip.label} ×</Text>
+            </Pressable>)}
+            <Pressable accessibilityRole="button" accessibilityLabel="Clear all filters" onPress={clearHistoryFilters} style={{ minHeight: 30, paddingHorizontal: 7, alignItems: 'center', justifyContent: 'center' }}><Text style={[ui.small, { color: palette.muted, fontWeight: '600' }]}>Clear all</Text></Pressable>
+          </View> : null}
 
           {sorted.length === 0 ? (
             <Card>
@@ -1986,59 +1486,127 @@ export function TransactionsScreen({
       {addTransactionModal}
 
       {showFilters ? (
-        <SheetModal visible onClose={() => setShowFilters(false)} height="92%" closeLabel="Close filters" footer={(
-          <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface }}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Apply filters" onPress={() => {
-              setAccountId(effectiveDraftAccountId);
-              setTypeIdx(effectiveDraftTypeIdx);
-              setShowFilters(false);
-            }} style={[ui.button, { flex: 1, minHeight: 44, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center', alignItems: 'center' }]}>
-              <Text style={[ui.buttonText, { color: ctaFg, fontWeight: '700' }]}>Apply</Text>
-            </Pressable>
+        <SheetModal visible onClose={() => { setShowFilters(false); setShowSpecificAccountPicker(false); }} height={showSpecificAccountPicker ? '88%' : '72%'} closeLabel="Close filters" footer={(
+          <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface }}>
+            {showSpecificAccountPicker ? (() => {
+              const pickerDoneLabel = draftAccountIds.length > 0
+                ? `Done (${draftAccountIds.length} selected)`
+                : draftAccountGroups.length > 0
+                  ? 'Done'
+                  : 'Done (All accounts)';
+              return (
+                <Pressable accessibilityRole="button" accessibilityLabel={pickerDoneLabel} onPress={() => setShowSpecificAccountPicker(false)} style={[ui.button, { minHeight: 46, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center', alignItems: 'center' }]}>
+                  <Text style={[ui.buttonText, { color: ctaFg, fontWeight: '700' }]}>{pickerDoneLabel}</Text>
+                </Pressable>
+              );
+            })() : (
+              <Pressable accessibilityRole="button" accessibilityLabel="Apply filters" onPress={() => {
+                updateUiPreferences({ transactionsTypeFilters: draftTypes, transactionsAccountGroups: draftAccountGroups, transactionsAccountIds: draftAccountIds });
+                setShowFilters(false);
+              }} style={[ui.button, { minHeight: 46, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center', alignItems: 'center' }]}>
+                <Text style={[ui.buttonText, { color: ctaFg, fontWeight: '700' }]}>{`Show ${draftMatchCount} ${draftMatchCount === 1 ? 'transaction' : 'transactions'}`}</Text>
+              </Pressable>
+            )}
           </View>
         )}>
-          <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }]}>
-            <Text accessibilityRole="header" style={ui.title}>Filters</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Close filters" onPress={() => setShowFilters(false)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}>
-              <AppIcon name="close" size={20} color={palette.muted} />
-            </Pressable>
-          </View>
-          <Text accessibilityRole="header" style={[ui.heading, { marginTop: 4 }]}>Account Type</Text>
-          <View accessibilityLabel="Account Type" style={{ marginTop: 4 }}>
-            {filterRadio('All', effectiveDraftAccountId === 'all', () => setDraftAccountIds([]), 'account-type:all')}
-            {accountTypeGroups.map(group => {
-              const isExpanded = expandedAccountType === group.key;
-              return (
-                <View key={group.key} style={{ borderBottomWidth: 1, borderBottomColor: palette.border }}>
-                  <Pressable accessibilityRole="button" accessibilityLabel={`${group.label} filters`} accessibilityState={{ expanded: isExpanded }} onPress={() => setExpandedAccountType(isExpanded ? null : group.key)} style={[ui.row, { minHeight: 46, justifyContent: 'space-between', paddingHorizontal: 10 }]}>
-                    <Text style={[ui.text, { fontWeight: '600', flex: 1 }]}>{group.label}</Text>
-                    <Text style={[ui.small, { marginRight: 8 }]}>{group.options.length}</Text>
-                    <AppIcon name={isExpanded ? 'chevronDown' : 'chevronRight'} size={16} color={palette.muted} />
-                  </Pressable>
-                  {isExpanded ? (
-                    <View style={{ paddingLeft: 10, paddingBottom: 6 }}>
-                      {group.options.map(option => {
-                        const checked = draftAccountIds.includes(option.id);
-                        return (
-                          <Pressable key={option.id} accessibilityRole="checkbox" accessibilityLabel={option.label} accessibilityState={{ checked }} onPress={() => setDraftAccountIds(ids => ids.includes(option.id) ? ids.filter(id => id !== option.id) : [...ids, option.id])}
-                            style={{ minHeight: 44, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 10, backgroundColor: checked ? palette.tint : 'transparent' }}>
-                            <View style={{ width: 20, height: 20, borderRadius: 4, borderWidth: 2, borderColor: checked ? palette.brand : palette.muted, alignItems: 'center', justifyContent: 'center', backgroundColor: checked ? palette.brand : 'transparent' }}>
-                              {checked ? <AppIcon name="check" size={14} color={palette.surface} /> : null}
-                            </View>
-                            <Text style={[ui.text, { flex: 1 }]}>{option.label}</Text>
-                          </Pressable>
-                        );
-                      })}
+          {showSpecificAccountPicker ? (
+            <>
+              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }]}>
+                <Pressable accessibilityRole="button" accessibilityLabel="‹ Accounts & bills" onPress={() => setShowSpecificAccountPicker(false)} style={[ui.row, { minHeight: 44, gap: 6, flex: 1 }]}>
+                  <Text style={[ui.title, { color: palette.brand }]}>‹</Text><Text style={[ui.buttonText, { color: palette.brand }]}>Accounts & bills</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel="Clear specific accounts" onPress={() => { setDraftAccountGroups([]); setDraftAccountIds([]); }} style={{ minHeight: 40, paddingHorizontal: 10, justifyContent: 'center' }}>
+                  <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Clear</Text>
+                </Pressable>
+              </View>
+              <View style={[ui.inputWrap, { marginBottom: 10, paddingHorizontal: 12 }]}>
+                <AppIcon name="search" size={16} color={palette.muted} />
+                <TextInput accessibilityLabel="Search accounts or bills" placeholder="Search accounts or bills" placeholderTextColor={palette.muted} value={specificAccountSearch} onChangeText={setSpecificAccountSearch} style={[ui.input, { borderWidth: 0, paddingHorizontal: 0, paddingVertical: 8, flex: 1, fontSize: 15 }]} />
+              </View>
+              {accountTypeGroups.map(group => {
+                const query = specificAccountSearch.trim().toLowerCase();
+                const options = group.options.filter(option => !query || option.label.toLowerCase().includes(query) || group.label.toLowerCase().includes(query));
+                if (!options.length) return null;
+                const groupIds = options.map(option => option.id);
+                const allSelected = groupIds.every(id => draftAccountIds.includes(id));
+                return (
+                  <View key={group.key} style={{ marginBottom: 8 }}>
+                    <View style={[ui.row, { minHeight: 34, justifyContent: 'space-between' }]}>
+                      <Text accessibilityRole="header" style={[ui.small, { color: palette.muted, fontWeight: '700' }]}>{group.label}</Text>
+                      {options.length > 1 ? <Pressable accessibilityRole="button" accessibilityLabel={allSelected ? `Deselect ${group.label}` : `Select all ${group.label}`} onPress={() => {
+                        setDraftAccountGroups([]);
+                        setDraftAccountIds(ids => allSelected ? ids.filter(id => !groupIds.includes(id)) : [...new Set([...ids, ...groupIds])]);
+                      }}><Text style={[ui.small, { color: palette.brand, fontWeight: '600' }]}>{allSelected ? 'Deselect' : 'Select all'}</Text></Pressable> : null}
                     </View>
-                  ) : null}
+                    {options.map(option => {
+                      const checked = draftAccountIds.includes(option.id);
+                      return <Pressable key={option.id} accessibilityRole="checkbox" accessibilityLabel={option.label} accessibilityState={{ checked }} onPress={() => {
+                        setDraftAccountGroups([]);
+                        setDraftAccountIds(ids => ids.includes(option.id) ? ids.filter(id => id !== option.id) : [...ids, option.id]);
+                      }} style={{ minHeight: 42, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 10, backgroundColor: checked ? palette.tint : 'transparent' }}>
+                        <View style={{ width: 20, height: 20, borderRadius: 4, borderWidth: 2, borderColor: checked ? ctaBg : palette.muted, alignItems: 'center', justifyContent: 'center', backgroundColor: checked ? ctaBg : 'transparent' }}>{checked ? <AppIcon name="check" size={14} color={ctaFg} /> : null}</View>
+                        <Text style={[ui.text, { flex: 1 }]}>{option.label}</Text>
+                      </Pressable>;
+                    })}
+                  </View>
+                );
+              })}
+              {specificAccountSearch.trim() && !accountTypeGroups.some(group => group.options.some(option => option.label.toLowerCase().includes(specificAccountSearch.trim().toLowerCase()) || group.label.toLowerCase().includes(specificAccountSearch.trim().toLowerCase()))) ? (
+                <Text style={[ui.small, { color: palette.muted, textAlign: 'center', marginTop: 12 }]}>No matching accounts or bills.</Text>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }]}>
+                <Text accessibilityRole="header" style={ui.title}>Filters</Text>
+                <View style={[ui.row, { gap: 6 }]}>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Reset filters" accessibilityState={{ disabled: draftTypes.length === 0 && draftAccountGroups.length === 0 && draftAccountIds.length === 0 }} disabled={draftTypes.length === 0 && draftAccountGroups.length === 0 && draftAccountIds.length === 0} onPress={() => { setDraftTypes([]); setDraftAccountGroups([]); setDraftAccountIds([]); }} style={{ minHeight: 42, paddingHorizontal: 8, justifyContent: 'center', opacity: draftTypes.length === 0 && draftAccountGroups.length === 0 && draftAccountIds.length === 0 ? 0.45 : 1 }}><Text style={[ui.small, { color: draftTypes.length === 0 && draftAccountGroups.length === 0 && draftAccountIds.length === 0 ? palette.muted : palette.brand, fontWeight: '700' }]}>Reset</Text></Pressable>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Close filters" onPress={() => setShowFilters(false)} style={{ width: 42, height: 42, alignItems: 'center', justifyContent: 'center' }}><AppIcon name="close" size={20} color={palette.muted} /></Pressable>
                 </View>
-              );
-            })}
+              </View>
+              <Text accessibilityRole="header" style={[ui.heading, { marginTop: 4 }]}>Transaction type</Text>
+              <View style={[ui.row, { flexWrap: 'wrap', gap: 8, marginTop: 8 }]}>
+                {filterChip('All', draftTypes.length === 0, () => setDraftTypes([]), 'type:all')}
+                {typeFilterOptions.map(option => filterChip(option.label, draftTypes.includes(option.key), () => setDraftTypes(types => types.includes(option.key) ? types.filter(type => type !== option.key) : [...types, option.key]), `type:${option.key}`))}
+              </View>
+              <Text accessibilityRole="header" style={[ui.heading, { marginTop: 18 }]}>Accounts & bills</Text>
+              <View style={[ui.row, { flexWrap: 'wrap', gap: 8, marginTop: 8 }]}>
+                {filterChip('All', draftAccountGroups.length === 0 && draftAccountIds.length === 0, () => { setDraftAccountGroups([]); setDraftAccountIds([]); }, 'accounts:all')}
+                {accountQuickGroups.map(group => filterChip(group.label, draftAccountGroups.includes(group.key), () => {
+                  setDraftAccountIds([]);
+                  setDraftAccountGroups(groups => groups.includes(group.key) ? groups.filter(key => key !== group.key) : [...groups, group.key]);
+                }, `accounts:${group.key}`))}
+              </View>
+              {(() => {
+                const selectedNames = accountTypeGroups.flatMap(group => group.options).filter(option => draftAccountIds.includes(option.id)).map(option => option.label);
+                const selectedSummary = selectedNames.length ? selectedNames.length > 2 ? `${selectedNames.length} selected` : selectedNames.join(', ') : draftAccountGroups.length ? `All in ${accountQuickGroups.filter(group => draftAccountGroups.includes(group.key)).map(group => group.label).join(', ')}` : 'All accounts & bills';
+                return <Pressable accessibilityRole="button" accessibilityLabel="Choose specific accounts" onPress={() => { setSpecificAccountSearch(''); setShowSpecificAccountPicker(true); }} style={{ minHeight: 58, marginTop: 10, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: draftAccountIds.length ? palette.brand : palette.cardBorder, backgroundColor: draftAccountIds.length ? palette.tint : palette.surface, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[ui.text, { fontWeight: '700', color: draftAccountIds.length ? palette.brand : palette.text }]}>Choose specific accounts</Text>
+                    <Text numberOfLines={1} style={[ui.small, { marginTop: 2, color: draftAccountIds.length ? palette.brand : palette.muted }]}>{selectedSummary}</Text>
+                  </View>
+                  <AppIcon name="chevronRight" size={18} color={draftAccountIds.length ? palette.brand : palette.muted} />
+                </Pressable>;
+              })()}
+            </>
+          )}
+        </SheetModal>
+      ) : null}
+
+      {showSortSheet ? (
+        <SheetModal visible onClose={() => setShowSortSheet(false)} contentSized closeLabel="Close sort options">
+          <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }]}>
+            <Text accessibilityRole="header" style={ui.title}>Sort by</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close sort options" onPress={() => setShowSortSheet(false)} style={{ width: 42, height: 42, alignItems: 'center', justifyContent: 'center' }}><AppIcon name="close" size={20} color={palette.muted} /></Pressable>
           </View>
-          <Text accessibilityRole="header" style={[ui.heading, { marginTop: 14 }]}>Transaction Type</Text>
-          <View accessibilityRole="radiogroup" accessibilityLabel="Transaction type" style={{ marginTop: 4 }}>
-            {typeFilterOptions.map(option => filterRadio(option.label, effectiveDraftTypeIdx === option.value, () => setDraftTypeIdx(effectiveDraftTypeIdx === option.value ? 0 : option.value), `type:${option.value}`))}
-          </View>
+          {([
+            ['newest', 'Newest first'], ['oldest', 'Oldest first'], ['highest_amount', 'Highest amount'], ['lowest_amount', 'Lowest amount'],
+          ] as const).map(([value, label]) => {
+            const selected = sort === value;
+            return <Pressable key={value} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected }} onPress={() => { setSort(value); setShowSortSheet(false); }} style={[ui.row, { minHeight: 48, paddingHorizontal: 10, borderRadius: 10, backgroundColor: selected ? palette.tint : 'transparent', justifyContent: 'space-between' }]}>
+              <Text style={[ui.text, { color: selected ? palette.brand : palette.text, fontWeight: selected ? '700' : '500' }]}>{label}</Text>{selected ? <AppIcon name="check" size={18} color={palette.brand} /> : null}
+            </Pressable>;
+          })}
         </SheetModal>
       ) : null}
 
@@ -2173,453 +1741,28 @@ export function TransactionsScreen({
       ) : null}
 
       {/* Edit Transaction Modal */}
-      {editingTx !== null ? (() => {
-        const editCatOption = editCategoryIdx >= 0
-          ? CATEGORY_CHOICES[editCategoryIdx]
-          : {
-              label: formatTransactionCategoryLabel(editingTx.category),
-              category: editingTx.category,
-              isDebt: editingTx.category !== 'debit_bill' && editingTx.category !== 'debit_spending',
-            };
-        const targetEditDebt = editAccountId ? debtById.get(editAccountId) : undefined;
-        const editCurrentBal = targetEditDebt ? targetEditDebt.balance : 0;
-        let editAfterBal = editCurrentBal;
-
-        if (targetEditDebt) {
-          const curMoney = moneyFromMajor(targetEditDebt.balance, currencyCode);
-          let previewMoney = curMoney;
-
-          if (editingTx.accountId === targetEditDebt.id && editingTx.deletedAt === null) {
-            const origDelta = calculateTransactionBalanceDelta(editingTx, targetEditDebt.category);
-            previewMoney = addMoney(previewMoney, makeMoney(currencyCode, -origDelta.minorUnits));
-          }
-
-          const parsedAmt = parseFloat(editAmount);
-          if (!Number.isNaN(parsedAmt) && parsedAmt > 0 && editCatOption.isDebt) {
-            try {
-              const newAmtMoney = parseMoney(editAmount, currencyCode);
-              const pAmt = editPrincipal.trim() ? parseMoney(editPrincipal.trim(), currencyCode) : null;
-              const iAmt = editInterest.trim() ? parseMoney(editInterest.trim(), currencyCode) : null;
-              const eAmt = editEscrow.trim() ? parseMoney(editEscrow.trim(), currencyCode) : null;
-              const fAmt = editFee.trim() ? parseMoney(editFee.trim(), currencyCode) : null;
-
-              const candidateTx: LedgerTransaction = {
-                ...editingTx,
-                accountId: targetEditDebt.id,
-                amount: newAmtMoney,
-                category: editCatOption.category,
-                principalAmount: pAmt,
-                interestAmount: iAmt,
-                escrowAmount: eAmt,
-                feeAmount: fAmt,
-              };
-              const newDelta = calculateTransactionBalanceDelta(candidateTx, targetEditDebt.category);
-              previewMoney = addMoney(previewMoney, newDelta);
-            } catch {
-              // invalid input ignored for preview
-            }
-          }
-
-          editAfterBal = moneyToMajor(previewMoney);
-        }
-
-        const groupedCardStyle = {
-          borderRadius: 16,
-          borderWidth: 1,
-          borderColor: palette.border,
-          backgroundColor: isLight ? palette.surface : palette.raised,
-          paddingHorizontal: 14,
-          overflow: 'hidden' as const,
-        };
-        const rowStyle = {
-          minHeight: 48,
-          paddingVertical: 6,
-          flexDirection: 'row' as const,
-          alignItems: 'center' as const,
-          justifyContent: 'space-between' as const,
-          gap: 12,
-        };
-        const rowBorderStyle = { borderBottomWidth: 1, borderBottomColor: palette.border };
-        const inlineInputStyle = {
-          minHeight: 40,
-          paddingVertical: 6,
-          paddingHorizontal: 0,
-          textAlign: 'right' as const,
-          color: palette.text,
-          fontSize: 15,
-          fontWeight: '600' as const,
-        };
-        return (
-          <SheetModal
-            visible
-            onClose={() => { setEditPicker(null); setEditingTx(null); onEditDismiss?.(); }}
-            contentSized
-            closeLabel="Close edit form"
-            footer={canEdit ? (
-              <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 16, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface, gap: 8 }}>
-                {!!editError ? (
-                  <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight), textAlign: 'center' }]}>
-                    {editError}
-                  </Text>
-                ) : null}
-                <View style={{ flexDirection: 'row', gap: 10 }}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Delete transaction"
-                    disabled={deletingTx || savingEdit}
-                    onPress={() => { if (editingTx) setConfirmDeleteTx(editingTx); }}
-                    style={{
-                      flex: 1,
-                      minHeight: 46,
-                      borderRadius: 12,
-                      backgroundColor: isLight ? '#FEE2E2' : '#3D2520',
-                      borderColor: isLight ? '#FCA5A5' : '#8B4F42',
-                      borderWidth: 1,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      opacity: deletingTx ? 0.65 : 1,
-                    }}
-                  >
-                    <Text style={{ color: isLight ? '#DC2626' : '#F08B78', fontSize: 15, fontWeight: '700' }}>
-                      {deletingTx ? 'Deleting…' : 'Delete'}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Save Changes"
-                    disabled={savingEdit || deletingTx}
-                    onPress={() => void handleSaveEdit()}
-                    style={{
-                      flex: 1.5,
-                      minHeight: 46,
-                      borderRadius: 12,
-                      backgroundColor: ctaBg,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      opacity: savingEdit ? 0.65 : 1,
-                    }}
-                  >
-                    <Text style={{ color: ctaFg, fontSize: 15, fontWeight: '700' }}>
-                      {savingEdit ? 'Saving…' : 'Save'}
-                    </Text>
-                  </Pressable>
-                </View>
-              </View>
-            ) : undefined}
-          >
-            <View style={{ gap: 12 }}>
-              <SheetFormHeader
-                centered
-                title={canEdit ? 'Edit Transaction' : 'Transaction Details'}
-                onClose={() => { setEditPicker(null); setEditingTx(null); onEditDismiss?.(); }}
-                closeLabel="Close edit form"
-              />
-
-              {!canEdit ? (
-                <View style={{ backgroundColor: palette.tint, borderColor: palette.border, borderWidth: 1, borderRadius: 10, padding: 10 }}>
-                  <Text style={ui.small}>View-only access: only household members or owners can edit or delete transactions.</Text>
-                </View>
-              ) : null}
-
-              {editingTx.isPending ? (
-                <View style={{ backgroundColor: isLight ? '#FFF3CD' : '#2D281E', borderColor: appearanceColor('#F5C563', isLight), borderWidth: 1, borderRadius: 10, padding: 10 }}>
-                  <Text style={[ui.small, { color: appearanceColor('#F5C563', isLight), fontWeight: '700' }]}>Pending Confirmation</Text>
-                  <Text style={[ui.small, { color: isLight ? '#8A6200' : '#D4C9A8' }]}>This transaction has not yet been confirmed by the server.</Text>
-                </View>
-              ) : null}
-
-              <View style={groupedCardStyle}>
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={!canEdit}
-                  accessibilityLabel={`Category: ${editCatOption.label}`}
-                  onPress={() => setEditPicker('category')}
-                  style={[rowStyle, rowBorderStyle]}
-                >
-                  <Text style={[ui.text, { color: palette.muted }]}>Category *</Text>
-                  <View style={[ui.row, { gap: 6, alignItems: 'center', flexShrink: 1 }]}>
-                    <Text numberOfLines={1} style={[ui.text, { color: palette.text, fontWeight: '600' }]}>{editCatOption.label}</Text>
-                    {canEdit ? <AppIcon name="chevronDown" size={14} color={palette.muted} /> : null}
-                  </View>
-                </Pressable>
-
-                {editCatOption.isDebt && debts.length > 0 ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={!canEdit}
-                    accessibilityLabel={`Debt account: ${targetEditDebt?.name ?? 'Select account'}`}
-                    onPress={() => setEditPicker('debt')}
-                    style={[rowStyle, rowBorderStyle]}
-                  >
-                    <Text style={[ui.text, { color: palette.muted }]}>Debt account *</Text>
-                    <View style={[ui.row, { gap: 6, alignItems: 'center', flexShrink: 1 }]}>
-                      <Text numberOfLines={1} style={[ui.text, { color: palette.text, fontWeight: '600' }]}>{targetEditDebt?.name ?? debts[0]?.name ?? 'Select account'}</Text>
-                      {canEdit ? <AppIcon name="chevronDown" size={14} color={palette.muted} /> : null}
-                    </View>
-                  </Pressable>
-                ) : null}
-
-                <View style={[rowStyle, rowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Payee</Text>
-                  <TextInput
-                    accessibilityLabel="Payee or description"
-                    placeholder="e.g. Target, Payment"
-                    placeholderTextColor={palette.muted}
-                    editable={canEdit}
-                    value={editPayee}
-                    onChangeText={setEditPayee}
-                    style={[inlineInputStyle, { flex: 1, minWidth: 110 }]}
-                  />
-                </View>
-
-                <View style={[rowStyle, rowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Amount *</Text>
-                  <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                    <TextInput
-                      accessibilityLabel="Transaction amount"
-                      accessibilityHint="Required"
-                      placeholder={formatEditableMoney(0, currencyCode)}
-                      placeholderTextColor={palette.muted}
-                      keyboardType="decimal-pad"
-                      editable={canEdit}
-                      value={editAmount}
-                      onChangeText={val => setEditAmount(acceptMoneyEdit(editAmount, val, currencyCode))}
-                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                    />
-                  </View>
-                </View>
-
-                <View style={[rowStyle, rowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Date *</Text>
-                  <TextInput
-                    accessibilityLabel="Transaction date"
-                    accessibilityHint="Required"
-                    placeholder="YYYY-MM-DD"
-                    placeholderTextColor={palette.muted}
-                    editable={canEdit}
-                    value={editDate}
-                    onChangeText={setEditDate}
-                    style={[inlineInputStyle, { flex: 1, minWidth: 110 }]}
-                  />
-                </View>
-
-                <View style={rowStyle}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Note</Text>
-                  <TextInput
-                    accessibilityLabel="Transaction note"
-                    placeholder="Optional note"
-                    placeholderTextColor={palette.muted}
-                    editable={canEdit}
-                    value={editMemo}
-                    onChangeText={setEditMemo}
-                    style={[inlineInputStyle, { flex: 1, minWidth: 110, fontWeight: '500' }]}
-                  />
-                </View>
-              </View>
-
-              {editCatOption.category === 'payment' && targetEditDebt && (targetEditDebt.category === 'Mortgage' || targetEditDebt.category === 'Auto loan') ? (
-                <View style={groupedCardStyle}>
-                  <View style={[rowStyle, rowBorderStyle, { minHeight: 42 }]}>
-                    <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700', flex: 1 }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
-                    {canEdit ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Suggest principal and interest split"
-                        onPress={() => {
-                          const parsedAmt = parseMoneyInput(editAmount, currencyCode, false);
-                          const targetAmount = parsedAmt !== null && parsedAmt > 0 ? parsedAmt : targetEditDebt.minimumPayment;
-                          if (!Number.isFinite(targetAmount) || targetAmount <= 0) return;
-                          if (parsedAmt === null || parsedAmt <= 0) {
-                            setEditAmount(formatEditableMoney(targetAmount, currencyCode));
-                          }
-                          const suggestion = suggestLoanPaymentSplit({
-                            balance: targetEditDebt.balance,
-                            aprPercent: targetEditDebt.apr,
-                            paymentAmount: targetAmount,
-                            escrowAmount: targetEditDebt.category === 'Mortgage' ? mortgageEscrowByDebtId[targetEditDebt.id] : undefined,
-                            currencyCode,
-                          });
-                          setEditPrincipal(formatEditableMoney(suggestion.principal, currencyCode));
-                          setEditInterest(formatEditableMoney(suggestion.interest, currencyCode));
-                          if (targetEditDebt.category === 'Mortgage' && suggestion.escrow > 0) {
-                            setEditEscrow(formatEditableMoney(suggestion.escrow, currencyCode));
-                          }
-                        }}
-                        style={{
-                          paddingHorizontal: 10,
-                          paddingVertical: 5,
-                          borderRadius: 999,
-                          borderWidth: 1,
-                          borderColor: palette.brand,
-                          backgroundColor: palette.tint,
-                        }}
-                      >
-                        <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Suggest P/I split</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                  <View style={[rowStyle, rowBorderStyle]}>
-                    <Text style={[ui.text, { color: palette.muted }]}>Principal</Text>
-                    <TextInput
-                      placeholder={formatEditableMoney(0, currencyCode)}
-                      placeholderTextColor={palette.muted}
-                      keyboardType="decimal-pad"
-                      editable={canEdit}
-                      value={editPrincipal}
-                      onChangeText={val => setEditPrincipal(acceptMoneyEdit(editPrincipal, val, currencyCode))}
-                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                    />
-                  </View>
-                  <View style={[rowStyle, rowBorderStyle]}>
-                    <Text style={[ui.text, { color: palette.muted }]}>Interest</Text>
-                    <TextInput
-                      placeholder={formatEditableMoney(0, currencyCode)}
-                      placeholderTextColor={palette.muted}
-                      keyboardType="decimal-pad"
-                      editable={canEdit}
-                      value={editInterest}
-                      onChangeText={val => setEditInterest(acceptMoneyEdit(editInterest, val, currencyCode))}
-                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                    />
-                  </View>
-                  {targetEditDebt.category === 'Mortgage' ? (
-                    <View style={[rowStyle, rowBorderStyle]}>
-                      <Text style={[ui.text, { color: palette.muted }]}>Escrow</Text>
-                      <TextInput
-                        placeholder={formatEditableMoney(0, currencyCode)}
-                        placeholderTextColor={palette.muted}
-                        keyboardType="decimal-pad"
-                        editable={canEdit}
-                        value={editEscrow}
-                        onChangeText={val => setEditEscrow(acceptMoneyEdit(editEscrow, val, currencyCode))}
-                        style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                      />
-                    </View>
-                  ) : null}
-                  <View style={rowStyle}>
-                    <Text style={[ui.text, { color: palette.muted }]}>Fees</Text>
-                    <TextInput
-                      placeholder={formatEditableMoney(0, currencyCode)}
-                      placeholderTextColor={palette.muted}
-                      keyboardType="decimal-pad"
-                      editable={canEdit}
-                      value={editFee}
-                      onChangeText={val => setEditFee(acceptMoneyEdit(editFee, val, currencyCode))}
-                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                    />
-                  </View>
-                </View>
-              ) : null}
-
-              <View style={groupedCardStyle}>
-                {editingTx.appliesToDate ? (
-                  <View style={[rowStyle, rowBorderStyle, { minHeight: 42 }]}>
-                    <Text style={[ui.text, { color: palette.muted }]}>Due cycle</Text>
-                    <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>
-                      {`Applied to ${editingTx.appliesToDate} Due`}
-                    </Text>
-                  </View>
-                ) : null}
-                <View style={[rowStyle, { minHeight: 42 }]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Source</Text>
-                  <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>
-                    {formatTransactionSourceLabel(editingTx.source)}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={[ui.row, { justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: palette.tint }]}>
-                <View>
-                  <Text style={[ui.small, { fontWeight: '700', color: appearanceColor('#76DCB9', isLight) }]}>BALANCE PREVIEW</Text>
-                  <Text style={[ui.text, { fontWeight: '600' }]}>{targetEditDebt ? targetEditDebt.name : 'Checking / Cashflow'}</Text>
-                </View>
-                {targetEditDebt ? (
-                  <Text style={[ui.value, { fontSize: 15 }]}>
-                    {formatCurrency(editCurrentBal, currencySymbol)} →{' '}
-                    <Text style={{ color: editAfterBal <= editCurrentBal ? appearanceColor('#76DCB9', isLight) : appearanceColor('#F08B78', isLight) }}>
-                      {formatCurrency(editAfterBal, currencySymbol)}
-                    </Text>
-                  </Text>
-                ) : (
-                  <Text style={ui.small}>$0 debt impact</Text>
-                )}
-              </View>
-            </View>
-
-            {editPicker !== null ? (
-              <AdaptiveModal visible transparent animationType="fade" onRequestClose={() => setEditPicker(null)}>
-                <TouchableWithoutFeedback onPress={() => setEditPicker(null)}>
-                  <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
-                    <TouchableWithoutFeedback>
-                      <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
-                          <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
-                            {editPicker === 'category' ? 'Select Transaction Category' : 'Select Target Debt Account'}
-                          </Text>
-                          <Pressable
-                            accessibilityRole="button"
-                            accessibilityLabel="Close picker"
-                            onPress={() => setEditPicker(null)}
-                            style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
-                          >
-                            <AppIcon name="close" size={20} color={palette.muted} />
-                          </Pressable>
-                        </View>
-                        <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
-                          {editPicker === 'category'
-                            ? categoryDropdownOptions.map(option => {
-                                const isSelected = option.value === editCategoryIdx;
-                                return (
-                                  <Pressable
-                                    key={String(option.value)}
-                                    accessibilityRole="button"
-                                    accessibilityState={{ selected: isSelected }}
-                                    onPress={() => { setEditCategoryIdx(option.value); setEditPicker(null); }}
-                                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                                  >
-                                    <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                      {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
-                                      <View style={{ flex: 1 }}>
-                                        <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                        {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
-                                      </View>
-                                    </View>
-                                    {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                                  </Pressable>
-                                );
-                              })
-                            : debtAccountDropdownOptions.map(option => {
-                                const isSelected = option.value === (editAccountId || debts[0]?.id || '');
-                                return (
-                                  <Pressable
-                                    key={String(option.value)}
-                                    accessibilityRole="button"
-                                    accessibilityState={{ selected: isSelected }}
-                                    onPress={() => { setEditAccountId(option.value); setEditPicker(null); }}
-                                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
-                                  >
-                                    <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                                      {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
-                                      <View style={{ flex: 1 }}>
-                                        <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
-                                        {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
-                                      </View>
-                                    </View>
-                                    {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
-                                  </Pressable>
-                                );
-                              })}
-                        </ScrollView>
-                      </View>
-                    </TouchableWithoutFeedback>
-                  </View>
-                </TouchableWithoutFeedback>
-              </AdaptiveModal>
-            ) : null}
-          </SheetModal>
-        );
-      })() : null}
+      {editingTx !== null ? (
+        <EditTransactionModal
+          key={editingTx.id}
+          tx={editingTx}
+          debts={debts}
+          debtById={debtById}
+          transactions={transactions}
+          loanBillPairs={loanBillPairs}
+          historicalBillIdsByDebtId={historicalBillIdsByDebtId}
+          mortgageEscrowByDebtId={mortgageEscrowByDebtId}
+          currencyCode={currencyCode}
+          currencySymbol={currencySymbol}
+          householdTimeZone={householdTimeZone}
+          canEdit={canEdit}
+          deletingTx={deletingTx}
+          categoryDropdownOptions={categoryDropdownOptions}
+          debtAccountDropdownOptions={debtAccountDropdownOptions}
+          onClose={() => { setEditingTx(null); onEditDismiss?.(); }}
+          onSave={handleUpdateTxRecord}
+          onRequestDelete={target => setConfirmDeleteTx(target)}
+        />
+      ) : null}
 
       {confirmDeleteTx !== null ? (
         <ConfirmModal
@@ -2671,6 +1814,1154 @@ export function TransactionsScreen({
           }}
         />
       ) : null}
+      <ObligationPaySheet
+        target={payTarget}
+        onClose={() => setPayTarget(null)}
+        transactions={transactions}
+        debts={debts}
+        mortgageEscrowByDebtId={mortgageEscrowByDebtId}
+        loanBillPairs={loanBillPairs}
+        historicalBillIdsByDebtId={historicalBillIdsByDebtId}
+        householdTimeZone={householdTimeZone}
+        currencyCode={currencyCode}
+        currencySymbol={currencySymbol}
+        onRecordBillPayment={onRecordBillPayment}
+        onAddTransaction={onAddTransaction}
+        onUpdateTransaction={onUpdateTransaction}
+        readOnly={!canEdit}
+      />
     </FinancialScreen>
   );
-}
+});
+
+const AddTransactionModal = memo(function AddTransactionModal({
+  debts,
+  transactions,
+  loanBillPairs,
+  mortgageEscrowByDebtId,
+  obligationSchedules,
+  historicalBillIdsByDebtId,
+  recentPurchase,
+  todayStr,
+  currentMonthStr,
+  currencyCode,
+  currencySymbol,
+  householdTimeZone,
+  categoryDropdownOptions,
+  debtAccountDropdownOptions,
+  onSave,
+  onClose,
+}: {
+  debts: DebtItem[];
+  transactions: readonly LedgerTransaction[];
+  loanBillPairs: Readonly<Record<string, string>>;
+  mortgageEscrowByDebtId: Record<string, number>;
+  obligationSchedules?: ObligationSchedules;
+  historicalBillIdsByDebtId: Readonly<Record<string, readonly string[]>>;
+  recentPurchase?: LedgerTransaction;
+  todayStr: DateOnly;
+  currentMonthStr: string;
+  currencyCode: string;
+  currencySymbol: string;
+  householdTimeZone?: string;
+  categoryDropdownOptions: readonly DropdownOption<number>[];
+  debtAccountDropdownOptions: readonly DropdownOption<string>[];
+  onSave: (tx: LedgerTransaction) => Promise<void>;
+  onClose: () => void;
+}) {
+  const { isLight, palette, ctaBg, ctaFg } = useNativeAppearance();
+  const insets = useSafeAreaInsets();
+  const [newPayee, setNewPayee] = useState('');
+  const [newNote, setNewNote] = useState('');
+  const [newAmount, setNewAmount] = useState('');
+  const [newCategoryIdx, setNewCategoryIdx] = useState(0);
+  const [newAccountId, setNewAccountId] = useState(debts[0]?.id ?? '');
+  const [newDate, setNewDate] = useState(() => currentHouseholdDate(householdTimeZone));
+  const [newAppliesToDate, setNewAppliesToDate] = useState('');
+  const [newPrincipal, setNewPrincipal] = useState('');
+  const [newInterest, setNewInterest] = useState('');
+  const [newEscrow, setNewEscrow] = useState('');
+  const [newFee, setNewFee] = useState('');
+  const [savingTx, setSavingTx] = useState(false);
+  const savingTxRef = useRef(false);
+  const [showMoreDetails, setShowMoreDetails] = useState(false);
+  const [addPicker, setAddPicker] = useState<'category' | 'debt' | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [datePickerMonth, setDatePickerMonth] = useState(() => currentHouseholdMonth(householdTimeZone));
+  const [formError, setFormError] = useState('');
+
+  const selectedDebtId = newAccountId || debts[0]?.id || '';
+  const selectedDebt = useMemo(() => debts.find(debt => debt.id === selectedDebtId), [debts, selectedDebtId]);
+  const dueCycleOptions = useMemo<readonly DropdownOption<string>[]>(() => {
+    if (!showMoreDetails) {
+      return [];
+    }
+    const selectedDebtSchedule = selectedDebt
+      ? resolveEffectiveDebtSchedule(obligationSchedules, selectedDebt.id, historicalBillIdsByDebtId?.[selectedDebt.id])
+      : undefined;
+    return [
+      { value: '', label: 'No due cycle', subtitle: 'Leave this payment unassigned to a due date' },
+      ...(selectedDebt
+        ? [0, 1, 2].flatMap(monthOffset => {
+            let month = currentMonthStr;
+            for (let offset = 0; offset < monthOffset; offset++) month = getNextMonthString(month);
+            const cycle = selectedDebtSchedule ? getObligationCycle(selectedDebtSchedule, month) : undefined;
+            if (cycle === null || (!selectedDebtSchedule && !selectedDebt.dueDay)) return [];
+            const date = cycle?.dueDate ?? resolveRecurringBillDate(month, selectedDebt.dueDay!);
+            const label = formatHistoryDate(date);
+            return { value: date, label: `Due ${label}`, subtitle: selectedDebt.dueDay ? `Apply this payment to ${label}` : `Link this payment to the ${label} cycle` };
+          })
+        : []),
+    ];
+  }, [showMoreDetails, selectedDebt, obligationSchedules, historicalBillIdsByDebtId, currentMonthStr]);
+
+  const handleSaveTransaction = async () => {
+    if (savingTx || savingTxRef.current) return;
+    setFormError('');
+    const parsedNewAmount = parseMoneyInput(newAmount, currencyCode, false);
+    if (!newAmount || parsedNewAmount === null || !Number.isFinite(parsedNewAmount) || parsedNewAmount <= 0) {
+      setFormError('Please enter a valid amount');
+      return;
+    }
+
+    const catOption = CATEGORY_CHOICES[newCategoryIdx];
+    let accountId: string | null = null;
+
+    if (catOption.isDebt) {
+      if (!selectedDebt) {
+        setFormError(debts.length === 0 ? 'Please add a debt account on the Debt tab first' : 'Select a debt account for this transaction');
+        return;
+      }
+      accountId = selectedDebt.id;
+    }
+
+    savingTxRef.current = true;
+    setSavingTx(true);
+    try {
+      const actualDate = parseDateOnly(newDate.trim());
+      const appliesToDate = newAppliesToDate.trim() ? parseDateOnly(newAppliesToDate.trim()) : null;
+      const moneyAmount = parseMoney(newAmount, currencyCode);
+
+      const principalAmount = newPrincipal.trim() ? parseMoney(newPrincipal.trim(), currencyCode) : null;
+      const interestAmount = newInterest.trim() ? parseMoney(newInterest.trim(), currencyCode) : null;
+      const escrowAmount = newEscrow.trim() ? parseMoney(newEscrow.trim(), currencyCode) : null;
+      const feeAmount = newFee.trim() ? parseMoney(newFee.trim(), currencyCode) : null;
+
+      const tx: LedgerTransaction = {
+        id: `tx:${Crypto.randomUUID()}`,
+        accountId,
+        date: actualDate,
+        appliesToDate,
+        amount: moneyAmount,
+        category: catOption.category,
+        payee: newPayee.trim() || (catOption.category === 'payment' ? 'Payment' : catOption.label),
+        memo: newNote.trim() || undefined,
+        source: 'manual',
+        reconciled: false,
+        createdAt: new Date().toISOString(),
+        deletedAt: null,
+        principalAmount,
+        interestAmount,
+        escrowAmount,
+        feeAmount,
+      };
+
+      await onSave(tx);
+    } catch (e) {
+      const msg = (e as Error).message || 'Unable to save transaction';
+      setFormError(msg);
+      if (msg.includes('conflict') || msg.includes('Conflict')) {
+        Alert.alert('Save Conflict', msg);
+      }
+    } finally {
+      savingTxRef.current = false;
+      setSavingTx(false);
+    }
+  };
+
+  return (
+    <SheetModal
+      visible
+      onClose={onClose}
+      contentSized
+      closeLabel="Dismiss form"
+      footer={(
+        <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 18, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface }}>
+          <Pressable
+            accessibilityRole="button"
+            disabled={savingTx}
+            onPress={() => { void handleSaveTransaction(); }}
+            style={[ui.button, { minHeight: 46, backgroundColor: ctaBg, borderColor: ctaBg, justifyContent: 'center', opacity: savingTx ? 0.65 : 1 }]}
+          >
+            <Text style={[ui.buttonText, { color: ctaFg, fontSize: 15, fontWeight: '700', textAlign: 'center' }]}>
+              {savingTx ? 'Saving\u2026' : 'Save Transaction'}
+            </Text>
+          </Pressable>
+        </View>
+      )}
+    >
+      <View style={{ gap: 10 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+          <View style={{ width: 44, height: 44 }} accessible={false} />
+          <Text accessibilityRole="header" style={{ color: palette.text, fontSize: 17, fontWeight: '700', textAlign: 'center', flex: 1 }}>Add transaction</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss form"
+            hitSlop={10}
+            onPress={onClose}
+            style={{ width: 44, height: 44, borderRadius: 18, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <AppIcon name="close" size={20} color={palette.muted} />
+          </Pressable>
+        </View>
+
+        {!!formError && (
+          <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight) }]}>{formError}</Text>
+        )}
+
+        <View style={{ borderRadius: 16, borderWidth: 1, borderColor: palette.border, backgroundColor: isLight ? palette.surface : palette.raised, paddingHorizontal: 15, overflow: 'hidden' }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Transaction category: ${CATEGORY_CHOICES[newCategoryIdx].label}`}
+            accessibilityHint="Required"
+            onPress={() => setAddPicker('category')}
+            style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
+          >
+            <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction category *</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
+              <Text numberOfLines={1} style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>{CATEGORY_CHOICES[newCategoryIdx].label}</Text>
+              <AppIcon name="chevronDown" size={14} color={palette.muted} />
+            </View>
+          </Pressable>
+
+          {CATEGORY_CHOICES[newCategoryIdx].isDebt && debts.length > 0 ? (
+            <>
+              <View style={{ height: 1, backgroundColor: palette.border }} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Debt account: ${selectedDebt?.name ?? 'Select account'}`}
+                accessibilityHint="Required"
+                onPress={() => setAddPicker('debt')}
+                style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
+              >
+                <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Debt account *</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
+                  <Text numberOfLines={1} style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>{selectedDebt?.name ?? 'Select account'}</Text>
+                  <AppIcon name="chevronDown" size={14} color={palette.muted} />
+                </View>
+              </Pressable>
+            </>
+          ) : null}
+
+          <View style={{ height: 1, backgroundColor: palette.border }} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Transaction date: ${newDate}`}
+            accessibilityHint="Required"
+            onPress={() => { setDatePickerMonth(newDate.slice(0, 7)); setShowDatePicker(true); }}
+            style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 8 }}
+          >
+            <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Transaction date *</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+              <Text style={{ color: palette.brand, fontSize: 15, fontWeight: '600' }}>
+                {formatHistoryDate(newDate)}
+              </Text>
+              <AppIcon name="calendar" size={16} color={palette.brand} />
+            </View>
+          </Pressable>
+
+          <View style={{ height: 1, backgroundColor: palette.border }} />
+          <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 2 }}>
+            <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Amount *</Text>
+            <TextInput
+              accessibilityLabel="Transaction amount"
+              accessibilityHint="Required"
+              placeholder={formatEditableMoney(0, currencyCode)}
+              placeholderTextColor={palette.muted}
+              keyboardType="decimal-pad"
+              textAlign="right"
+              value={newAmount}
+              onChangeText={val => setNewAmount(prev => acceptMoneyEdit(prev, val, currencyCode))}
+              style={{ flex: 1, minWidth: 96, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 15, fontWeight: '600' }}
+            />
+          </View>
+        </View>
+
+        {CATEGORY_CHOICES[newCategoryIdx].isDebt && selectedDebt && newAmount ? (() => {
+          try {
+            const amount = parseMoney(newAmount, currencyCode);
+            if (moneyToMajor(amount) <= 0) return null;
+            const preview: LedgerTransaction = {
+              id: 'preview', accountId: selectedDebt.id, date: todayStr,
+              appliesToDate: null, amount, category: CATEGORY_CHOICES[newCategoryIdx].category,
+              payee: '', memo: '', source: 'manual', reconciled: false, createdAt: '', deletedAt: null,
+              principalAmount: newPrincipal.trim() ? parseMoney(newPrincipal, currencyCode) : null,
+              interestAmount: newInterest.trim() ? parseMoney(newInterest, currencyCode) : null,
+              escrowAmount: newEscrow.trim() ? parseMoney(newEscrow, currencyCode) : null,
+              feeAmount: newFee.trim() ? parseMoney(newFee, currencyCode) : null,
+            };
+            const after = addMoney(moneyFromMajor(selectedDebt.balance, currencyCode), calculateTransactionBalanceDelta(preview, selectedDebt.category));
+            return <View style={[ui.row, { justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: palette.tint }]}>
+              <View><Text style={ui.small}>Current balance</Text><Text style={ui.heading}>{formatCurrency(selectedDebt.balance, currencySymbol)}</Text></View>
+              <AppIcon name="chevronRight" size={16} color={palette.brand} />
+              <View style={{ alignItems: 'flex-end' }}><Text style={ui.small}>After saving</Text><Text style={ui.heading}>{formatCurrency(moneyToMajor(after), currencySymbol)}</Text></View>
+            </View>;
+          } catch { return null; }
+        })() : null}
+
+        {recentPurchase?.accountId && CATEGORY_CHOICES[newCategoryIdx].category === 'purchase' ? (
+          <Pressable accessibilityRole="button" onPress={() => setNewAccountId(recentPurchase.accountId ?? '')} style={{ alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', paddingHorizontal: 10, borderRadius: 12, backgroundColor: palette.tint }}>
+            <Text style={{ color: palette.brand, fontSize: 13 }}>Use recent purchase account ? {debts.find(debt => debt.id === recentPurchase.accountId)?.name}</Text>
+          </Pressable>
+        ) : null}
+        <View style={{ gap: 8 }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showMoreDetails }}
+            onPress={() => setShowMoreDetails(prev => !prev)}
+            style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}
+          >
+            <Text style={{ color: palette.brand, fontSize: 14, fontWeight: '600' }}>More details</Text>
+            <AppIcon name={showMoreDetails ? 'chevronDown' : 'chevronRight'} size={15} color={palette.brand} />
+          </Pressable>
+
+          {showMoreDetails ? (
+            <View style={{ gap: 10 }}>
+              <Text style={ui.small}>Payee (optional)</Text>
+              <TextInput accessibilityLabel="Payee" placeholder="Payee" placeholderTextColor={palette.muted} value={newPayee} onChangeText={setNewPayee} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
+              <Text style={ui.small}>Note (optional)</Text>
+              <TextInput accessibilityLabel="Note" placeholder="Note" placeholderTextColor={palette.muted} value={newNote} onChangeText={setNewNote} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
+              {CATEGORY_CHOICES[newCategoryIdx].category === 'payment' ? <>
+                <SelectDropdown
+                  label="Applies to payment cycle (optional)"
+                  sheetTitle="Choose Payment Due Cycle"
+                  value={newAppliesToDate}
+                  options={dueCycleOptions}
+                  onSelect={setNewAppliesToDate}
+                  placeholder="Choose a due cycle"
+                />
+
+                {selectedDebt && (selectedDebt.category === 'Mortgage' || selectedDebt.category === 'Auto loan') ? (
+                  <View style={{ padding: 12, backgroundColor: palette.raised, borderRadius: 12, borderWidth: 1, borderColor: palette.border, gap: 6 }}>
+                    <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
+                      <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700', flex: 1 }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+                      {canSuggestLoanPaymentSplit(selectedDebt, selectedDebt.category === 'Mortgage' ? mortgageEscrowByDebtId[selectedDebt.id] : undefined) ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Suggest principal and interest split"
+                          onPress={() => {
+                            const parsedAmt = parseMoneyInput(newAmount, currencyCode, false);
+                            const targetAmount = parsedAmt !== null && parsedAmt > 0 ? parsedAmt : selectedDebt.minimumPayment;
+                            if (!Number.isFinite(targetAmount) || targetAmount <= 0) return;
+                            if (parsedAmt === null || parsedAmt <= 0) {
+                              setNewAmount(formatEditableMoney(targetAmount, currencyCode));
+                            }
+                            let suggestion;
+                            if (selectedDebt.category === 'Auto loan') {
+                              let paymentDate = todayStr;
+                              try {
+                                paymentDate = parseDateOnly(newDate.trim());
+                              } catch {
+                                // Fallback to today if draft date is invalid.
+                              }
+                              const linkedBillIds = Array.from(new Set([
+                                loanBillPairs[selectedDebt.id],
+                                ...(historicalBillIdsByDebtId[selectedDebt.id] ?? []),
+                              ].filter((value): value is string => Boolean(value))));
+                              suggestion = resolveAutoLoanSplitSuggestion({
+                                debt: selectedDebt,
+                                paymentAmount: targetAmount,
+                                paymentDate,
+                                transactions,
+                                currencyCode,
+                                linkedBillIds,
+                              }).suggestion;
+                            } else {
+                              suggestion = suggestLoanPaymentSplit({
+                                balance: selectedDebt.balance,
+                                aprPercent: selectedDebt.apr,
+                                paymentAmount: targetAmount,
+                                escrowAmount: selectedDebt.category === 'Mortgage' ? mortgageEscrowByDebtId[selectedDebt.id] : undefined,
+                                currencyCode,
+                              });
+                            }
+                            setNewPrincipal(formatEditableMoney(suggestion.principal, currencyCode));
+                            setNewInterest(formatEditableMoney(suggestion.interest, currencyCode));
+                            if (selectedDebt.category === 'Mortgage') {
+                              setNewEscrow(formatEditableMoney(suggestion.escrow, currencyCode));
+                            }
+                          }}
+                          style={{
+                            paddingHorizontal: 10,
+                            paddingVertical: 5,
+                            borderRadius: 999,
+                            borderWidth: 1,
+                            borderColor: palette.brand,
+                            backgroundColor: palette.tint,
+                          }}
+                        >
+                          <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Suggest P/I split</Text>
+                        </Pressable>
+                      ) : selectedDebt.category === 'Mortgage' && mortgageEscrowByDebtId[selectedDebt.id] === undefined ? (
+                        <Text style={[ui.small, { color: palette.muted }]}>Set monthly escrow to suggest split</Text>
+                      ) : null}
+                    </View>
+                    <Text style={[ui.small, { color: palette.muted, marginBottom: 4 }]}>
+                      If unknown, full payment is recorded in cashflow while loan principal remains unchanged.
+                    </Text>
+                    <Text style={ui.small}>Principal reduction</Text>
+                    <TextInput
+                      placeholder={formatEditableMoney(0, currencyCode)}
+                      placeholderTextColor={palette.muted}
+                      keyboardType="decimal-pad"
+                      value={newPrincipal}
+                      onChangeText={val => setNewPrincipal(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                      style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
+                    />
+                    <Text style={[ui.small, { marginTop: 4 }]}>Interest paid</Text>
+                    <TextInput
+                      placeholder={formatEditableMoney(0, currencyCode)}
+                      placeholderTextColor={palette.muted}
+                      keyboardType="decimal-pad"
+                      value={newInterest}
+                      onChangeText={val => setNewInterest(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                      style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
+                    />
+                    {selectedDebt.category === 'Mortgage' ? (
+                      <>
+                        <Text style={[ui.small, { marginTop: 4 }]}>Escrow (taxes & insurance)</Text>
+                        <TextInput
+                          placeholder={formatEditableMoney(0, currencyCode)}
+                          placeholderTextColor={palette.muted}
+                          keyboardType="decimal-pad"
+                          value={newEscrow}
+                          onChangeText={val => setNewEscrow(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                          style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
+                        />
+                      </>
+                    ) : null}
+                    <Text style={[ui.small, { marginTop: 4 }]}>Fees</Text>
+                    <TextInput
+                      placeholder={formatEditableMoney(0, currencyCode)}
+                      placeholderTextColor={palette.muted}
+                      keyboardType="decimal-pad"
+                      value={newFee}
+                      onChangeText={val => setNewFee(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                      style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]}
+                    />
+                  </View>
+                ) : null}
+              </> : null}
+            </View>
+          ) : null}
+        </View>
+
+        {addPicker !== null ? (
+          <AdaptiveModal visible transparent animationType="fade" onRequestClose={() => setAddPicker(null)}>
+            <TouchableWithoutFeedback onPress={() => setAddPicker(null)}>
+              <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
+                <TouchableWithoutFeedback>
+                  <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
+                      <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
+                        {addPicker === 'category' ? 'Select Transaction Category' : 'Select Target Debt Account'}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Close picker"
+                        onPress={() => setAddPicker(null)}
+                        style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        <AppIcon name="close" size={20} color={palette.muted} />
+                      </Pressable>
+                    </View>
+                    <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
+                      {addPicker === 'category'
+                        ? categoryDropdownOptions.map(option => {
+                            const isSelected = option.value === newCategoryIdx;
+                            return (
+                              <Pressable
+                                key={String(option.value)}
+                                accessibilityRole="button"
+                                accessibilityState={{ selected: isSelected }}
+                                onPress={() => { setNewCategoryIdx(option.value); setAddPicker(null); }}
+                                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                              >
+                                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                  {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                                    {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
+                                  </View>
+                                </View>
+                                {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                              </Pressable>
+                            );
+                          })
+                        : debtAccountDropdownOptions.map(option => {
+                            const isSelected = option.value === selectedDebtId;
+                            return (
+                              <Pressable
+                                key={String(option.value)}
+                                accessibilityRole="button"
+                                accessibilityState={{ selected: isSelected }}
+                                onPress={() => { setNewAccountId(option.value); setNewAppliesToDate(''); setAddPicker(null); }}
+                                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                              >
+                                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                  {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                                    {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
+                                  </View>
+                                </View>
+                                {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                              </Pressable>
+                            );
+                          })}
+                    </ScrollView>
+                  </View>
+                </TouchableWithoutFeedback>
+              </View>
+            </TouchableWithoutFeedback>
+          </AdaptiveModal>
+        ) : null}
+
+        {showDatePicker ? (
+          <AdaptiveModal visible transparent animationType="slide" onRequestClose={() => setShowDatePicker(false)}>
+            <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
+              <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' }}>
+                <TouchableWithoutFeedback>
+                  <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, padding: 18, paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
+                    <View style={[ui.row, { justifyContent: 'space-between', marginBottom: 16 }]}>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Previous month" onPress={() => {
+                        const [year, month] = datePickerMonth.split('-').map(Number);
+                        const previous = new Date(year, month - 2, 1);
+                        setDatePickerMonth(`${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`);
+                      }} style={ui.button}><AppIcon name="chevronLeft" size={17} color={palette.brand} /></Pressable>
+                      <Text style={ui.heading}>{LONG_MONTH_FMT.format(new Date(`${datePickerMonth}-01T12:00:00`))}</Text>
+                      <Pressable accessibilityRole="button" accessibilityLabel="Next month" onPress={() => {
+                        const [year, month] = datePickerMonth.split('-').map(Number);
+                        const next = new Date(year, month, 1);
+                        setDatePickerMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`);
+                      }} style={ui.button}><AppIcon name="chevronRight" size={17} color={palette.brand} /></Pressable>
+                    </View>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 }}>
+                      {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => <Text key={`${day}-${index}`} style={[ui.small, { width: '13%', textAlign: 'center' }]}>{day}</Text>)}
+                    </View>
+                    {(() => {
+                      const [year, month] = datePickerMonth.split('-').map(Number);
+                      const offset = new Date(year, month - 1, 1).getDay();
+                      const count = new Date(year, month, 0).getDate();
+                      const cells: (number | null)[] = [...Array(offset).fill(null), ...Array.from({ length: count }, (_, index) => index + 1)];
+                      while (cells.length % 7) cells.push(null);
+                      const weeks = Array.from({ length: cells.length / 7 }, (_, index) => cells.slice(index * 7, index * 7 + 7));
+                      return weeks.map((week, weekIndex) => (
+                        <View key={`week-${weekIndex}`} style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 5 }}>
+                          {week.map((day, dayIndex) => {
+                            if (day === null) return <View key={`blank-${weekIndex}-${dayIndex}`} style={{ width: '13%', height: 42 }} />;
+                            const value = `${datePickerMonth}-${String(day).padStart(2, '0')}`;
+                            const selected = value === newDate;
+                            return (
+                              <Pressable key={value} accessibilityRole="button" accessibilityLabel={value} accessibilityState={{ selected }}
+                                onPress={() => { setNewDate(parseDateOnly(value)); setShowDatePicker(false); }}
+                                style={{ width: '13%', height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: selected ? palette.brand : 'transparent' }}>
+                                <Text style={[ui.text, selected ? { color: palette.onBrand, fontWeight: '700' } : null]}>{day}</Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      ));
+                    })()}
+                    <Pressable accessibilityRole="button" onPress={() => { setNewDate(todayStr); setShowDatePicker(false); }} style={[ui.button, { alignSelf: 'center', marginTop: 8 }]}>
+                      <Text style={[ui.buttonText, { color: palette.brand, textAlign: 'center' }]}>Today</Text>
+                    </Pressable>
+                  </View>
+                </TouchableWithoutFeedback>
+              </View>
+            </TouchableWithoutFeedback>
+          </AdaptiveModal>
+        ) : null}
+      </View>
+    </SheetModal>
+  );
+});
+
+const EditTransactionModal = memo(function EditTransactionModal({
+  tx,
+  debts,
+  debtById,
+  transactions,
+  loanBillPairs,
+  historicalBillIdsByDebtId,
+  mortgageEscrowByDebtId,
+  currencyCode,
+  currencySymbol,
+  householdTimeZone,
+  canEdit,
+  deletingTx,
+  categoryDropdownOptions,
+  debtAccountDropdownOptions,
+  onClose,
+  onSave,
+  onRequestDelete,
+}: {
+  tx: LedgerTransaction;
+  debts: DebtItem[];
+  debtById: Map<string, DebtItem>;
+  transactions: readonly LedgerTransaction[];
+  loanBillPairs: Readonly<Record<string, string>>;
+  historicalBillIdsByDebtId: Readonly<Record<string, readonly string[]>>;
+  mortgageEscrowByDebtId: Record<string, number>;
+  currencyCode: string;
+  currencySymbol: string;
+  householdTimeZone?: string;
+  canEdit: boolean;
+  deletingTx: boolean;
+  categoryDropdownOptions: readonly DropdownOption<number>[];
+  debtAccountDropdownOptions: readonly DropdownOption<string>[];
+  onClose: () => void;
+  onSave: (updatedTx: LedgerTransaction) => Promise<void>;
+  onRequestDelete: (tx: LedgerTransaction) => void;
+}) {
+  const { isLight, palette, ctaBg, ctaFg } = useNativeAppearance();
+  const insets = useSafeAreaInsets();
+  const isPaymentLike = tx.category === 'payment' && (!tx.payee || /^Payment to\b/i.test(tx.payee));
+  const isBalanceAdj = tx.category === 'credit_adjustment' || tx.category === 'balance_adjustment' || /^Reconciliation credit adjustment$/i.test(tx.payee || '');
+  const [editPayee, setEditPayee] = useState(isPaymentLike ? 'Payment' : isBalanceAdj ? 'Balance Adjustment' : tx.payee);
+  const [editAmount, setEditAmount] = useState(formatEditableMoney(moneyToMajor(tx.amount), currencyCode));
+  const [editCategoryIdx, setEditCategoryIdx] = useState(() => CATEGORY_CHOICES.findIndex(item => item.category === tx.category));
+  const [editAccountId, setEditAccountId] = useState<string | null>(tx.accountId);
+  const [editDate, setEditDate] = useState<string>(tx.date);
+  const [editMemo, setEditMemo] = useState(tx.memo ?? '');
+  const [editPrincipal, setEditPrincipal] = useState(tx.principalAmount ? formatEditableMoney(moneyToMajor(tx.principalAmount), currencyCode) : '');
+  const [editInterest, setEditInterest] = useState(tx.interestAmount ? formatEditableMoney(moneyToMajor(tx.interestAmount), currencyCode) : '');
+  const [editEscrow, setEditEscrow] = useState(tx.escrowAmount ? formatEditableMoney(moneyToMajor(tx.escrowAmount), currencyCode) : '');
+  const [editFee, setEditFee] = useState(tx.feeAmount ? formatEditableMoney(moneyToMajor(tx.feeAmount), currencyCode) : '');
+  const [editPicker, setEditPicker] = useState<'category' | 'debt' | null>(null);
+  const [editError, setEditError] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const savingEditRef = useRef(false);
+
+  const editCatOption = editCategoryIdx >= 0
+    ? CATEGORY_CHOICES[editCategoryIdx]
+    : {
+        label: formatTransactionCategoryLabel(tx.category),
+        category: tx.category,
+        isDebt: tx.category !== 'debit_bill' && tx.category !== 'debit_spending',
+      };
+  const targetEditDebt = editAccountId ? debtById.get(editAccountId) : undefined;
+  const editCurrentBal = targetEditDebt ? targetEditDebt.balance : 0;
+  let editAfterBal = editCurrentBal;
+
+  if (targetEditDebt) {
+    const curMoney = moneyFromMajor(targetEditDebt.balance, currencyCode);
+    let previewMoney = curMoney;
+
+    if (tx.accountId === targetEditDebt.id && tx.deletedAt === null) {
+      const origDelta = calculateTransactionBalanceDelta(tx, targetEditDebt.category);
+      previewMoney = addMoney(previewMoney, makeMoney(currencyCode, -origDelta.minorUnits));
+    }
+
+    const parsedAmt = parseFloat(editAmount);
+    if (!Number.isNaN(parsedAmt) && parsedAmt > 0 && editCatOption.isDebt) {
+      try {
+        const newAmtMoney = parseMoney(editAmount, currencyCode);
+        const pAmt = editPrincipal.trim() ? parseMoney(editPrincipal.trim(), currencyCode) : null;
+        const iAmt = editInterest.trim() ? parseMoney(editInterest.trim(), currencyCode) : null;
+        const eAmt = editEscrow.trim() ? parseMoney(editEscrow.trim(), currencyCode) : null;
+        const fAmt = editFee.trim() ? parseMoney(editFee.trim(), currencyCode) : null;
+
+        const candidateTx: LedgerTransaction = {
+          ...tx,
+          accountId: targetEditDebt.id,
+          amount: newAmtMoney,
+          category: editCatOption.category,
+          principalAmount: pAmt,
+          interestAmount: iAmt,
+          escrowAmount: eAmt,
+          feeAmount: fAmt,
+        };
+        const newDelta = calculateTransactionBalanceDelta(candidateTx, targetEditDebt.category);
+        previewMoney = addMoney(previewMoney, newDelta);
+      } catch {
+        // invalid input ignored for preview
+      }
+    }
+
+    editAfterBal = moneyToMajor(previewMoney);
+  }
+
+  const handleSaveEdit = async () => {
+    if (!canEdit || savingEdit || savingEditRef.current || deletingTx) return;
+    setEditError('');
+    const parsedAmt = parseMoneyInput(editAmount, currencyCode, false);
+    if (parsedAmt === null || !Number.isFinite(parsedAmt) || parsedAmt <= 0) {
+      setEditError('Please enter a valid amount');
+      return;
+    }
+    if (editCatOption.isDebt && !editAccountId) {
+      setEditError(debts.length === 0 ? 'Please add a debt account on the Debt tab first' : 'Select a debt account for this transaction');
+      return;
+    }
+
+    savingEditRef.current = true;
+    setSavingEdit(true);
+    try {
+      const actualDate = parseDateOnly(editDate.trim());
+      const moneyAmount = parseMoney(editAmount, currencyCode);
+      const principalAmount = editPrincipal.trim() ? parseMoney(editPrincipal.trim(), currencyCode) : null;
+      const interestAmount = editInterest.trim() ? parseMoney(editInterest.trim(), currencyCode) : null;
+      const escrowAmount = editEscrow.trim() ? parseMoney(editEscrow.trim(), currencyCode) : null;
+      const feeAmount = editFee.trim() ? parseMoney(editFee.trim(), currencyCode) : null;
+
+      const updatedTx: LedgerTransaction = {
+        ...tx,
+        accountId: editCatOption.isDebt ? editAccountId : null,
+        date: actualDate,
+        amount: moneyAmount,
+        category: editCatOption.category,
+        payee: editPayee.trim() || (editCatOption.category === 'payment' ? 'Payment' : editCatOption.label),
+        memo: editMemo.trim() || undefined,
+        principalAmount,
+        interestAmount,
+        escrowAmount,
+        feeAmount,
+      };
+
+      await onSave(updatedTx);
+    } catch (e) {
+      const msg = (e as Error).message || 'Unable to save transaction';
+      setEditError(msg);
+      if (msg.includes('conflict') || msg.includes('Conflict')) {
+        Alert.alert('Update Conflict', msg);
+      }
+    } finally {
+      savingEditRef.current = false;
+      setSavingEdit(false);
+    }
+  };
+
+  const groupedCardStyle = {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: isLight ? palette.surface : palette.raised,
+    paddingHorizontal: 14,
+    overflow: 'hidden' as const,
+  };
+  const rowStyle = {
+    minHeight: 48,
+    paddingVertical: 6,
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
+    gap: 12,
+  };
+  const rowBorderStyle = { borderBottomWidth: 1, borderBottomColor: palette.border };
+  const inlineInputStyle = {
+    minHeight: 40,
+    paddingVertical: 6,
+    paddingHorizontal: 0,
+    textAlign: 'right' as const,
+    color: palette.text,
+    fontSize: 15,
+    fontWeight: '600' as const,
+  };
+
+  return (
+    <SheetModal
+      visible
+      onClose={onClose}
+      contentSized
+      closeLabel="Close edit form"
+      footer={canEdit ? (
+        <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 16, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface, gap: 8 }}>
+          {!!editError ? (
+            <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight), textAlign: 'center' }]}>
+              {editError}
+            </Text>
+          ) : null}
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Delete transaction"
+              disabled={deletingTx || savingEdit}
+              onPress={() => onRequestDelete(tx)}
+              style={{
+                flex: 1,
+                minHeight: 46,
+                borderRadius: 12,
+                backgroundColor: isLight ? '#FEE2E2' : '#3D2520',
+                borderColor: isLight ? '#FCA5A5' : '#8B4F42',
+                borderWidth: 1,
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: deletingTx || savingEdit ? 0.65 : 1,
+              }}
+            >
+              <Text style={{ color: isLight ? '#DC2626' : '#F08B78', fontSize: 15, fontWeight: '700' }}>
+                {deletingTx ? 'Deleting…' : 'Delete'}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Save Changes"
+              disabled={savingEdit || deletingTx}
+              onPress={() => void handleSaveEdit()}
+              style={{
+                flex: 1.5,
+                minHeight: 46,
+                borderRadius: 12,
+                backgroundColor: ctaBg,
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: savingEdit || deletingTx ? 0.65 : 1,
+              }}
+            >
+              <Text style={{ color: ctaFg, fontSize: 15, fontWeight: '700' }}>
+                {savingEdit ? 'Saving…' : 'Save'}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : undefined}
+    >
+      <View style={{ gap: 12 }}>
+        <SheetFormHeader
+          centered
+          title={canEdit ? 'Edit Transaction' : 'Transaction Details'}
+          onClose={onClose}
+          closeLabel="Close edit form"
+        />
+
+        {!canEdit ? (
+          <View style={{ backgroundColor: palette.tint, borderColor: palette.border, borderWidth: 1, borderRadius: 10, padding: 10 }}>
+            <Text style={ui.small}>View-only access: only household members or owners can edit or delete transactions.</Text>
+          </View>
+        ) : null}
+
+        {tx.isPending ? (
+          <View style={{ backgroundColor: isLight ? '#FFF3CD' : '#2D281E', borderColor: appearanceColor('#F5C563', isLight), borderWidth: 1, borderRadius: 10, padding: 10 }}>
+            <Text style={[ui.small, { color: appearanceColor('#F5C563', isLight), fontWeight: '700' }]}>Pending Confirmation</Text>
+            <Text style={[ui.small, { color: isLight ? '#8A6200' : '#D4C9A8' }]}>This transaction has not yet been confirmed by the server.</Text>
+          </View>
+        ) : null}
+
+        <View style={groupedCardStyle}>
+          <Pressable
+            accessibilityRole="button"
+            disabled={!canEdit}
+            accessibilityLabel={`Category: ${editCatOption.label}`}
+            onPress={() => setEditPicker('category')}
+            style={[rowStyle, rowBorderStyle]}
+          >
+            <Text style={[ui.text, { color: palette.muted }]}>Category *</Text>
+            <View style={[ui.row, { gap: 6, alignItems: 'center', flexShrink: 1 }]}>
+              <Text numberOfLines={1} style={[ui.text, { color: palette.text, fontWeight: '600' }]}>{editCatOption.label}</Text>
+              {canEdit ? <AppIcon name="chevronDown" size={14} color={palette.muted} /> : null}
+            </View>
+          </Pressable>
+
+          {editCatOption.isDebt && debts.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={!canEdit}
+              accessibilityLabel={`Debt account: ${targetEditDebt?.name ?? 'Select account'}`}
+              onPress={() => setEditPicker('debt')}
+              style={[rowStyle, rowBorderStyle]}
+            >
+              <Text style={[ui.text, { color: palette.muted }]}>Debt account *</Text>
+              <View style={[ui.row, { gap: 6, alignItems: 'center', flexShrink: 1 }]}>
+                <Text numberOfLines={1} style={[ui.text, { color: palette.text, fontWeight: '600' }]}>{targetEditDebt?.name ?? debts[0]?.name ?? 'Select account'}</Text>
+                {canEdit ? <AppIcon name="chevronDown" size={14} color={palette.muted} /> : null}
+              </View>
+            </Pressable>
+          ) : null}
+
+          <View style={[rowStyle, rowBorderStyle]}>
+            <Text style={[ui.text, { color: palette.muted }]}>Payee</Text>
+            <TextInput
+              accessibilityLabel="Payee or description"
+              placeholder="e.g. Target, Payment"
+              placeholderTextColor={palette.muted}
+              editable={canEdit}
+              value={editPayee}
+              onChangeText={setEditPayee}
+              style={[inlineInputStyle, { flex: 1, minWidth: 110 }]}
+            />
+          </View>
+
+          <View style={[rowStyle, rowBorderStyle]}>
+            <Text style={[ui.text, { color: palette.muted }]}>Amount *</Text>
+            <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+              <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+              <TextInput
+                accessibilityLabel="Transaction amount"
+                accessibilityHint="Required"
+                placeholder={formatEditableMoney(0, currencyCode)}
+                placeholderTextColor={palette.muted}
+                keyboardType="decimal-pad"
+                editable={canEdit}
+                value={editAmount}
+                onChangeText={val => setEditAmount(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+              />
+            </View>
+          </View>
+
+          <View style={[rowStyle, rowBorderStyle]}>
+            <Text style={[ui.text, { color: palette.muted }]}>Date *</Text>
+            <TextInput
+              accessibilityLabel="Transaction date"
+              accessibilityHint="Required"
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={palette.muted}
+              editable={canEdit}
+              value={editDate}
+              onChangeText={setEditDate}
+              style={[inlineInputStyle, { flex: 1, minWidth: 110 }]}
+            />
+          </View>
+
+          <View style={rowStyle}>
+            <Text style={[ui.text, { color: palette.muted }]}>Note</Text>
+            <TextInput
+              accessibilityLabel="Transaction note"
+              placeholder="Optional note"
+              placeholderTextColor={palette.muted}
+              editable={canEdit}
+              value={editMemo}
+              onChangeText={setEditMemo}
+              style={[inlineInputStyle, { flex: 1, minWidth: 110, fontWeight: '500' }]}
+            />
+          </View>
+        </View>
+
+        {editCatOption.category === 'payment' && targetEditDebt && (targetEditDebt.category === 'Mortgage' || targetEditDebt.category === 'Auto loan') ? (
+          <View style={groupedCardStyle}>
+            <View style={[rowStyle, rowBorderStyle, { minHeight: 42 }]}>
+              <Text style={[ui.small, { color: appearanceColor('#76DCB9', isLight), fontWeight: '700', flex: 1 }]}>PAYMENT BREAKDOWN (OPTIONAL)</Text>
+              {canEdit && canSuggestLoanPaymentSplit(targetEditDebt, targetEditDebt.category === 'Mortgage' ? mortgageEscrowByDebtId[targetEditDebt.id] : undefined) ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Suggest principal and interest split"
+                  onPress={() => {
+                    const parsedAmt = parseMoneyInput(editAmount, currencyCode, false);
+                    const targetAmount = parsedAmt !== null && parsedAmt > 0 ? parsedAmt : targetEditDebt.minimumPayment;
+                    if (!Number.isFinite(targetAmount) || targetAmount <= 0) return;
+                    if (parsedAmt === null || parsedAmt <= 0) {
+                      setEditAmount(formatEditableMoney(targetAmount, currencyCode));
+                    }
+                    let suggestion;
+                    if (targetEditDebt.category === 'Auto loan') {
+                      let paymentDate = tx.date;
+                      try {
+                        paymentDate = parseDateOnly(editDate.trim());
+                      } catch {
+                        paymentDate = householdTimeZone ? currentHouseholdDate(householdTimeZone) : tx.date;
+                      }
+                      const linkedBillIds = Array.from(new Set([
+                        loanBillPairs[targetEditDebt.id],
+                        ...(historicalBillIdsByDebtId[targetEditDebt.id] ?? []),
+                      ].filter((value): value is string => Boolean(value))));
+                      suggestion = resolveAutoLoanSplitSuggestion({
+                        debt: targetEditDebt,
+                        paymentAmount: targetAmount,
+                        paymentDate,
+                        transactions,
+                        currencyCode,
+                        excludeTransactionId: tx.id,
+                        linkedBillIds,
+                      }).suggestion;
+                    } else {
+                      suggestion = suggestLoanPaymentSplit({
+                        balance: targetEditDebt.balance,
+                        aprPercent: targetEditDebt.apr,
+                        paymentAmount: targetAmount,
+                        escrowAmount: targetEditDebt.category === 'Mortgage' ? mortgageEscrowByDebtId[targetEditDebt.id] : undefined,
+                        currencyCode,
+                      });
+                    }
+                    setEditPrincipal(formatEditableMoney(suggestion.principal, currencyCode));
+                    setEditInterest(formatEditableMoney(suggestion.interest, currencyCode));
+                    if (targetEditDebt.category === 'Mortgage') {
+                      setEditEscrow(formatEditableMoney(suggestion.escrow, currencyCode));
+                    }
+                  }}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: palette.brand,
+                    backgroundColor: palette.tint,
+                  }}
+                >
+                  <Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Suggest P/I split</Text>
+                </Pressable>
+              ) : canEdit && targetEditDebt.category === 'Mortgage' && mortgageEscrowByDebtId[targetEditDebt.id] === undefined ? (
+                <Text style={[ui.small, { color: palette.muted }]}>Set monthly escrow to suggest split</Text>
+              ) : null}
+            </View>
+            <View style={[rowStyle, rowBorderStyle]}>
+              <Text style={[ui.text, { color: palette.muted }]}>Principal</Text>
+              <TextInput
+                placeholder={formatEditableMoney(0, currencyCode)}
+                placeholderTextColor={palette.muted}
+                keyboardType="decimal-pad"
+                editable={canEdit}
+                value={editPrincipal}
+                onChangeText={val => setEditPrincipal(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+              />
+            </View>
+            <View style={[rowStyle, rowBorderStyle]}>
+              <Text style={[ui.text, { color: palette.muted }]}>Interest</Text>
+              <TextInput
+                placeholder={formatEditableMoney(0, currencyCode)}
+                placeholderTextColor={palette.muted}
+                keyboardType="decimal-pad"
+                editable={canEdit}
+                value={editInterest}
+                onChangeText={val => setEditInterest(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+              />
+            </View>
+            {targetEditDebt.category === 'Mortgage' ? (
+              <View style={[rowStyle, rowBorderStyle]}>
+                <Text style={[ui.text, { color: palette.muted }]}>Escrow</Text>
+                <TextInput
+                  placeholder={formatEditableMoney(0, currencyCode)}
+                  placeholderTextColor={palette.muted}
+                  keyboardType="decimal-pad"
+                  editable={canEdit}
+                  value={editEscrow}
+                  onChangeText={val => setEditEscrow(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                  style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                />
+              </View>
+            ) : null}
+            <View style={rowStyle}>
+              <Text style={[ui.text, { color: palette.muted }]}>Fees</Text>
+              <TextInput
+                placeholder={formatEditableMoney(0, currencyCode)}
+                placeholderTextColor={palette.muted}
+                keyboardType="decimal-pad"
+                editable={canEdit}
+                value={editFee}
+                onChangeText={val => setEditFee(prev => acceptMoneyEdit(prev, val, currencyCode))}
+                style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+              />
+            </View>
+          </View>
+        ) : null}
+
+        <View style={groupedCardStyle}>
+          {tx.appliesToDate ? (
+            <View style={[rowStyle, rowBorderStyle, { minHeight: 42 }]}>
+              <Text style={[ui.text, { color: palette.muted }]}>Due cycle</Text>
+              <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>
+                {`Applied to ${tx.appliesToDate} Due`}
+              </Text>
+            </View>
+          ) : null}
+          <View style={[rowStyle, { minHeight: 42 }]}>
+            <Text style={[ui.text, { color: palette.muted }]}>Source</Text>
+            <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>
+              {formatTransactionSourceLabel(tx.source, tx.memo)}
+            </Text>
+          </View>
+        </View>
+
+        <View style={[ui.row, { justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: palette.tint }]}>
+          <View>
+            <Text style={[ui.small, { fontWeight: '700', color: appearanceColor('#76DCB9', isLight) }]}>BALANCE PREVIEW</Text>
+            <Text style={[ui.text, { fontWeight: '600' }]}>{targetEditDebt ? targetEditDebt.name : 'Checking / Cashflow'}</Text>
+          </View>
+          {targetEditDebt ? (
+            <Text style={[ui.value, { fontSize: 15 }]}>
+              {formatCurrency(editCurrentBal, currencySymbol)} →{' '}
+              <Text style={{ color: editAfterBal <= editCurrentBal ? appearanceColor('#76DCB9', isLight) : appearanceColor('#F08B78', isLight) }}>
+                {formatCurrency(editAfterBal, currencySymbol)}
+              </Text>
+            </Text>
+          ) : (
+            <Text style={ui.small}>$0 debt impact</Text>
+          )}
+        </View>
+      </View>
+
+      {editPicker !== null ? (
+        <AdaptiveModal visible transparent animationType="fade" onRequestClose={() => setEditPicker(null)}>
+          <TouchableWithoutFeedback onPress={() => setEditPicker(null)}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', justifyContent: 'flex-end' }}>
+              <TouchableWithoutFeedback>
+                <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '75%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
+                    <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
+                      {editPicker === 'category' ? 'Select Transaction Category' : 'Select Target Debt Account'}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Close picker"
+                      onPress={() => setEditPicker(null)}
+                      style={{ width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      <AppIcon name="close" size={20} color={palette.muted} />
+                    </Pressable>
+                  </View>
+                  <ScrollView style={{ maxHeight: 400 }} contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }} keyboardShouldPersistTaps="handled">
+                    {editPicker === 'category'
+                      ? categoryDropdownOptions.map(option => {
+                          const isSelected = option.value === editCategoryIdx;
+                          return (
+                            <Pressable
+                              key={String(option.value)}
+                              accessibilityRole="button"
+                              accessibilityState={{ selected: isSelected }}
+                              onPress={() => { setEditCategoryIdx(option.value); setEditPicker(null); }}
+                              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                            >
+                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
+                                <View style={{ flex: 1 }}>
+                                  <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                                  {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
+                                </View>
+                              </View>
+                              {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                            </Pressable>
+                          );
+                        })
+                      : debtAccountDropdownOptions.map(option => {
+                          const isSelected = option.value === (editAccountId || debts[0]?.id || '');
+                          return (
+                            <Pressable
+                              key={String(option.value)}
+                              accessibilityRole="button"
+                              accessibilityState={{ selected: isSelected }}
+                              onPress={() => { setEditAccountId(option.value); setEditPicker(null); }}
+                              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, marginVertical: 3, ...(isSelected ? { backgroundColor: palette.tint, borderWidth: 1, borderColor: palette.border } : {}) }}
+                            >
+                              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                                {option.icon ? <AppIcon name={option.icon} size={20} color={isSelected ? palette.brand : palette.muted} style={{ marginRight: 12 }} /> : null}
+                                <View style={{ flex: 1 }}>
+                                  <Text style={{ fontSize: 15, fontWeight: isSelected ? '700' : '500', color: isSelected ? palette.brand : palette.text }}>{option.label}</Text>
+                                  {option.subtitle ? <Text style={{ fontSize: 12, color: palette.muted, marginTop: 2 }}>{option.subtitle}</Text> : null}
+                                </View>
+                              </View>
+                              {isSelected ? <AppIcon name="check" size={20} color={palette.brand} /> : null}
+                            </Pressable>
+                          );
+                        })}
+                  </ScrollView>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </AdaptiveModal>
+      ) : null}
+    </SheetModal>
+  );
+});

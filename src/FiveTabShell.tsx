@@ -1,14 +1,57 @@
-import { useEffect, useState, type ReactNode, type ComponentProps } from 'react';
+import { createContext, useCallback, useMemo, useState, type ReactNode, type ComponentProps } from 'react';
 import { StyleSheet } from 'react-native';
 import { NativeAppearanceProvider, Pressable, Text, View, useNativeAppearance } from './components/NativeAppearance';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NAVIGATION_TAB_ICONS, type NavigationTabIconName } from './components/AppIcon';
 import { NavigationIcon } from './components/NavigationIcon';
-import { DEFAULT_TAB_UI_PREFERENCES, TabShellContext, type RefreshFeedback, type TabUiPreferences } from './components/TabShellContext';
+import {
+  AccountsUiContext,
+  BudgetUiContext,
+  DEFAULT_TAB_UI_PREFERENCES,
+  ProgressUiContext,
+  TabRefreshContext,
+  TabShellContext,
+  TabUiActionsContext,
+  TransactionsUiContext,
+  type AccountsUiPreferences,
+  type BudgetUiPreferences,
+  type ProgressUiPreferences,
+  type RefreshFeedback,
+  type TabUiPreferences,
+  type TransactionsUiPreferences,
+} from './components/TabShellContext';
 import { bottomInsetPadding } from './components/bottom-inset';
 import { InspireBackdrop } from './components/InspireArt';
 
-export function FiveTabShell({
+type Navigate = (tab: NavigationTabIconName, section?: string) => void;
+export const HomePaneVisibilityContext = createContext(false);
+
+type FiveTabShellProps = {
+  home: (navigate: Navigate) => ReactNode;
+  debt: ReactNode | ((selectedDebtId: string | null, clearTarget: () => void, section: string, resetKey: number, navigate: Navigate) => ReactNode);
+  transactions: ReactNode | ((selectedTransactionId: string | null, clearTarget: () => void, section: string) => ReactNode);
+  budget: (navigate: Navigate) => ReactNode;
+  progress: ReactNode | ((navigate: Navigate) => ReactNode);
+  settings?: ReactNode | ((onClose: () => void) => ReactNode);
+  settingsVisible?: boolean;
+  onCloseSettings?: () => void;
+  userId?: string;
+  overlay?: ReactNode;
+  onRefresh?: () => Promise<void>;
+  refreshing?: boolean;
+  refreshFeedback?: RefreshFeedback;
+  settingsSaveWarning?: { checking: boolean; onCheck: () => void };
+};
+
+export function FiveTabShell(props: FiveTabShellProps) {
+  return (
+    <NativeAppearanceProvider userId={props.userId}>
+      <FiveTabShellContent {...props} />
+    </NativeAppearanceProvider>
+  );
+}
+
+function FiveTabShellContent({
   home,
   debt,
   transactions,
@@ -17,27 +60,9 @@ export function FiveTabShell({
   settings,
   settingsVisible = false,
   onCloseSettings,
-  onHomeVisibilityChange,
-  userId,
   overlay,
   onRefresh, refreshing = false, refreshFeedback, settingsSaveWarning,
-}: {
-  home: (navigate: (tab: NavigationTabIconName, section?: string) => void) => ReactNode;
-  debt: ReactNode | ((selectedDebtId: string | null, clearTarget: () => void, section: string, resetKey: number, navigate: (tab: NavigationTabIconName, section?: string) => void) => ReactNode);
-  transactions: ReactNode | ((selectedTransactionId: string | null, clearTarget: () => void, section: string) => ReactNode);
-  budget: (navigate: (tab: NavigationTabIconName, section?: string) => void) => ReactNode;
-  progress: ReactNode | ((navigate: (tab: NavigationTabIconName, section?: string) => void) => ReactNode);
-  settings?: ReactNode | ((onClose: () => void) => ReactNode);
-  settingsVisible?: boolean;
-  onCloseSettings?: () => void;
-  onHomeVisibilityChange?: (visible: boolean) => void;
-  userId?: string;
-  overlay?: ReactNode;
-  onRefresh?: () => Promise<void>;
-  refreshing?: boolean;
-  refreshFeedback?: RefreshFeedback;
-  settingsSaveWarning?: { checking: boolean; onCheck: () => void };
-}) {
+}: FiveTabShellProps) {
   const [selectedTab, setSelectedTab] = useState<NavigationTabIconName>('home');
   const [visitedTabs, setVisitedTabs] = useState<Partial<Record<NavigationTabIconName, boolean>>>({ home: true });
   const [targetTransactionId, setTargetTransactionId] = useState<string | null>(null);
@@ -49,19 +74,15 @@ export function FiveTabShell({
 
   const showSettings = Boolean(settingsVisible && settings);
 
-  const activateTab = (tab: NavigationTabIconName) => {
+  const activateTab = useCallback((tab: NavigationTabIconName) => {
     setVisitedTabs(current => (current[tab] ? current : { ...current, [tab]: true }));
     setSelectedTab(tab);
-  };
+  }, []);
 
-  useEffect(() => {
-    onHomeVisibilityChange?.(selectedTab === 'home' && !showSettings);
-  }, [selectedTab, showSettings, onHomeVisibilityChange]);
-
-  const navigate = (tab: NavigationTabIconName, section?: string) => {
+  const navigate = useCallback<Navigate>((tab, section) => {
     if (tab === 'debt' && section === 'Scheduled') {
       setTransactionSection('Scheduled');
-      setUiPreferences(current => ({ ...current, transactionsSection: 'Scheduled' }));
+      setUiPreferences(current => current.transactionsSection === 'Scheduled' ? current : { ...current, transactionsSection: 'Scheduled' });
       setTargetTransactionId(null);
       activateTab('transactions');
       return;
@@ -69,18 +90,88 @@ export function FiveTabShell({
     if (tab === 'debt') {
       const nextDebtSection = section === 'Strategy' ? 'Strategy' : 'Accounts';
       setDebtSection(section === 'Strategy' ? 'Strategy' : 'Cards & Loans');
-      setUiPreferences(current => ({ ...current, debtSection: nextDebtSection }));
+      setUiPreferences(current => current.debtSection === nextDebtSection ? current : { ...current, debtSection: nextDebtSection });
       setTargetDebtId(section && section !== 'Strategy' && section !== 'Scheduled' && section !== 'Cards & Loans' && section !== 'Accounts' ? section : null);
       setDebtResetKey(value => value + 1);
     }
     if (tab === 'transactions') {
       const nextTxSection = section === 'Scheduled' ? 'Scheduled' : 'History';
       setTransactionSection(nextTxSection);
-      setUiPreferences(current => ({ ...current, transactionsSection: nextTxSection }));
+      setUiPreferences(current => current.transactionsSection === nextTxSection ? current : { ...current, transactionsSection: nextTxSection });
       setTargetTransactionId(section && !['History', 'Scheduled'].includes(section) ? section : null);
     }
     activateTab(tab);
-  };
+  }, [activateTab]);
+
+  const clearDebtTarget = useCallback(() => setTargetDebtId(null), []);
+  const clearTransactionTarget = useCallback(() => setTargetTransactionId(null), []);
+  const shell = useMemo(
+    () => ({ onRefresh, refreshing, refreshFeedback, uiPreferences, setUiPreferences }),
+    [onRefresh, refreshing, refreshFeedback, uiPreferences],
+  );
+  const refreshValue = useMemo(
+    () => ({ onRefresh, refreshing, refreshFeedback }),
+    [onRefresh, refreshing, refreshFeedback],
+  );
+  const accountsUi = useMemo<AccountsUiPreferences>(
+    () => ({
+      accountsCategory: uiPreferences.accountsCategory,
+      accountsSearchQuery: uiPreferences.accountsSearchQuery,
+      accountsSearchOpen: uiPreferences.accountsSearchOpen,
+      accountsSort: uiPreferences.accountsSort,
+      debtSection: uiPreferences.debtSection,
+    }),
+    [
+      uiPreferences.accountsCategory,
+      uiPreferences.accountsSearchQuery,
+      uiPreferences.accountsSearchOpen,
+      uiPreferences.accountsSort,
+      uiPreferences.debtSection,
+    ],
+  );
+  const transactionsUi = useMemo<TransactionsUiPreferences>(
+    () => ({
+      transactionsSection: uiPreferences.transactionsSection,
+      transactionsDateFilter: uiPreferences.transactionsDateFilter,
+      transactionsTypeFilters: uiPreferences.transactionsTypeFilters,
+      transactionsAccountGroups: uiPreferences.transactionsAccountGroups,
+      transactionsAccountIds: uiPreferences.transactionsAccountIds,
+      transactionsSearchQuery: uiPreferences.transactionsSearchQuery,
+      transactionsSearchOpen: uiPreferences.transactionsSearchOpen,
+      transactionsSort: uiPreferences.transactionsSort,
+    }),
+    [
+      uiPreferences.transactionsSection,
+      uiPreferences.transactionsDateFilter,
+      uiPreferences.transactionsTypeFilters,
+      uiPreferences.transactionsAccountGroups,
+      uiPreferences.transactionsAccountIds,
+      uiPreferences.transactionsSearchQuery,
+      uiPreferences.transactionsSearchOpen,
+      uiPreferences.transactionsSort,
+    ],
+  );
+  const budgetUi = useMemo<BudgetUiPreferences>(
+    () => ({ budgetSection: uiPreferences.budgetSection }),
+    [uiPreferences.budgetSection],
+  );
+  const progressUi = useMemo<ProgressUiPreferences>(
+    () => ({ progressSection: uiPreferences.progressSection }),
+    [uiPreferences.progressSection],
+  );
+  const homeVisible = selectedTab === 'home' && !showSettings;
+  const homeContent = useMemo(() => home(navigate), [home, navigate]);
+  // Keep mounted panes on the same React elements when only the selected tab changes.
+  const debtContent = useMemo(() => visitedTabs.debt
+    ? typeof debt === 'function' ? debt(targetDebtId, clearDebtTarget, debtSection, debtResetKey, navigate) : debt
+    : null, [visitedTabs.debt, debt, targetDebtId, clearDebtTarget, debtSection, debtResetKey, navigate]);
+  const transactionsContent = useMemo(() => visitedTabs.transactions
+    ? typeof transactions === 'function' ? transactions(targetTransactionId, clearTransactionTarget, transactionSection) : transactions
+    : null, [visitedTabs.transactions, transactions, targetTransactionId, clearTransactionTarget, transactionSection]);
+  const budgetContent = useMemo(() => visitedTabs.budget ? budget(navigate) : null, [visitedTabs.budget, budget, navigate]);
+  const progressContent = useMemo(() => visitedTabs.progress
+    ? typeof progress === 'function' ? progress(navigate) : progress
+    : null, [visitedTabs.progress, progress, navigate]);
 
   const renderTabPane = (tab: NavigationTabIconName, content: ReactNode) => {
     const active = selectedTab === tab;
@@ -98,16 +189,25 @@ export function FiveTabShell({
   };
 
   return (
-    <NativeAppearanceProvider userId={userId}>
-    <TabShellContext.Provider value={{ tab: selectedTab, onRefresh, refreshing, refreshFeedback, uiPreferences, setUiPreferences }}>
+    <TabShellContext.Provider value={shell}>
+    <TabRefreshContext.Provider value={refreshValue}>
+    <TabUiActionsContext.Provider value={setUiPreferences}>
+    <AccountsUiContext.Provider value={accountsUi}>
+    <TransactionsUiContext.Provider value={transactionsUi}>
+    <BudgetUiContext.Provider value={budgetUi}>
+    <ProgressUiContext.Provider value={progressUi}>
     <ThemedSafeArea edges={['top', 'left', 'right']}>
       {settingsSaveWarning ? <SettingsSaveWarning checking={settingsSaveWarning.checking} onCheck={settingsSaveWarning.onCheck} /> : null}
       <View style={[styles.content, showSettings && styles.hidden]}>
-        {visitedTabs.home ? renderTabPane('home', home(navigate)) : null}
-        {visitedTabs.debt ? renderTabPane('debt', typeof debt === 'function' ? debt(targetDebtId, () => setTargetDebtId(null), debtSection, debtResetKey, navigate) : debt) : null}
-        {visitedTabs.transactions ? renderTabPane('transactions', typeof transactions === 'function' ? transactions(targetTransactionId, () => setTargetTransactionId(null), transactionSection) : transactions) : null}
-        {visitedTabs.budget ? renderTabPane('budget', budget(navigate)) : null}
-        {visitedTabs.progress ? renderTabPane('progress', typeof progress === 'function' ? progress(navigate) : progress) : null}
+        {renderTabPane('home', (
+          <HomePaneVisibilityContext.Provider value={homeVisible}>
+            {homeContent}
+          </HomePaneVisibilityContext.Provider>
+        ))}
+        {visitedTabs.debt ? renderTabPane('debt', debtContent) : null}
+        {visitedTabs.transactions ? renderTabPane('transactions', transactionsContent) : null}
+        {visitedTabs.budget ? renderTabPane('budget', budgetContent) : null}
+        {visitedTabs.progress ? renderTabPane('progress', progressContent) : null}
       </View>
       <TabBar
         selectedTab={selectedTab}
@@ -127,8 +227,13 @@ export function FiveTabShell({
       ) : null}
       {overlay}
     </ThemedSafeArea>
+    </ProgressUiContext.Provider>
+    </BudgetUiContext.Provider>
+    </TransactionsUiContext.Provider>
+    </AccountsUiContext.Provider>
+    </TabUiActionsContext.Provider>
+    </TabRefreshContext.Provider>
     </TabShellContext.Provider>
-    </NativeAppearanceProvider>
   );
 }
 

@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { AmountText } from '../components/AmountText';
 import { Alert, Keyboard, StyleSheet, TouchableWithoutFeedback, useWindowDimensions } from 'react-native';
-import Svg, { Circle, Path } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
 import { Pressable, ScrollView, Text, TextInput, View, appearanceColor, useNativeAppearance } from '../components/NativeAppearance';
 import { getAppearancePalette } from '../components/appearance-theme';
 import * as Crypto from 'expo-crypto';
@@ -10,7 +10,7 @@ import { Card, FinancialScreen, MultiBar, ui } from '../components/FinancialScre
 import { SelectDropdown, type DropdownOption } from '../components/SelectDropdown';
 import { DueDayPickerModal, formatShortDate } from '../components/DatePickerModal';
 import { AdaptiveModal } from '../components/ModalOverlay';
-import { DEFAULT_TAB_UI_PREFERENCES, useTabShell, type TabUiPreferences } from '../components/TabShellContext';
+import { DEFAULT_TAB_UI_PREFERENCES, useBudgetUiPreferences, useSetTabUiPreferences, type TabUiPreferences } from '../components/TabShellContext';
 import {
   calculateTotalMonthlyIncome,
   acceptMoneyEdit,
@@ -48,7 +48,6 @@ import {
 import { obligationScheduleKey, type ObligationSchedule, type ObligationScheduleKey } from '../finance/obligation-schedule';
 import { SheetFormHeader, SheetModal } from '../components/SheetModal';
 import { ConfirmModal } from '../components/ConfirmModal';
-import { InformationButton } from '../components/InformationSheet';
 import { InspireCornerArt, InspireQuote } from '../components/InspireArt';
 import {
   auditLegacyLoanPairings,
@@ -105,13 +104,21 @@ const LOAN_CATEGORIES: readonly DropdownOption<'Mortgage' | 'Auto loan'>[] = [
   { value: 'Auto loan', label: 'Auto loan', icon: 'auto' },
 ];
 
-export function BudgetScreen({
+const SHORT_MONTH_YEAR_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric' });
+const DEVICE_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const EMPTY_TRANSACTIONS: LedgerTransaction[] = [];
+const EMPTY_BILLS: RecurringBill[] = [];
+const EMPTY_HISTORICAL_BILL_IDS: Readonly<Record<string, readonly string[]>> = {};
+
+export const BudgetScreen = memo(BudgetScreenInner);
+
+function BudgetScreenInner({
   data,
   currencySymbol,
   currencyCode,
   householdTimeZone,
-  transactions = [],
-  recurringBills = [],
+  transactions = EMPTY_TRANSACTIONS,
+  recurringBills = EMPTY_BILLS,
   onSaveIncome,
   onSaveLoanBillPairings,
   onSaveRecurringBillCategoryLabels,
@@ -124,7 +131,7 @@ export function BudgetScreen({
   onAddLoan,
   onEditLoan,
   onOpenPurchase,
-  historicalBillIdsByDebtId = {},
+  historicalBillIdsByDebtId = EMPTY_HISTORICAL_BILL_IDS,
   error: saveError,
   canEdit = true,
 }: {
@@ -158,13 +165,14 @@ export function BudgetScreen({
 }) {
   const insets = useSafeAreaInsets();
   const { isLight, isInspire, themeStyle, accentColor, palette, ctaBg, ctaFg } = useNativeAppearance();
-  const { width: windowWidth, fontScale } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
   const { cardBorder: cardBorderColor, posInk: posInkColor, neg: negColor } = palette;
   const graphOutlineColor = isInspire ? palette.graphOutline : undefined;
-  const shell = useTabShell();
+  const budgetUi = useBudgetUiPreferences();
+  const shellSetUiPreferences = useSetTabUiPreferences();
   const [localUiPreferences, setLocalUiPreferences] = useState<TabUiPreferences>(DEFAULT_TAB_UI_PREFERENCES);
-  const uiPreferences = shell?.uiPreferences ?? localUiPreferences;
-  const setUiPreferences = shell?.setUiPreferences ?? setLocalUiPreferences;
+  const uiPreferences = budgetUi ?? localUiPreferences;
+  const setUiPreferences = shellSetUiPreferences ?? setLocalUiPreferences;
   const budgetSection = uiPreferences.budgetSection;
   const setBudgetSection = (value: 'Budget' | 'Expense') =>
     setUiPreferences(current => (current.budgetSection === value ? current : { ...current, budgetSection: value }));
@@ -220,7 +228,7 @@ export function BudgetScreen({
     draftBillPaidTodayRef.current = {};
   };
 
-  const incomes = [
+  const incomes = useMemo(() => [
     {
       id: 'primary',
       name: data.primaryIncomeName ?? 'Income',
@@ -229,97 +237,179 @@ export function BudgetScreen({
       grossAmount: data.primaryGrossIncomeAmount,
     },
     ...data.additionalIncomes,
-  ];
-  const budgetDebtAccounts = data.debts.filter(debt => !isPaidOffAccountArchived(debt, data.archivedPaidOffDebtIds));
-  const pairingAudit = auditLegacyLoanPairings({
-    debts: data.debts,
-    recurringBills,
-    pairings: data.loanBillPairingByDebtId,
-    currencyCode,
-  });
-  const budgetUnresolved = hasUnresolvedLegacyLoanLinks(pairingAudit);
-  const divergentDebtIds = [...pairingAudit.divergentLinks.map(link => link.debt.id), ...pairingAudit.invalidLinks.map(item => item.debtId)];
-  const unifiedLoans = selectUnifiedBudgetLoans(budgetDebtAccounts, data.archivedPaidOffDebtIds, divergentDebtIds);
-  const excludedBillIdSet = new Set(unifiedExcludedBillIds(
-    data.loanBillPairingByDebtId,
-    recurringBills,
-    data.debts,
-    data.archivedPaidOffDebtIds,
-    divergentDebtIds,
-  ));
-  const activeRecurringBills = recurringBills.filter(bill => !excludedBillIdSet.has(bill.id));
-  const debtCommitment = selectDebtPlanCommitment(budgetDebtAccounts, data.extraMonthlyPayment, currencyCode);
-  const annualFeeReserve = summarizeAnnualCardFeesMonthly(budgetDebtAccounts, currencyCode);
-  const cardNames = new Map(data.debts.filter(debt => debt.category === 'Credit card').map(debt => [debt.id, debt.name]));
-  const allDebtById = new Map(data.debts.map(debt => [debt.id, debt]));
-  const allBillById = new Map(recurringBills.map(bill => [bill.id, bill]));
-  const paidObligations = budgetSection === 'Budget' && expandedCategory !== null
-    ? getPaidMonthlyObligationKeys({
-        month: spendingMonth,
-        debts: [...unifiedLoans, ...debtCommitment.accounts],
-        recurringBills: activeRecurringBills,
-        transactions,
-        currencyCode,
-        schedules: data.obligationSchedules,
-        historicalBillIdsByDebtId,
-      })
-    : null;
-
-  const income = calculateTotalMonthlyIncome(
+  ], [
+    data.primaryIncomeName,
     data.primaryIncomeAmount,
     data.primaryPayFrequency,
+    data.primaryGrossIncomeAmount,
     data.additionalIncomes,
+  ]);
+  const budgetDebtAccounts = useMemo(
+    () => data.debts.filter(debt => !isPaidOffAccountArchived(debt, data.archivedPaidOffDebtIds)),
+    [data.debts, data.archivedPaidOffDebtIds],
+  );
+  const {
+    pairingAudit,
+    budgetUnresolved,
+    unifiedLoans,
+    activeRecurringBills,
+  } = useMemo(() => {
+    const nextPairingAudit = auditLegacyLoanPairings({
+      debts: data.debts,
+      recurringBills,
+      pairings: data.loanBillPairingByDebtId,
+      currencyCode,
+    });
+    const nextBudgetUnresolved = hasUnresolvedLegacyLoanLinks(nextPairingAudit);
+    const divergentDebtIds = [
+      ...nextPairingAudit.divergentLinks.map(link => link.debt.id),
+      ...nextPairingAudit.invalidLinks.map(item => item.debtId),
+    ];
+    const nextUnifiedLoans = selectUnifiedBudgetLoans(budgetDebtAccounts, data.archivedPaidOffDebtIds, divergentDebtIds);
+    const excludedBillIdSet = new Set(unifiedExcludedBillIds(
+      data.loanBillPairingByDebtId,
+      recurringBills,
+      data.debts,
+      data.archivedPaidOffDebtIds,
+      divergentDebtIds,
+    ));
+    const nextActiveRecurringBills = recurringBills.filter(bill => !excludedBillIdSet.has(bill.id));
+    return {
+      pairingAudit: nextPairingAudit,
+      budgetUnresolved: nextBudgetUnresolved,
+      unifiedLoans: nextUnifiedLoans,
+      activeRecurringBills: nextActiveRecurringBills,
+    };
+  }, [data.debts, recurringBills, data.loanBillPairingByDebtId, data.archivedPaidOffDebtIds, budgetDebtAccounts, currencyCode]);
+  const debtCommitment = useMemo(
+    () => selectDebtPlanCommitment(budgetDebtAccounts, data.extraMonthlyPayment, currencyCode),
+    [budgetDebtAccounts, data.extraMonthlyPayment, currencyCode],
+  );
+  const annualFeeReserve = useMemo(
+    () => summarizeAnnualCardFeesMonthly(budgetDebtAccounts, currencyCode),
+    [budgetDebtAccounts, currencyCode],
+  );
+  const { cardNames, allDebtById, allBillById } = useMemo(() => ({
+    cardNames: new Map(data.debts.filter(debt => debt.category === 'Credit card').map(debt => [debt.id, debt.name])),
+    allDebtById: new Map(data.debts.map(debt => [debt.id, debt])),
+    allBillById: new Map(recurringBills.map(bill => [bill.id, bill])),
+  }), [data.debts, recurringBills]);
+  const paidObligations = useMemo(() => (
+    budgetSection === 'Budget' && expandedCategory !== null
+      ? getPaidMonthlyObligationKeys({
+          month: spendingMonth,
+          debts: [...unifiedLoans, ...debtCommitment.accounts],
+          recurringBills: activeRecurringBills,
+          transactions,
+          currencyCode,
+          schedules: data.obligationSchedules,
+          historicalBillIdsByDebtId,
+        })
+      : null
+  ), [
+    budgetSection,
+    expandedCategory,
+    spendingMonth,
+    unifiedLoans,
+    debtCommitment.accounts,
+    activeRecurringBills,
+    transactions,
     currencyCode,
+    data.obligationSchedules,
+    historicalBillIdsByDebtId,
+  ]);
+
+  const income = useMemo(
+    () => calculateTotalMonthlyIncome(
+      data.primaryIncomeAmount,
+      data.primaryPayFrequency,
+      data.additionalIncomes,
+      currencyCode,
+    ),
+    [data.primaryIncomeAmount, data.primaryPayFrequency, data.additionalIncomes, currencyCode],
   );
 
-  const effectiveTimeZone =
-    householdTimeZone ||
-    Intl.DateTimeFormat().resolvedOptions().timeZone ||
-    'UTC';
+  const effectiveTimeZone = householdTimeZone || DEVICE_TIME_ZONE;
 
   const todayStr = currentHouseholdDate(effectiveTimeZone);
-  const cashflow = calculateMonthlyCashflow({
-    monthlyIncome: income,
-    recurringBills: activeRecurringBills,
-    monthlyDebtPlanPayment: debtCommitment.total,
-    unifiedLoans,
-    currencyCode,
-  });
-  const expenseSummary = summarizeMonthlyExpenses({
-    month: spendingMonth,
-    currencyCode,
-    transactions,
-    debts: data.debts,
-    recurringBills,
-    loanBillPairingByDebtId: data.loanBillPairingByDebtId,
-    customCategoryLabelsByBillId: data.recurringBillCategoryLabelByBillId,
-    archivedPaidOffDebtIds: data.archivedPaidOffDebtIds,
-    historicalBillIdsByDebtId,
-  });
+  const cashflow = useMemo(
+    () => calculateMonthlyCashflow({
+      monthlyIncome: income,
+      recurringBills: activeRecurringBills,
+      monthlyDebtPlanPayment: debtCommitment.total,
+      unifiedLoans,
+      currencyCode,
+    }),
+    [income, activeRecurringBills, debtCommitment.total, unifiedLoans, currencyCode],
+  );
+  const expenseSummary = useMemo(
+    () => summarizeMonthlyExpenses({
+      month: spendingMonth,
+      currencyCode,
+      transactions,
+      debts: data.debts,
+      recurringBills,
+      loanBillPairingByDebtId: data.loanBillPairingByDebtId,
+      customCategoryLabelsByBillId: data.recurringBillCategoryLabelByBillId,
+      archivedPaidOffDebtIds: data.archivedPaidOffDebtIds,
+      historicalBillIdsByDebtId,
+    }),
+    [
+      spendingMonth,
+      currencyCode,
+      transactions,
+      data.debts,
+      recurringBills,
+      data.loanBillPairingByDebtId,
+      data.recurringBillCategoryLabelByBillId,
+      data.archivedPaidOffDebtIds,
+      historicalBillIdsByDebtId,
+    ],
+  );
 
-  const categoryBreakdown = calculateCategoryBreakdown({
-    recurringBills: activeRecurringBills,
-    customCategoryLabelsByBillId: data.recurringBillCategoryLabelByBillId,
-    monthlyIncome: income,
-    monthlyDebtPlanPayment: debtCommitment.total,
-    unifiedLoans,
-    currencyCode,
-    debtAccountCount: debtCommitment.accounts.length,
-  });
+  const categoryBreakdown = useMemo(
+    () => calculateCategoryBreakdown({
+      recurringBills: activeRecurringBills,
+      customCategoryLabelsByBillId: data.recurringBillCategoryLabelByBillId,
+      monthlyIncome: income,
+      monthlyDebtPlanPayment: debtCommitment.total,
+      unifiedLoans,
+      currencyCode,
+      debtAccountCount: debtCommitment.accounts.length,
+    }),
+    [
+      activeRecurringBills,
+      data.recurringBillCategoryLabelByBillId,
+      income,
+      debtCommitment.total,
+      unifiedLoans,
+      currencyCode,
+      debtCommitment.accounts.length,
+    ],
+  );
 
-  const creditCards = budgetDebtAccounts.filter(d => d.category === 'Credit card');
-  const reusableCustomCategoryLabels = ['Auto', ...Object.values(data.recurringBillCategoryLabelByBillId ?? {})].reduce<string[]>((labels, value) => {
-    const trimmed = value.trim();
-    const label = trimmed.toLocaleLowerCase() === 'transportation' ? 'Auto' : trimmed;
-    if (label && !labels.some(existing => existing.toLocaleLowerCase() === label.toLocaleLowerCase())) labels.push(label);
-    return labels;
-  }, []);
+  const creditCards = useMemo(
+    () => budgetDebtAccounts.filter(d => d.category === 'Credit card'),
+    [budgetDebtAccounts],
+  );
+  const reusableCustomCategoryLabels = useMemo(
+    () => ['Auto', ...Object.values(data.recurringBillCategoryLabelByBillId ?? {})].reduce<string[]>((labels, value) => {
+      const trimmed = value.trim();
+      const label = trimmed.toLocaleLowerCase() === 'transportation' ? 'Auto' : trimmed;
+      if (label && !labels.some(existing => existing.toLocaleLowerCase() === label.toLocaleLowerCase())) labels.push(label);
+      return labels;
+    }, []),
+    [data.recurringBillCategoryLabelByBillId],
+  );
 
-  const displayBreakdown = buildMonthlyBudgetBreakdown({
-    categories: categoryBreakdown,
-    hasActiveDebt: debtCommitment.accounts.length > 0 || debtCommitment.extra > 0,
-    monthlyIncome: income,
-  });
+  const displayBreakdown = useMemo(
+    () => buildMonthlyBudgetBreakdown({
+      categories: categoryBreakdown,
+      hasActiveDebt: debtCommitment.accounts.length > 0 || debtCommitment.extra > 0,
+      monthlyIncome: income,
+    }),
+    [categoryBreakdown, debtCommitment.accounts.length, debtCommitment.extra, income],
+  );
 
   const openIncomeEditor = (id: string | null = null) => {
     if (!canEdit) return;
@@ -567,7 +657,10 @@ export function BudgetScreen({
     }
   };
 
-  const spendingMonthLabel = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric' }).format(new Date(`${spendingMonth}-01T12:00:00`));
+  const spendingMonthLabel = useMemo(
+    () => SHORT_MONTH_YEAR_FMT.format(new Date(`${spendingMonth}-01T12:00:00`)),
+    [spendingMonth],
+  );
   const statusNotices = (
     <>
       {!canEdit ? (
@@ -585,546 +678,280 @@ export function BudgetScreen({
   );
 
   const renderExpenseSegment = () => {
-    const { cashOutflow, totalDebtPayments, others, unpaidCharges, netBalanceChange } = expenseSummary;
-    const netDirection = netBalanceChange < 0 ? '↓ −' : netBalanceChange > 0 ? '↑ +' : '';
-    const expenseColor = (key: string) => {
-      if (key === 'debt') return posInkColor;
-      if (key === 'housing') return palette.accentInk;
-      if (key === 'charges') return negColor;
-      return appearanceColor(budgetCategoryColor(key), isLight, accentColor, isInspire);
+    const { cashOutflow, totalDebtPayments, unpaidCharges, netBalanceChange } = expenseSummary;
+    const cashCategories = expenseSummary.cashBreakdown
+      .filter(item => item.categoryKey !== 'charges' && item.amount > 0)
+      .sort((a, b) => b.amount - a.amount)
+      .map(item => ({
+        ...item,
+        details: expenseSummary.categories.find(category => category.categoryKey === item.categoryKey),
+      }));
+    const chargeCategory = expenseSummary.categories.find(category =>
+      category.categoryKey === 'charges' && category.items.length > 0,
+    );
+
+    const expenseAccents = [
+      getAppearancePalette(themeStyle, 'green', isLight).brand,
+      getAppearancePalette(themeStyle, 'cobalt', isLight).brand,
+      getAppearancePalette(themeStyle, 'amber', isLight).brand,
+      getAppearancePalette(themeStyle, 'teal', isLight).brand,
+      getAppearancePalette(themeStyle, 'cyan', isLight).brand,
+      getAppearancePalette(themeStyle, 'indigo', isLight).brand,
+      getAppearancePalette(themeStyle, 'violet', isLight).brand,
+      getAppearancePalette(themeStyle, 'berry', isLight).brand,
+      getAppearancePalette(themeStyle, 'coral', isLight).brand,
+    ];
+    const preferredAccentByCategory: Readonly<Record<string, string>> = {
+      debt: expenseAccents[0],
+      housing: expenseAccents[1],
+      transportation: expenseAccents[2],
+      utilities: expenseAccents[3],
+      subscription: expenseAccents[6],
+      insurance: expenseAccents[7],
+      other_spending: expenseAccents[4],
+      other_bill: expenseAccents[5],
+    };
+    const usedExpenseAccents = new Set<string>();
+    const expenseColorByCategory = new Map<string, string>();
+    for (const item of [...cashCategories].sort((a, b) => a.categoryKey.localeCompare(b.categoryKey))) {
+      const preferred = preferredAccentByCategory[budgetCategoryKey(item.categoryKey)];
+      const color = (preferred && !usedExpenseAccents.has(preferred) ? preferred : undefined)
+        ?? expenseAccents.find(candidate => !usedExpenseAccents.has(candidate))
+        ?? expenseAccents[usedExpenseAccents.size % expenseAccents.length];
+      expenseColorByCategory.set(item.categoryKey, color);
+      usedExpenseAccents.add(color);
+    }
+
+    const resolveExpenseTxDisplay = (tx: LedgerTransaction, accountOnly = false) => {
+      const txDebt = tx.accountId ? allDebtById.get(tx.accountId) : undefined;
+      const idBill = extractBillIdFromTxId(tx.id);
+      const memoBills = extractBillIdsFromMemo(tx.memo);
+      const txBill = (idBill ? allBillById.get(idBill) : undefined) ??
+        [...memoBills].map(id => allBillById.get(id)).find(Boolean);
+      const methodLabel = tx.accountId === null ? 'Checking / Debit' : (txDebt?.name ?? 'Account');
+      const trimmedPayee = tx.payee.trim();
+      const rowTitle = accountOnly ? methodLabel : txBill?.name
+        ?? (trimmedPayee && !/^payment$/i.test(trimmedPayee) ? trimmedPayee : undefined)
+        ?? txDebt?.name
+        ?? (tx.accountId === null ? 'Checking / Debit' : 'Transaction');
+      return { methodLabel, rowTitle };
     };
 
-    // Five summary metrics using distinct app accent colors (excluding Graphite Slate).
-    const tealAccent = getAppearancePalette(themeStyle, 'teal', isLight);
-    const cobaltAccent = getAppearancePalette(themeStyle, 'cobalt', isLight);
-    const violetAccent = getAppearancePalette(themeStyle, 'violet', isLight);
-    const berryAccent = getAppearancePalette(themeStyle, 'berry', isLight);
-    const amberAccent = getAppearancePalette(themeStyle, 'amber', isLight);
+    const renderExpenseTransactions = (
+      item: { categoryKey: string; items: readonly LedgerTransaction[] },
+      paddingLeft = 40,
+    ) => (
+      <View style={{ paddingTop: 6, paddingLeft, paddingRight: 15 }}>
+        {item.items.map(tx => {
+          const accountOnly = item.categoryKey === 'debt' || item.categoryKey === 'charges';
+          const { methodLabel, rowTitle } = resolveExpenseTxDisplay(tx, accountOnly);
+          const dateLabel = formatShortDate(tx.date);
+          const appliesTag = tx.appliesToDate && tx.appliesToDate.slice(0, 7) !== tx.date.slice(0, 7)
+            ? ' · For ' + formatShortDate(tx.appliesToDate)
+            : '';
+          const rowDetail = (accountOnly ? dateLabel : methodLabel + ' · ' + dateLabel) + appliesTag;
 
-    const metrics: readonly {
-      key: string;
-      label: string;
-      shortLabel: string;
-      amount: number;
-      prefix?: string;
-      icon: AppIconName;
-      brandColor: string;
-      inkColor: string;
-      tintBg: string;
-      detail: string;
-      isNetRow?: boolean;
-    }[] = [
-      {
-        key: 'actualCashFlow',
-        label: 'Actual Cash Flow',
-        shortLabel: 'Actual Cash\nFlow',
-        amount: cashOutflow,
-        icon: 'cash',
-        brandColor: tealAccent.brand,
-        inkColor: tealAccent.accentInk,
-        tintBg: tealAccent.selection,
-        detail: 'Cash to Debt Payments plus Others for this month. Shows total actual cash paid out.',
-      },
-      {
-        key: 'cashToDebtPayments',
-        label: 'Cash to Debt Payments',
-        shortLabel: 'Cash to Debt\nPayments',
-        amount: totalDebtPayments,
-        icon: 'layers',
-        brandColor: cobaltAccent.brand,
-        inkColor: cobaltAccent.accentInk,
-        tintBg: cobaltAccent.selection,
-        detail: 'Recorded payments to credit cards and loans, including the full amount of each Home and Auto payment.',
-      },
-      {
-        key: 'others',
-        label: 'Others',
-        shortLabel: 'Others',
-        amount: others,
-        icon: 'box',
-        brandColor: violetAccent.brand,
-        inkColor: violetAccent.accentInk,
-        tintBg: violetAccent.selection,
-        detail: 'Paid expenses such as subscriptions, utilities, groceries, and other settled charges. Includes recorded recurring bill payments, even when paid by card.',
-      },
-      {
-        key: 'charges',
-        label: 'Charges',
-        shortLabel: 'Charges',
-        amount: unpaidCharges,
-        icon: 'creditCard',
-        brandColor: berryAccent.brand,
-        inkColor: berryAccent.accentInk,
-        tintBg: berryAccent.selection,
-        detail: 'Recorded unpaid charges, including unpaid subscription charges. A recorded payment for a recurring bill puts that expense in Others. An ordinary card payment does not identify which individual purchases it settled.',
-      },
-      {
-        key: 'netBalanceChange',
-        label: 'Net Balance Change',
-        shortLabel: 'Net Balance\nChange',
-        amount: Math.abs(netBalanceChange),
-        prefix: netDirection,
-        icon: netBalanceChange > 0 ? 'brandRise' : 'trendDown',
-        brandColor: amberAccent.brand,
-        inkColor: amberAccent.accentInk,
-        tintBg: amberAccent.selection,
-        detail: 'Unpaid Charges minus Cash to Debt Payments. Home and Auto count at the full payment amount. This is the Expense calculation, so it includes interest and escrow within those payments.',
-        isNetRow: true,
-      },
-    ];
+          return (
+            <Pressable
+              key={tx.id}
+              accessibilityRole={onOpenPurchase ? 'button' : undefined}
+              accessibilityLabel={onOpenPurchase ? 'Open ' + rowTitle + ' transaction' : rowTitle}
+              disabled={!onOpenPurchase}
+              onPress={() => onOpenPurchase?.(tx.id)}
+              style={[ui.row, ui.divider, { justifyContent: 'space-between', gap: 8 }]}
+            >
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text numberOfLines={1} style={ui.text}>{rowTitle}</Text>
+                <Text numberOfLines={1} style={ui.small}>{rowDetail}</Text>
+              </View>
+              <AmountText style={ui.value} value={formatCurrency(moneyToMajor(tx.amount), currencySymbol)} />
+              {!accountOnly && onOpenPurchase ? <AppIcon name="chevronRight" size={14} color={palette.brand} /> : null}
+            </Pressable>
+          );
+        })}
+      </View>
+    );
 
-    // Donut slices follow the 5 summary metrics clockwise: Actual Cash Flow, Net Balance Change,
-    // Cash to Debt Payments, Others, Charges.
-    const donutMetricOrder = [metrics[0], metrics[4], metrics[1], metrics[2], metrics[3]];
-    const activeSlices = donutMetricOrder.filter(item => item.amount > 0);
-    const zeroMetrics = metrics.filter(item => item.amount === 0);
-    const sliceTotal = activeSlices.reduce((sum, item) => sum + item.amount, 0);
-
-    const compactCallouts = windowWidth < 320 || fontScale >= 1.35;
-    const chartWidth = Math.max(288, Math.min(376, windowWidth - 52));
-    const outerRadius = Math.round(chartWidth * 0.26);
-    const ringStroke = Math.round(outerRadius * 0.29);
-    const r = outerRadius - ringStroke / 2;
-    const circumference = 2 * Math.PI * r;
-    const innerCircleSize = Math.round((r - ringStroke / 2) * 1.88);
-    const netCenterColor = netBalanceChange < 0 ? posInkColor : netBalanceChange > 0 ? negColor : palette.text;
-
-    let offset = 0;
-    let angleCursor = -Math.PI / 2;
-    const arcs = activeSlices.map(item => {
-      const fraction = sliceTotal > 0 ? item.amount / sliceTotal : 0;
-      const sweep = fraction * 2 * Math.PI;
-      const startAngle = angleCursor;
-      const endAngle = angleCursor + sweep;
-      const midAngle = startAngle + sweep / 2;
-      const length = fraction * circumference;
-      const arc = {
-        ...item,
-        fraction,
-        pct: fraction * 100,
-        offset,
-        length,
-        startAngle,
-        endAngle,
-        midAngle,
+    const chartWidth = Math.max(240, Math.min(360, windowWidth - 48));
+    const arcRadius = Math.min(92, (chartWidth - 40) / 2);
+    const arcCenterX = chartWidth / 2;
+    const arcCenterY = 102;
+    const arcPath = (startAngle: number, endAngle: number) => {
+      const startX = arcCenterX + arcRadius * Math.cos(startAngle);
+      const startY = arcCenterY + arcRadius * Math.sin(startAngle);
+      const endX = arcCenterX + arcRadius * Math.cos(endAngle);
+      const endY = arcCenterY + arcRadius * Math.sin(endAngle);
+      const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
+      return 'M ' + startX.toFixed(2) + ' ' + startY.toFixed(2) +
+        ' A ' + arcRadius.toFixed(2) + ' ' + arcRadius.toFixed(2) + ' 0 ' +
+        largeArc + ' 1 ' + endX.toFixed(2) + ' ' + endY.toFixed(2);
+    };
+    const cashArcTotal = cashCategories.reduce((sum, item) => sum + item.amount, 0);
+    let arcProgress = 0;
+    const cashArcs = cashCategories.map(item => {
+      const fraction = cashArcTotal > 0 ? item.amount / cashArcTotal : 0;
+      const gap = cashCategories.length > 1 ? Math.min(0.018, Math.PI * fraction * 0.28) : 0;
+      const startAngle = Math.PI + arcProgress * Math.PI + gap / 2;
+      arcProgress = Math.min(1, arcProgress + fraction);
+      const endAngle = Math.PI + arcProgress * Math.PI - gap / 2;
+      return {
+        categoryKey: item.categoryKey,
+        color: expenseColorByCategory.get(item.categoryKey) ?? palette.brand,
+        path: arcPath(startAngle, endAngle),
       };
-      offset += length;
-      angleCursor += sweep;
-      return arc;
     });
 
-    // Sort by unclamped vertical position sin(midAngle) so adjacent top-left slices never cross lines.
-    const leftSideRaw = arcs
-      .filter(a => Math.cos(a.midAngle) < -0.05)
-      .sort((a, b) => Math.sin(a.midAngle) - Math.sin(b.midAngle));
-    const rightSideRaw = arcs
-      .filter(a => Math.cos(a.midAngle) >= -0.05)
-      .sort((a, b) => Math.sin(a.midAngle) - Math.sin(b.midAngle));
-    const chartHeight = Math.round(outerRadius * 2 + 94);
-    const cx = chartWidth / 2;
-    const cy = chartHeight / 2;
-
-    const placeSide = (sideArcs: typeof arcs, isRight: boolean) => {
-      const topBound = 54;
-      const bottomBound = chartHeight - 24;
-      const count = sideArcs.length;
-      if (count === 0) return [];
-      const minStep = count >= 3 ? Math.min(68, Math.floor((bottomBound - topBound) / (count - 1))) : 80;
-
-      const sorted = sideArcs.map((arc, idx) => {
-        let lineY = Math.max(topBound, Math.min(bottomBound, cy + (outerRadius + 36) * Math.sin(arc.midAngle)));
-        if (count === 3) {
-          lineY = idx === 0 ? topBound : idx === 1 ? Math.round(topBound + 76) : bottomBound;
-        } else if (count === 2) {
-          lineY = idx === 0 ? Math.round(cy - outerRadius * 0.72) : bottomBound;
-        }
-        return { ...arc, lineY };
-      });
-
-      for (let i = 1; i < sorted.length; i++) {
-        if (sorted[i].lineY - sorted[i - 1].lineY < minStep) {
-          sorted[i].lineY = sorted[i - 1].lineY + minStep;
-        }
-      }
-      if (sorted[sorted.length - 1].lineY > bottomBound) {
-        const overflow = sorted[sorted.length - 1].lineY - bottomBound;
-        sorted[sorted.length - 1].lineY -= overflow;
-        for (let i = sorted.length - 2; i >= 0; i--) {
-          if (sorted[i + 1].lineY - sorted[i].lineY < minStep) {
-            sorted[i].lineY = sorted[i + 1].lineY - minStep;
-          }
-        }
-      }
-
-      return sorted.map(item => {
-        const lineY = Math.max(topBound, Math.min(bottomBound, item.lineY));
-        const dy = Math.abs(lineY - cy);
-        const ringClearX = dy < outerRadius + 8 ? Math.sqrt(Math.max(0, (outerRadius + 8) ** 2 - dy ** 2)) : outerRadius * 0.44;
-        const elbowX = isRight ? cx + ringClearX + 8 : cx - ringClearX - 8;
-        const colWidth = Math.max(82, Math.floor(isRight ? chartWidth - elbowX + 10 : elbowX + 10));
-        const targetAngle = Math.atan2(lineY - cy, isRight ? outerRadius : -outerRadius);
-        const normalizedTarget = targetAngle < -Math.PI / 2 ? targetAngle + 2 * Math.PI : targetAngle;
-        const margin = Math.min(0.18, (item.endAngle - item.startAngle) * 0.3);
-        const dotAngle = Math.max(item.startAngle + margin, Math.min(item.endAngle - margin, normalizedTarget));
-        const dotX = cx + r * Math.cos(dotAngle);
-        const dotY = cy + r * Math.sin(dotAngle);
-        const lineCount = item.shortLabel.includes('\n') ? 2 : 1;
-        return {
-          ...item,
-          lineY,
-          elbowX,
-          colWidth,
-          dotX,
-          dotY,
-          labelTop: lineY - (lineCount === 2 ? 48 : 35),
-        };
-      });
-    };
-
-    const leftCallouts = placeSide(leftSideRaw, false);
-    const rightCallouts = placeSide(rightSideRaw, true);
+    const netBadgeText = netBalanceChange < 0
+      ? 'Net ↓ ' + formatCurrency(Math.abs(netBalanceChange), currencySymbol)
+      : netBalanceChange > 0
+        ? 'Net ↑ +' + formatCurrency(netBalanceChange, currencySymbol)
+        : 'Net ' + formatCurrency(0, currencySymbol);
+    const netBadgeColor = netBalanceChange < 0 ? posInkColor : netBalanceChange > 0 ? negColor : palette.text;
+    const netBadgeBackground = netBalanceChange < 0
+      ? (isLight ? '#E8F6EF' : 'rgba(34,197,94,0.14)')
+      : netBalanceChange > 0
+        ? (isLight ? '#FFF0ED' : 'rgba(240,111,96,0.15)')
+        : palette.raised;
 
     return (
       <>
+        <View style={{ alignSelf: 'center', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 12, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 18, backgroundColor: palette.raised, borderWidth: 1, borderColor: cardBorderColor }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Previous expense month" hitSlop={6} onPress={() => setSpendingMonth(getPreviousMonthString(spendingMonth))} style={{ minWidth: 32, minHeight: 32, alignItems: 'center', justifyContent: 'center' }}>
+            <AppIcon name="chevronLeft" size={16} color={palette.brand} />
+          </Pressable>
+          <Text style={[ui.small, { color: palette.text, fontWeight: '700' }]}>{spendingMonthLabel}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Next expense month" hitSlop={6} onPress={() => setSpendingMonth(getNextMonthString(spendingMonth))} style={{ minWidth: 32, minHeight: 32, alignItems: 'center', justifyContent: 'center' }}>
+            <AppIcon name="chevronRight" size={16} color={palette.brand} />
+          </Pressable>
+        </View>
         {statusNotices}
-        <Card style={{ paddingHorizontal: 10, paddingVertical: 14, borderRadius: 20, gap: 8, overflow: 'hidden', borderColor: cardBorderColor }}>
-          <InspireCornerArt kind="hero-expense" borderRadius={20} />
-          <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingHorizontal: 6 }]}>
-            <Text accessibilityRole="header" style={ui.heading}>Expense summary</Text>
-            <Text style={[ui.small, { fontWeight: '600' }]}>{spendingMonthLabel}</Text>
-          </View>
-
-          {compactCallouts ? (
-            <View style={{ alignItems: 'center', gap: 10 }}>
-              <View style={{ width: 176, height: 176, alignItems: 'center', justifyContent: 'center' }}>
-                <Svg width={176} height={176} viewBox="0 0 176 176" style={StyleSheet.absoluteFill} accessible={false}>
-                  <Circle cx={88} cy={88} r={72} fill="none" stroke={isLight ? 'rgba(15,23,42,0.06)' : 'rgba(255,255,255,0.06)'} strokeWidth={28} />
-                  {arcs.map(arc => (
-                    <Circle
-                      key={arc.key}
-                      cx={88}
-                      cy={88}
-                      r={68}
-                      fill="none"
-                      stroke={arc.brandColor}
-                      strokeWidth={22}
-                      rotation={-90}
-                      origin="88,88"
-                      strokeDasharray={arcs.length > 1 ? [arc.length * (68 / r), circumference * (68 / r)] : undefined}
-                      strokeDashoffset={-(arc.offset * (68 / r))}
-                    />
-                  ))}
-                  {arcs.length > 0 ? (
-                    <Circle cx={88} cy={88} r={62.5} fill="none" stroke="#000000" strokeOpacity={isLight ? 0.08 : 0.28} strokeWidth={11} />
-                  ) : null}
-                </Svg>
-                <View style={{
-                  width: 106,
-                  height: 106,
-                  borderRadius: 53,
-                  backgroundColor: palette.surface,
-                  borderWidth: 1.2,
-                  borderColor: isLight ? palette.border : 'rgba(255,255,255,0.14)',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingHorizontal: 6,
-                }}>
-                  <Text style={[ui.small, { fontSize: 11, lineHeight: 13.5, fontWeight: '600', textAlign: 'center', color: palette.text }]}>
-                    {'Net Balance\nChange'}
-                  </Text>
-                  <AmountText
-                    style={{ fontSize: 16, fontWeight: '800', color: netCenterColor, textAlign: 'center', marginTop: 2 }}
-                    value={netDirection + formatCurrency(Math.abs(netBalanceChange), currencySymbol)}
-                  />
-                </View>
-              </View>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 10, paddingHorizontal: 4 }}>
-                {metrics.map(metric => {
-                  const pct = sliceTotal > 0 && metric.amount > 0 ? (metric.amount / sliceTotal) * 100 : 0;
-                  return (
-                    <View key={metric.key} style={[ui.row, { gap: 4 }]}>
-                      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: metric.brandColor }} />
-                      <Text style={[ui.small, { fontSize: 11, color: palette.text, fontWeight: '600' }]}>
-                        {`${metric.label}: ${(metric.prefix ?? '') + formatCurrency(metric.amount, currencySymbol)}${pct > 0 ? ` (${pct.toFixed(1)}%)` : ''}`}
-                      </Text>
-                      <InformationButton label={metric.label} detail={metric.detail} size={13} />
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-          ) : (
-            <View style={{ width: chartWidth, height: chartHeight, alignSelf: 'center', position: 'relative' }}>
-              <Svg width={chartWidth} height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} accessible={false}>
-                <Circle
-                  cx={cx}
-                  cy={cy}
-                  r={outerRadius + 2}
-                  fill="none"
-                  stroke={isLight ? 'rgba(15,23,42,0.06)' : 'rgba(255,255,255,0.06)'}
-                  strokeWidth={6}
-                />
-                <Circle cx={cx} cy={cy} r={r} fill="none" stroke={palette.raised} strokeWidth={ringStroke} />
-                {arcs.map(arc => (
-                  <Circle
-                    key={arc.key}
-                    cx={cx}
-                    cy={cy}
-                    r={r}
-                    fill="none"
-                    stroke={arc.brandColor}
-                    strokeWidth={ringStroke}
-                    rotation={-90}
-                    origin={`${cx},${cy}`}
-                    strokeDasharray={arcs.length > 1 ? [arc.length, circumference] : undefined}
-                    strokeDashoffset={-arc.offset}
-                  />
-                ))}
-                {arcs.length > 0 ? (
-                  <Circle
-                    cx={cx}
-                    cy={cy}
-                    r={r - ringStroke * 0.25}
-                    fill="none"
-                    stroke="#000000"
-                    strokeOpacity={isLight ? 0.08 : 0.28}
-                    strokeWidth={ringStroke * 0.48}
-                  />
-                ) : null}
-                {leftCallouts.map(item => (
-                  <Path
-                    key={`line-${item.key}`}
-                    d={`M ${item.dotX.toFixed(1)} ${item.dotY.toFixed(1)} L ${item.elbowX.toFixed(1)} ${item.lineY.toFixed(1)} L 2 ${item.lineY.toFixed(1)}`}
-                    fill="none"
-                    stroke={item.brandColor}
-                    strokeWidth={1.4}
-                  />
-                ))}
-                {rightCallouts.map(item => (
-                  <Path
-                    key={`line-${item.key}`}
-                    d={`M ${item.dotX.toFixed(1)} ${item.dotY.toFixed(1)} L ${item.elbowX.toFixed(1)} ${item.lineY.toFixed(1)} L ${(chartWidth - 2).toFixed(1)} ${item.lineY.toFixed(1)}`}
-                    fill="none"
-                    stroke={item.brandColor}
-                    strokeWidth={1.4}
-                  />
-                ))}
-                {[...leftCallouts, ...rightCallouts].map(item => (
-                  <Circle
-                    key={`dot-${item.key}`}
-                    cx={item.dotX}
-                    cy={item.dotY}
-                    r={3.6}
-                    fill="#FFFFFF"
-                    stroke={item.brandColor}
-                    strokeWidth={1.6}
-                  />
-                ))}
-              </Svg>
-
-              <View
-                style={{
-                  position: 'absolute',
-                  left: cx - innerCircleSize / 2,
-                  top: cy - innerCircleSize / 2,
-                  width: innerCircleSize,
-                  height: innerCircleSize,
-                  borderRadius: innerCircleSize / 2,
-                  backgroundColor: palette.surface,
-                  borderWidth: 1.2,
-                  borderColor: isLight ? palette.border : 'rgba(255,255,255,0.14)',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingHorizontal: 8,
-                  shadowColor: '#000000',
-                  shadowOpacity: isLight ? 0.1 : 0.35,
-                  shadowRadius: 8,
-                  shadowOffset: { width: 0, height: 3 },
-                  elevation: 4,
-                }}
-              >
-                <Text style={{ fontSize: 12, lineHeight: 14.5, fontWeight: '600', color: palette.text, textAlign: 'center' }}>
-                  {'Net Balance\nChange'}
-                </Text>
-                <AmountText
-                  style={{ fontSize: 17.5, fontWeight: '800', color: netCenterColor, textAlign: 'center', marginTop: 3 }}
-                  value={netDirection + formatCurrency(Math.abs(netBalanceChange), currencySymbol)}
-                />
-              </View>
-
-              {leftCallouts.map(item => (
-                <View
-                  key={`callout-${item.key}`}
-                  style={{
-                    position: 'absolute',
-                    left: 2,
-                    top: item.labelTop,
-                    width: item.colWidth,
-                    alignItems: 'flex-start',
-                  }}
-                >
-                  <View style={[ui.row, { gap: 4, alignItems: 'center', maxWidth: '100%' }]}>
-                    <Text numberOfLines={2} style={{ fontSize: 10.2, lineHeight: 12, fontWeight: '600', color: palette.text, textAlign: 'left', flexShrink: 1 }}>
-                      {item.shortLabel}
-                    </Text>
-                    <InformationButton label={item.label} detail={item.detail} size={13} />
-                  </View>
-                  <AmountText
-                    style={{ fontSize: 13.2, fontWeight: '800', color: palette.text, textAlign: 'left', marginTop: 2 }}
-                    value={formatCurrency(item.amount, currencySymbol)}
-                  />
-                  <Text style={{ fontSize: 12.6, fontWeight: '800', color: item.inkColor, textAlign: 'left', marginTop: 8 }}>
-                    {`${item.pct.toFixed(1)}%`}
-                  </Text>
-                </View>
-              ))}
-
-              {rightCallouts.map(item => (
-                <View
-                  key={`callout-${item.key}`}
-                  style={{
-                    position: 'absolute',
-                    right: 2,
-                    top: item.labelTop,
-                    width: item.colWidth,
-                    alignItems: 'flex-end',
-                  }}
-                >
-                  <View style={[ui.row, { gap: 4, alignItems: 'center', justifyContent: 'flex-end', maxWidth: '100%' }]}>
-                    <InformationButton label={item.label} detail={item.detail} size={13} />
-                    <Text numberOfLines={2} style={{ fontSize: 10.2, lineHeight: 12, fontWeight: '600', color: palette.text, textAlign: 'right', flexShrink: 1 }}>
-                      {item.shortLabel}
-                    </Text>
-                  </View>
-                  <AmountText
-                    style={{ fontSize: 13.2, fontWeight: '800', color: palette.text, textAlign: 'right', marginTop: 2 }}
-                    value={formatCurrency(item.amount, currencySymbol)}
-                  />
-                  <Text style={{ fontSize: 12.6, fontWeight: '800', color: item.inkColor, textAlign: 'right', marginTop: 8 }}>
-                    {`${item.pct.toFixed(1)}%`}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          {!compactCallouts && zeroMetrics.length > 0 ? (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 10, paddingHorizontal: 6, paddingTop: 2 }}>
-              {zeroMetrics.map(metric => (
-                <View key={metric.key} style={[ui.row, { gap: 4 }]}>
-                  <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: metric.brandColor }} />
-                  <Text style={[ui.small, { fontSize: 11, color: palette.muted, fontWeight: '600' }]}>
-                    {`${metric.label} ${formatCurrency(0, currencySymbol)}`}
-                  </Text>
-                  <InformationButton label={metric.label} detail={metric.detail} size={13} />
-                </View>
-              ))}
-            </View>
-          ) : null}
-        </Card>
-
         {(pairingAudit.divergentLinks.length > 0 || pairingAudit.invalidLinks.length > 0) ? (
           <View accessibilityRole="alert" style={{ paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: '#F5C563', backgroundColor: isLight ? '#FFF9E6' : 'rgba(245, 197, 99, 0.12)', gap: 4 }}>
-            <Text style={[ui.small, { color: appearanceColor('#F5C563', isLight, accentColor, isInspire), fontWeight: '700' }]}>
-              Legacy loan link review needed
-            </Text>
-            <Text style={[ui.small, { color: palette.text }]}>
-              One or more legacy recurring bills differ from their linked loan account. Open Home → Legacy loan links to review before merging them.
-            </Text>
+            <Text style={[ui.small, { color: appearanceColor('#F5C563', isLight, accentColor, isInspire), fontWeight: '700' }]}>Legacy loan link review needed</Text>
+            <Text style={[ui.small, { color: palette.text }]}>One or more legacy recurring bills differ from their linked loan account. Open Home → Legacy loan links to review before merging them.</Text>
           </View>
         ) : null}
-
-        <Card style={{ paddingHorizontal: 0, paddingTop: 14, paddingBottom: 6, borderRadius: 20, gap: 0, borderColor: cardBorderColor }}>
-          <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: palette.border }]}>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={ui.heading}>Breakdown</Text>
-            </View>
-            <View style={[ui.row, { gap: 0 }]}>
-              <Pressable accessibilityRole="button" accessibilityLabel="Previous expense month" hitSlop={6} onPress={() => setSpendingMonth(getPreviousMonthString(spendingMonth))} style={{ minWidth: 32, minHeight: 32, alignItems: 'center', justifyContent: 'center' }}><AppIcon name="chevronLeft" size={16} color={palette.brand} /></Pressable>
-              <Text style={[ui.small, { color: palette.text, fontWeight: '600' }]}>{spendingMonthLabel}</Text>
-              <Pressable accessibilityRole="button" accessibilityLabel="Next expense month" hitSlop={6} onPress={() => setSpendingMonth(getNextMonthString(spendingMonth))} style={{ minWidth: 32, minHeight: 32, alignItems: 'center', justifyContent: 'center' }}><AppIcon name="chevronRight" size={16} color={palette.brand} /></Pressable>
+        <Card style={{ paddingHorizontal: 0, paddingVertical: 12, borderRadius: 20, overflow: 'hidden', borderColor: cardBorderColor }}>
+          <InspireCornerArt kind="hero-expense" borderRadius={20} />
+          <View style={{ height: 118, alignItems: 'center', justifyContent: 'flex-start' }}>
+            <Svg width={chartWidth} height={118} viewBox={'0 0 ' + chartWidth + ' 118'} accessible={false}>
+              <Path d={arcPath(Math.PI, 2 * Math.PI)} fill="none" stroke={palette.raised} strokeWidth={18} strokeLinecap="butt" />
+              {cashArcs.map(arc => (
+                <Path key={arc.categoryKey} d={arc.path} fill="none" stroke={arc.color} strokeWidth={18} strokeLinecap="butt" />
+              ))}
+            </Svg>
+            <View pointerEvents="none" style={{ position: 'absolute', top: 52, left: 0, right: 0, alignItems: 'center', gap: 1 }}>
+              <Text style={{ fontSize: 11, lineHeight: 14, letterSpacing: 1.1, fontWeight: '800', color: palette.muted }}>CASH OUTFLOW</Text>
+              <AmountText style={{ fontSize: 24, lineHeight: 30, fontWeight: '800', color: palette.text, maxWidth: Math.round((arcRadius - 12) * 1.85), textAlign: 'center' }} value={formatCurrency(cashOutflow, currencySymbol)} />
             </View>
           </View>
-
-          {expenseSummary.categories.length === 0 ? (
+          <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: palette.border, marginHorizontal: 16, marginTop: 2, marginBottom: 2 }} />
+          {cashCategories.length === 0 ? (
             <View style={{ paddingHorizontal: 16, paddingVertical: 18 }}>
-              <Text style={ui.small}>{`No confirmed payments or charges recorded for ${spendingMonthLabel}.`}</Text>
+              <Text style={ui.small}>{'No confirmed cash outflows recorded for ' + spendingMonthLabel + '.'}</Text>
             </View>
           ) : (
-            expenseSummary.categories.map((item, idx) => {
-              const catColor = expenseColor(item.categoryKey);
-              const icon = expenseCategoryIcon(item.categoryKey);
+            cashCategories.map((item, index) => {
+              const category = item.details;
+              const color = expenseColorByCategory.get(item.categoryKey) ?? palette.brand;
               const isExpanded = expandedExpenseCategory === item.categoryKey;
-
+              const drilldown = category ?? { categoryKey: item.categoryKey, items: [] as readonly LedgerTransaction[] };
               return (
-                <View key={item.categoryKey} style={{ borderBottomWidth: idx < expenseSummary.categories.length - 1 ? StyleSheet.hairlineWidth : 0, borderBottomColor: palette.border, paddingVertical: 9, paddingHorizontal: 16, gap: 6 }}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ expanded: isExpanded }}
-                    accessibilityLabel={`${item.label}, ${isExpanded ? 'hide' : 'show'} transactions`}
-                    onPress={() => setExpandedExpenseCategory(isExpanded ? null : item.categoryKey)}
-                    style={[ui.row, { justifyContent: 'space-between', gap: 8 }]}
-                  >
-                    <View style={[ui.row, { gap: 8, flex: 1 }]}>
-                      <View style={[ui.iconCircle, { width: 34, height: 34, borderRadius: 17, borderWidth: 0, backgroundColor: catColor + '18' }]}>
-                        <AppIcon name={icon} size={18} color={catColor} />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <View style={[ui.row, { gap: 6, alignItems: 'baseline' }]}>
-                          <Text style={[ui.heading, { fontSize: 16, flexShrink: 1 }]}>{item.label}</Text>
-                        </View>
-                        <Text style={ui.small}>{item.subtitle}</Text>
+                <View key={item.categoryKey} style={{ borderBottomWidth: index < cashCategories.length - 1 ? StyleSheet.hairlineWidth : 0, borderBottomColor: palette.border, paddingVertical: 9, paddingHorizontal: 16, gap: 6 }}>
+                  <Pressable accessibilityRole="button" accessibilityState={{ expanded: isExpanded }} accessibilityLabel={item.label + ', ' + (isExpanded ? 'hide' : 'show') + ' transactions'} onPress={() => setExpandedExpenseCategory(isExpanded ? null : item.categoryKey)} style={[ui.row, { justifyContent: 'space-between', gap: 8 }]}>
+                    <View style={[ui.row, { gap: 9, flex: 1, minWidth: 0 }]}>
+                      <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: color }} />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[ui.heading, { fontSize: 16 }]} numberOfLines={1}>{category?.label ?? item.label}</Text>
+                        <Text numberOfLines={1} style={[ui.small, { marginTop: 1 }]}>{category?.subtitle ?? 'Recorded transactions'}</Text>
                       </View>
                     </View>
-                    <View style={{ alignItems: 'flex-end', maxWidth: '45%', minWidth: 0, flexShrink: 1 }}>
-                      <AmountText style={[ui.value, { color: catColor, textAlign: 'right' }]} value={formatCurrency(item.amount, currencySymbol)} />
+                    <View style={{ alignItems: 'flex-end', maxWidth: '42%', minWidth: 0 }}>
+                      <AmountText style={[ui.value, { color: palette.text, textAlign: 'right' }]} value={formatCurrency(item.amount, currencySymbol)} />
+                      <Text style={[ui.small, { color: palette.muted, marginTop: 2 }]}>{(cashOutflow > 0 ? Math.round((item.amount / cashOutflow) * 100) : 0) + '%'}</Text>
                     </View>
                     <AppIcon name={isExpanded ? 'chevronDown' : 'chevronRight'} size={15} color="#AAB3AD" />
                   </Pressable>
-
-                  {isExpanded ? (
-                    <View style={{ paddingTop: 6, paddingLeft: 40, paddingRight: 15 }}>
-                      {item.items.map(tx => {
-                        const txDebt = tx.accountId ? allDebtById.get(tx.accountId) : undefined;
-                        const idBill = extractBillIdFromTxId(tx.id);
-                        const memoBills = extractBillIdsFromMemo(tx.memo);
-                        const txBill = (idBill ? allBillById.get(idBill) : undefined) ??
-                          [...memoBills].map(id => allBillById.get(id)).find(Boolean);
-                        const accountOnly = item.categoryKey === 'debt' || item.categoryKey === 'charges';
-                        const methodLabel = tx.accountId === null ? 'Checking / Debit' : (txDebt?.name ?? 'Account');
-                        const trimmedPayee = tx.payee.trim();
-                        const rowTitle = accountOnly ? methodLabel : txBill?.name
-                          ?? (trimmedPayee && !/^payment$/i.test(trimmedPayee) ? trimmedPayee : undefined)
-                          ?? txDebt?.name
-                          ?? (tx.accountId === null ? 'Checking / Debit' : 'Transaction');
-                        const dateLabel = formatShortDate(tx.date);
-                        const rowDetail = accountOnly ? dateLabel : `${methodLabel} · ${dateLabel}`;
-
-                        return (
-                          <Pressable
-                            key={tx.id}
-                            accessibilityRole={onOpenPurchase ? 'button' : undefined}
-                            accessibilityLabel={onOpenPurchase ? `Open ${rowTitle} transaction` : rowTitle}
-                            disabled={!onOpenPurchase}
-                            onPress={() => onOpenPurchase?.(tx.id)}
-                            style={[ui.row, ui.divider, { justifyContent: 'space-between', gap: 8 }]}
-                          >
-                            <View style={{ flex: 1, minWidth: 0 }}>
-                              <Text numberOfLines={1} style={ui.text}>{rowTitle}</Text>
-                              <Text numberOfLines={1} style={ui.small}>{rowDetail}</Text>
-                            </View>
-                            <AmountText style={ui.value} value={formatCurrency(moneyToMajor(tx.amount), currencySymbol)} />
-                            {!accountOnly && onOpenPurchase ? <AppIcon name="chevronRight" size={14} color={palette.brand} /> : null}
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  ) : null}
+                  {isExpanded ? renderExpenseTransactions(drilldown) : null}
                 </View>
               );
             })
           )}
         </Card>
+
+        {expenseSummary.paidEarlyForMonth.length > 0 ? (
+          <Card style={{ paddingHorizontal: 16, paddingVertical: 14, marginTop: 10, borderRadius: 20, gap: 6, borderColor: cardBorderColor }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10, paddingBottom: 4 }}>
+              <Text style={{ fontSize: 11, letterSpacing: 1.1, fontWeight: '800', color: palette.muted }}>PAID EARLIER</Text>
+              <Text numberOfLines={1} style={[ui.small, { color: palette.muted }]}>Counted in the month paid</Text>
+            </View>
+            {expenseSummary.paidEarlyForMonth.map((entry, index) => {
+              const { tx } = entry;
+              const { rowTitle } = resolveExpenseTxDisplay(tx);
+              const detail = 'Paid ' + formatShortDate(tx.date) + ' · For ' + formatShortDate(tx.appliesToDate!);
+              return (
+                <Pressable
+                  key={tx.id}
+                  accessibilityRole={onOpenPurchase ? 'button' : undefined}
+                  accessibilityLabel={onOpenPurchase ? 'Open ' + rowTitle + ' transaction' : rowTitle}
+                  disabled={!onOpenPurchase}
+                  onPress={() => onOpenPurchase?.(tx.id)}
+                  style={[
+                    ui.row,
+                    {
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      paddingTop: index > 0 ? 8 : 2,
+                      paddingBottom: index < expenseSummary.paidEarlyForMonth.length - 1 ? 4 : 0,
+                      borderTopWidth: index > 0 ? StyleSheet.hairlineWidth : 0,
+                      borderTopColor: palette.border,
+                    },
+                  ]}
+                >
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text numberOfLines={1} style={[ui.text, { color: palette.muted }]}>{rowTitle}</Text>
+                    <Text numberOfLines={1} style={[ui.small, { color: palette.muted }]}>{detail}</Text>
+                  </View>
+                  <AmountText style={[ui.value, { color: palette.muted }]} value={formatCurrency(moneyToMajor(tx.amount), currencySymbol)} />
+                  {onOpenPurchase ? <AppIcon name="chevronRight" size={14} color={palette.muted} /> : null}
+                </Pressable>
+              );
+            })}
+          </Card>
+        ) : null}
+
+        <Card style={{ paddingHorizontal: 16, paddingVertical: 16, marginTop: 10, borderRadius: 20, gap: 16, borderColor: cardBorderColor }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+            <Text style={{ fontSize: 12, letterSpacing: 1.1, fontWeight: '800', color: palette.muted }}>DEBT TUG-OF-WAR</Text>
+            <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 15, backgroundColor: netBadgeBackground }}>
+              <Text style={{ fontSize: 12, fontWeight: '800', color: netBadgeColor }}>{netBadgeText}</Text>
+            </View>
+          </View>
+          <View style={{ height: 12, borderRadius: 6, overflow: 'hidden', backgroundColor: palette.raised, flexDirection: 'row', gap: 4 }}>
+            {totalDebtPayments > 0 ? <View style={{ flex: totalDebtPayments, backgroundColor: posInkColor }} /> : null}
+            {unpaidCharges > 0 ? <View style={{ flex: unpaidCharges, backgroundColor: negColor }} /> : null}
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={[ui.small, { color: palette.muted, fontWeight: '600' }]}>Paid to Debt</Text>
+              <AmountText style={[ui.value, { color: posInkColor, marginTop: 3 }]} value={formatCurrency(totalDebtPayments, currencySymbol)} />
+            </View>
+            <Pressable accessibilityRole={chargeCategory ? 'button' : undefined} accessibilityState={chargeCategory ? { expanded: expandedExpenseCategory === 'charges' } : undefined} accessibilityLabel={chargeCategory ? 'New Card Charges, ' + (expandedExpenseCategory === 'charges' ? 'hide' : 'show') + ' transactions' : 'New Card Charges'} disabled={!chargeCategory} onPress={() => setExpandedExpenseCategory(expandedExpenseCategory === 'charges' ? null : 'charges')} style={{ flex: 1, minWidth: 0, alignItems: 'flex-end' }}>
+              <Text style={[ui.small, { color: palette.muted, fontWeight: '600', textAlign: 'right' }]}>New Card Charges</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 }}>
+                <AmountText style={[ui.value, { color: negColor, textAlign: 'right' }]} value={(unpaidCharges > 0 ? '+' : '') + formatCurrency(unpaidCharges, currencySymbol)} />
+                {chargeCategory ? <AppIcon name={expandedExpenseCategory === 'charges' ? 'chevronDown' : 'chevronRight'} size={14} color={negColor} /> : null}
+              </View>
+            </Pressable>
+          </View>
+          {chargeCategory && expandedExpenseCategory === 'charges' ? (
+            <View style={{ borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: palette.border, paddingTop: 8 }}>
+              <Text style={[ui.small, { color: palette.muted, paddingHorizontal: 2 }]}>{chargeCategory.subtitle}</Text>
+              {renderExpenseTransactions(chargeCategory, 0)}
+            </View>
+          ) : null}
+        </Card>
+        <View style={{ height: bottomInsetPadding(insets.bottom, 112) }} />
       </>
     );
   };

@@ -154,6 +154,19 @@ function canonicalDecimal(value: unknown): string {
   return `${match[1] === '-' && !zero ? '-' : ''}${whole}${fraction ? `.${fraction}` : ''}`;
 }
 
+export function summarizePendingCommands(commands: readonly PendingCommand[]): PendingSummary {
+  const summary: PendingSummary = { total: 0, pending: 0, conflict: 0, needs_review: 0, rejected: 0, resolved: 0, byDomain: {} };
+  for (const command of commands) {
+    if (command.resolution) { summary.resolved++; continue; }
+    if (command.failure?.kind === 'rejected') { summary.rejected++; continue; }
+    summary.total++;
+    summary[command.state]++;
+    const domains = command.members.length ? command.members.map(member => member.domain) : command.diagnostic ? [command.diagnostic.sourceDomain] : [];
+    for (const domain of new Set(domains)) summary.byDomain[domain] = (summary.byDomain[domain] ?? 0) + 1;
+  }
+  return summary;
+}
+
 export function createPendingJournal(store: KeyValueStore, options: { key?: (userId: string) => string } = {}) {
   const keyFor = (userId: string) => options.key?.(userId) ?? storageKey(userId);
 
@@ -207,17 +220,7 @@ export function createPendingJournal(store: KeyValueStore, options: { key?: (use
       return lock(store, userId, async () => clone((await read(userId)).commands));
     },
     async summarize(userId: string): Promise<PendingSummary> {
-      const commands = await this.list(userId);
-      const summary: PendingSummary = { total: 0, pending: 0, conflict: 0, needs_review: 0, rejected: 0, resolved: 0, byDomain: {} };
-      for (const command of commands) {
-        if (command.resolution) { summary.resolved++; continue; }
-        if (command.failure?.kind === 'rejected') { summary.rejected++; continue; }
-        summary.total++;
-        summary[command.state]++;
-        const domains = command.members.length ? command.members.map(member => member.domain) : command.diagnostic ? [command.diagnostic.sourceDomain] : [];
-        for (const domain of new Set(domains)) summary.byDomain[domain] = (summary.byDomain[domain] ?? 0) + 1;
-      }
-      return summary;
+      return summarizePendingCommands(await this.list(userId));
     },
     async markRejected(userId: string, commandId: string, message: string): Promise<PendingCommand> {
       return this.update(userId, commandId, { state: 'conflict', failure: { kind: 'rejected', message }, reviewReason: 'The server explicitly rejected this command; it is retained and will not be retried automatically.' });
@@ -257,7 +260,7 @@ export function createPendingJournal(store: KeyValueStore, options: { key?: (use
       const index = envelope.commands.findIndex(item => item.commandId === commandId);
       const command = envelope.commands[index];
       if (!command) throw new Error(`Command '${commandId}' was not found.`);
-      if (command.failure?.kind === 'rejected') {
+      if (command.resolution || command.failure?.kind === 'rejected') {
         result = { outcome: 'retained', command: clone(command) };
         return envelope;
       }

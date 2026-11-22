@@ -1,22 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { calendarDaysBetween } from '../src/finance/calendar.ts';
 import {
   ACCENT_COLORS, THEME_MODES, THEME_STYLES, accentDetails, appearanceStorageKeys,
   getAppearancePalette, isLightMode, resolveAppearancePreferences,
 } from '../src/components/appearance-theme.ts';
 import {
   AI_REFERRAL_SOURCE,
+  calculateDailyInterestCost,
   calculateExtraPaymentScenario,
   calculatePayoffPlan,
   calculateStrategyScenario,
   calculateTotalMonthlyIncome,
+  canSuggestLoanPaymentSplit,
   comparePayoffStrategies,
   createDefaultOnboardingData,
+  findPreviousLoanPaymentDate,
   formatCurrency,
   normalizeMonthlyIncome,
   parseMoneyInput,
   parsePercentInput,
+  projectedLoanBalanceAfterPrincipal,
   resolveAuthenticatedStage,
+  resolveAutoLoanSplitSuggestion,
+  resolveNextAutoDueDate,
   resolveOneTimePaymentPeriod,
   sortDebtsByStrategy,
   suggestLoanPaymentSplit,
@@ -383,6 +390,58 @@ test('T-301: suggestLoanPaymentSplit computes escrow-first and monthly interest 
   });
 });
 
+test('T-346: suggestLoanPaymentSplit tracks mortgage amortization, extra principal, payoff cap, and canSuggestLoanPaymentSplit guards', () => {
+  let balance = 313990.56;
+  const expectedBalances = [313346.54, 312700.58, 312052.67, 311402.80];
+  let lastSplit = null;
+  for (const expectedBalance of expectedBalances) {
+    lastSplit = suggestLoanPaymentSplit({
+      balance,
+      aprPercent: 3.625,
+      paymentAmount: 2210.90,
+      escrowAmount: 618.37,
+      currencyCode: 'USD',
+    });
+    balance = projectedLoanBalanceAfterPrincipal(balance, lastSplit.principal, 'USD');
+    assert.equal(balance, expectedBalance);
+  }
+  assert.deepEqual(lastSplit, {
+    escrow: 618.37,
+    interest: 942.66,
+    principal: 649.87,
+  });
+
+  const extraSplit = suggestLoanPaymentSplit({
+    balance: 312052.67,
+    aprPercent: 3.625,
+    paymentAmount: 2500.00,
+    escrowAmount: 618.37,
+    currencyCode: 'USD',
+  });
+  assert.deepEqual(extraSplit, {
+    escrow: 618.37,
+    interest: 942.66,
+    principal: 938.97,
+  });
+
+  const finalPayoff = suggestLoanPaymentSplit({
+    balance: 500.00,
+    aprPercent: 3.625,
+    paymentAmount: 2210.90,
+    escrowAmount: 618.37,
+    currencyCode: 'USD',
+  });
+  assert.equal(finalPayoff.principal, 500);
+  assert.equal(projectedLoanBalanceAfterPrincipal(500, finalPayoff.principal, 'USD'), 0);
+
+  assert.equal(canSuggestLoanPaymentSplit({ category: 'Mortgage', balance: 300000, apr: 3.625 }, 0), true);
+  assert.equal(canSuggestLoanPaymentSplit({ category: 'Mortgage', balance: 300000, apr: 3.625 }, 618.37), true);
+  assert.equal(canSuggestLoanPaymentSplit({ category: 'Mortgage', balance: 300000, apr: 3.625 }, undefined), false);
+  assert.equal(canSuggestLoanPaymentSplit({ category: 'Auto loan', balance: 15000, apr: 5.5 }, undefined), true);
+  assert.equal(canSuggestLoanPaymentSplit({ category: 'Credit card', balance: 2000, apr: 19.99 }, 0), false);
+  assert.equal(canSuggestLoanPaymentSplit({ category: 'Auto loan', balance: 0, apr: 5.5 }, undefined), false);
+});
+
 test('appearance preferences migrate and retain all three independently saved choices', () => {
   assert.deepEqual(resolveAppearancePreferences(null, 'Inspire', 'Indigo'), { style: 'Inspire', mode: 'Light', accent: 'indigo' });
   assert.deepEqual(resolveAppearancePreferences(null, 'Dark', 'Cobalt'), { style: 'Fresh', mode: 'Dark', accent: 'cobalt' });
@@ -486,4 +545,154 @@ test('T-313: resolveOneTimePaymentPeriod and calculateStrategyScenario model com
   assert.equal(febPreview.oneTimePayment.totalPaid, 1500);
   assert.equal(febPreview.oneTimePayment.scenarioExtraPaid, 1300);
   assert.ok(decPreview.projected.totalInterest < febPreview.projected.totalInterest);
+});
+
+test('T-347: calendarDaysBetween handles same-day, cross-month, DST boundaries, leap years, and negative diffs', () => {
+  assert.equal(calendarDaysBetween('2026-03-09', '2026-03-09'), 0);
+  assert.equal(calendarDaysBetween('2026-03-09', '2026-04-03'), 25);
+  assert.equal(calendarDaysBetween('2026-08-01', '2026-09-08'), 38);
+  assert.equal(calendarDaysBetween('2026-09-08', '2026-10-02'), 24);
+  // US DST spring-forward (2026-03-08) and fall-back (2026-11-01)
+  assert.equal(calendarDaysBetween('2026-03-07', '2026-03-09'), 2);
+  assert.equal(calendarDaysBetween('2026-10-31', '2026-11-02'), 2);
+  // Leap year Feb 29
+  assert.equal(calendarDaysBetween('2024-02-28', '2024-03-01'), 2);
+  assert.equal(calendarDaysBetween('2026-02-28', '2026-03-01'), 1);
+  // Negative diff
+  assert.equal(calendarDaysBetween('2026-04-03', '2026-03-09'), -25);
+});
+
+test('T-347: Actual/365 daily simple interest progression matches 9-payment Auto loan schedule and same-day extra payment', () => {
+  const schedule = [
+    { date: '2026-03-09', expectedDays: 30, expectedInterest: 117.88 },
+    { date: '2026-04-03', expectedDays: 25, expectedInterest: 96.36 },
+    { date: '2026-05-02', expectedDays: 29, expectedInterest: 109.49 },
+    { date: '2026-05-30', expectedDays: 28, expectedInterest: 103.57 },
+    { date: '2026-06-30', expectedDays: 31, expectedInterest: 112.26 },
+    { date: '2026-08-01', expectedDays: 32, expectedInterest: 113.45 },
+    { date: '2026-09-08', expectedDays: 38, expectedInterest: 131.84 },
+    { date: '2026-10-02', expectedDays: 24, expectedInterest: 81.51 },
+    { date: '2026-11-02', expectedDays: 31, expectedInterest: 102.78 },
+  ];
+
+  let balance = 24516.35;
+  const apr = 5.85;
+  const paymentAmount = 587.30;
+  const txs = [
+    { id: 'tx-init', accountId: 'auto-1', date: '2026-02-07', category: 'payment', deletedAt: null },
+  ];
+
+  const interestsByDate = new Map();
+  let previousDailyCost = Infinity;
+
+  for (let i = 0; i < schedule.length; i += 1) {
+    const row = schedule[i];
+    const est = resolveAutoLoanSplitSuggestion({
+      debt: { id: 'auto-1', balance, apr },
+      paymentAmount,
+      paymentDate: row.date,
+      transactions: txs,
+      currencyCode: 'USD',
+    });
+    assert.equal(est.method, 'daily_simple');
+    assert.equal(est.daysElapsed, row.expectedDays);
+    assert.ok(
+      Math.round(Math.abs(est.suggestion.interest - row.expectedInterest) * 100) <= 1,
+      `Row ${row.date}: expected interest ~${row.expectedInterest}, got ${est.suggestion.interest}`,
+    );
+    assert.ok(est.dailyInterestCost < previousDailyCost);
+    previousDailyCost = est.dailyInterestCost;
+    interestsByDate.set(row.date, est.suggestion.interest);
+
+    balance = projectedLoanBalanceAfterPrincipal(balance, est.suggestion.principal, 'USD');
+    txs.push({ id: `tx-${i + 1}`, accountId: 'auto-1', date: row.date, category: 'payment', deletedAt: null });
+  }
+
+  assert.ok(interestsByDate.get('2026-09-08') > interestsByDate.get('2026-10-02'));
+  assert.ok(Math.abs(balance - 20199.79) <= 0.05, `Expected ending balance ~20199.79, got ${balance}`);
+  const finalDailyCost = calculateDailyInterestCost(balance, apr);
+  assert.ok(Math.abs(finalDailyCost - 3.24) < 0.01, `Expected final daily cost ~$3.24/day, got ${finalDailyCost}`);
+
+  // Same-day extra auto payment: 0 days elapsed -> $0 interest, full payment to principal, capped at remaining balance
+  const sameDayExtra = resolveAutoLoanSplitSuggestion({
+    debt: { id: 'auto-1', balance: 500, apr },
+    paymentAmount: 650,
+    paymentDate: '2026-11-02',
+    transactions: txs,
+    currencyCode: 'USD',
+  });
+  assert.equal(sameDayExtra.method, 'daily_simple');
+  assert.equal(sameDayExtra.daysElapsed, 0);
+  assert.equal(sameDayExtra.suggestion.interest, 0);
+  assert.equal(sameDayExtra.suggestion.principal, 500);
+});
+
+test('T-347: findPreviousLoanPaymentDate, resolveAutoLoanSplitSuggestion, and resolveNextAutoDueDate handle exclusions, bill links, fallbacks, and month clamping', () => {
+  const txs = [
+    { id: 'bill:bill-auto:2026-09-01', accountId: null, date: '2026-09-01', category: 'debit_bill', deletedAt: null, memo: 'Auto bill [bill:bill-auto]' },
+    { id: 'tx-charge', accountId: 'auto-1', date: '2026-10-05', category: 'fee', deletedAt: null },
+    { id: 'tx-pending', accountId: 'auto-1', date: '2026-10-12', category: 'payment', deletedAt: null, isPending: true },
+    { id: 'tx-deleted', accountId: 'auto-1', date: '2026-10-15', category: 'payment', deletedAt: '2026-10-16T00:00:00Z' },
+    { id: 'tx-confirmed', accountId: 'auto-1', date: '2026-10-02', category: 'payment', deletedAt: null },
+    { id: 'tx-future', accountId: 'auto-1', date: '2026-11-15', category: 'payment', deletedAt: null },
+  ];
+
+  assert.equal(
+    findPreviousLoanPaymentDate({ debtId: 'auto-1', transactions: txs, onOrBeforeDate: '2026-11-02' }),
+    '2026-10-02',
+  );
+  // Excluding tx-confirmed falls back to legacy linked bill payment
+  assert.equal(
+    findPreviousLoanPaymentDate({
+      debtId: 'auto-1',
+      transactions: txs,
+      onOrBeforeDate: '2026-11-02',
+      excludeTransactionId: 'tx-confirmed',
+      linkedBillIds: ['bill-auto'],
+    }),
+    '2026-09-01',
+  );
+
+  // Fallback to monthly when no prior payment exists
+  const noHistoryEst = resolveAutoLoanSplitSuggestion({
+    debt: { id: 'auto-new', balance: 12000, apr: 6 },
+    paymentAmount: 400,
+    paymentDate: '2026-11-02',
+    transactions: txs,
+    currencyCode: 'USD',
+  });
+  assert.equal(noHistoryEst.method, 'monthly');
+  assert.equal(noHistoryEst.daysElapsed, null);
+  assert.equal(noHistoryEst.lastPaymentDate, null);
+  assert.equal(noHistoryEst.suggestion.interest, 60);
+  assert.equal(noHistoryEst.suggestion.principal, 340);
+
+  // Explicit preferredMethod: 'monthly' overrides daily_simple even when prior payment exists
+  const forcedMonthly = resolveAutoLoanSplitSuggestion({
+    debt: { id: 'auto-1', balance: 12000, apr: 6 },
+    paymentAmount: 400,
+    paymentDate: '2026-11-02',
+    transactions: txs,
+    currencyCode: 'USD',
+    preferredMethod: 'monthly',
+  });
+  assert.equal(forcedMonthly.method, 'monthly');
+  assert.equal(forcedMonthly.daysElapsed, null);
+  assert.equal(forcedMonthly.lastPaymentDate, '2026-10-02');
+  assert.equal(forcedMonthly.suggestion.interest, 60);
+
+  // resolveNextAutoDueDate advances past today & lastPaymentDate and clamps day 31 in shorter months
+  assert.equal(resolveNextAutoDueDate({ dueDay: null, today: '2026-11-01' }), null);
+  assert.equal(
+    resolveNextAutoDueDate({ dueDay: 31, today: '2026-11-01', lastPaymentDate: '2026-10-31' }),
+    '2026-11-30',
+  );
+  assert.equal(
+    resolveNextAutoDueDate({ dueDay: 31, today: '2026-11-30', lastPaymentDate: '2026-11-30' }),
+    '2026-12-31',
+  );
+  assert.equal(
+    resolveNextAutoDueDate({ dueDay: 31, today: '2026-02-15', lastPaymentDate: null }),
+    '2026-02-28',
+  );
 });

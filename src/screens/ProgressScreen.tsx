@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { StyleSheet, useWindowDimensions, type DimensionValue } from 'react-native';
 import Svg, { Circle, Defs, Line, LinearGradient, Path, RadialGradient, Stop } from 'react-native-svg';
 import { AmountText } from '../components/AmountText';
@@ -14,7 +14,7 @@ import { calculateTransactionBalanceDelta, isPaidOffAccountArchived, type Ledger
 import { makeMoney, moneyToMajor } from '../finance/money';
 import { calculateAccountActivities, calculateActivitySummary, calculateCreditUtilization, calculateMilestones, filterTransactionsByPeriod, type ProgressPeriod } from '../finance/progress';
 import { formatCurrency, type DebtItem, type PayoffStrategy } from '../onboarding-domain';
-import { DEFAULT_TAB_UI_PREFERENCES, useTabShell, type TabUiPreferences } from '../components/TabShellContext';
+import { DEFAULT_TAB_UI_PREFERENCES, useProgressUiPreferences, useSetTabUiPreferences, type TabUiPreferences } from '../components/TabShellContext';
 
 const longMonth = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const shortMonth = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
@@ -139,7 +139,7 @@ function AwardSeal({ earned, size = 68 }: { earned: boolean; size?: number }) {
   );
 }
 
-export function ProgressScreen({
+export const ProgressScreen = memo(function ProgressScreen({
   debts,
   transactions = [],
   currencySymbol = '$',
@@ -162,10 +162,11 @@ export function ProgressScreen({
   onSelectDebt?: (debtId: string) => void;
   onOpenStrategy?: () => void;
 }) {
-  const shell = useTabShell();
+  const progressUi = useProgressUiPreferences();
+  const shellSetUiPreferences = useSetTabUiPreferences();
   const [localUiPreferences, setLocalUiPreferences] = useState<TabUiPreferences>(DEFAULT_TAB_UI_PREFERENCES);
-  const uiPreferences = shell?.uiPreferences ?? localUiPreferences;
-  const setUiPreferences = shell?.setUiPreferences ?? setLocalUiPreferences;
+  const uiPreferences = progressUi ?? localUiPreferences;
+  const setUiPreferences = shellSetUiPreferences ?? setLocalUiPreferences;
   const tab = uiPreferences.progressSection;
   const setTab = (value: 'Overview' | 'Utilization' | 'Milestones') => setUiPreferences(current => ({ ...current, progressSection: value }));
   const [period, setPeriod] = useState<ProgressPeriod>('current_month');
@@ -182,56 +183,78 @@ export function ProgressScreen({
   const selectedDate = selectedPeriod.length === 7 ? new Date(`${selectedPeriod}-01T12:00:00Z`) : null;
   const dateLabel = lifetime ? 'Lifetime' : selectedDate ? longMonth.format(selectedDate) : selectedPeriod;
   const periodTag = selectedDate ? shortMonth.format(selectedDate).toLocaleUpperCase() : dateLabel.toLocaleUpperCase();
-  const earliestYear = transactions.reduce((earliest, tx) => {
-    const year = Number(tx.date.slice(0, 4));
-    return tx.deletedAt === null && year >= 1970 ? Math.min(earliest, year) : earliest;
-  }, currentYear);
-
-  const overviewDebts = debts.filter(debt => debt.category === 'Credit card' || debt.category === 'Personal loan');
-  const overviewDebtById = new Map(overviewDebts.map(debt => [debt.id, debt]));
-  const activeProgressDebts = overviewDebts.filter(debt => !isPaidOffAccountArchived(debt, archivedPaidOffDebtIds));
-  const overviewTransactions = transactions.filter(
-    tx => tx.accountId !== null && overviewDebtById.has(tx.accountId),
+  const earliestYear = useMemo(
+    () => transactions.reduce((earliest, tx) => {
+      const year = Number(tx.date.slice(0, 4));
+      return tx.deletedAt === null && year >= 1970 ? Math.min(earliest, year) : earliest;
+    }, currentYear),
+    [transactions, currentYear],
   );
-  const summary = calculateActivitySummary({
-    transactions: overviewTransactions,
-    debts: overviewDebts,
-    period: selectedPeriod,
-    today,
-    currencyCode,
-  });
-  const movements = { payments: 0, spending: 0, interest: 0, refunds: 0, adjustments: 0, other: 0 };
-  for (const tx of filterTransactionsByPeriod(overviewTransactions, selectedPeriod, today)) {
-    const debt = tx.accountId === null ? undefined : overviewDebtById.get(tx.accountId);
-    if (!debt || tx.isPending || tx.amount.currency !== currencyCode) continue;
-    const key = tx.source === 'reconciliation' || ['interest_adjustment', 'balance_adjustment', 'credit_adjustment'].includes(tx.category)
-      ? 'adjustments' : tx.category === 'payment' ? 'payments' : tx.category === 'refund' ? 'refunds'
-      : ['interest', 'fee', 'annual_fee'].includes(tx.category) ? 'interest'
-      : ['purchase', 'subscription', 'utilities'].includes(tx.category) ? 'spending' : 'other';
-    movements[key] += calculateTransactionBalanceDelta(tx, debt.category).minorUnits;
-  }
-  const movementTotal = moneyToMajor(makeMoney(currencyCode, Object.values(movements).reduce((sum, value) => sum + value, 0)));
+
+  const {
+    overviewDebts,
+    overviewDebtById,
+    activeProgressDebts,
+    overviewTransactions,
+    hasPending,
+  } = useMemo(() => {
+    const overviewDebts = debts.filter(debt => debt.category === 'Credit card' || debt.category === 'Personal loan');
+    const overviewDebtById = new Map(overviewDebts.map(debt => [debt.id, debt]));
+    const activeProgressDebts = overviewDebts.filter(debt => !isPaidOffAccountArchived(debt, archivedPaidOffDebtIds));
+    const overviewTransactions = transactions.filter(
+      tx => tx.accountId !== null && overviewDebtById.has(tx.accountId),
+    );
+    const hasPending = overviewTransactions.some(tx => tx.isPending && tx.deletedAt === null);
+    return { overviewDebts, overviewDebtById, activeProgressDebts, overviewTransactions, hasPending };
+  }, [debts, archivedPaidOffDebtIds, transactions]);
+
+  const summary = useMemo(
+    () => calculateActivitySummary({
+      transactions: overviewTransactions,
+      debts: overviewDebts,
+      period: selectedPeriod,
+      today,
+      currencyCode,
+    }),
+    [overviewTransactions, overviewDebts, selectedPeriod, today, currencyCode],
+  );
+  const movementTotal = useMemo(() => {
+    let totalMinor = 0;
+    for (const tx of filterTransactionsByPeriod(overviewTransactions, selectedPeriod, today)) {
+      const debt = tx.accountId === null ? undefined : overviewDebtById.get(tx.accountId);
+      if (!debt || tx.isPending || tx.amount.currency !== currencyCode) continue;
+      totalMinor += calculateTransactionBalanceDelta(tx, debt.category).minorUnits;
+    }
+    return moneyToMajor(makeMoney(currencyCode, totalMinor));
+  }, [overviewTransactions, overviewDebtById, selectedPeriod, today, currencyCode]);
   const signedAmount = (value: number) => `${value > 0 ? '+' : value < 0 ? '-' : ''}${formatCurrency(Math.abs(value), currencySymbol)}`;
-  const accountActivities = calculateAccountActivities({
-    transactions: overviewTransactions,
-    debts: activeProgressDebts,
-    period: selectedPeriod,
-    today,
-    currencyCode,
-  });
-  const archivedUtilizationDebtIds = debts
-    .filter(debt => isPaidOffAccountArchived(debt, archivedPaidOffDebtIds))
-    .map(debt => debt.id);
-  const paidOffDebts = debts.filter(debt => isPaidOffAccountArchived(debt, archivedPaidOffDebtIds));
-  const utilization = calculateCreditUtilization(activeProgressDebts, currencyCode);
-  const milestones = calculateMilestones({
-    debts,
-    transactions,
-    currencyCode,
-    excludedUtilizationDebtIds: archivedUtilizationDebtIds,
-    archivedPaidOffDebtIds,
-  });
-  const hasPending = overviewTransactions.some(tx => tx.isPending && tx.deletedAt === null);
+  const accountActivities = useMemo(
+    () => calculateAccountActivities({
+      transactions: overviewTransactions,
+      debts: activeProgressDebts,
+      period: selectedPeriod,
+      today,
+      currencyCode,
+    }),
+    [overviewTransactions, activeProgressDebts, selectedPeriod, today, currencyCode],
+  );
+  const {
+    paidOffDebts,
+    utilization,
+    milestones,
+  } = useMemo(() => {
+    const paidOffDebts = debts.filter(debt => isPaidOffAccountArchived(debt, archivedPaidOffDebtIds));
+    const archivedUtilizationDebtIds = paidOffDebts.map(debt => debt.id);
+    const utilization = calculateCreditUtilization(activeProgressDebts, currencyCode);
+    const milestones = calculateMilestones({
+      debts,
+      transactions,
+      currencyCode,
+      excludedUtilizationDebtIds: archivedUtilizationDebtIds,
+      archivedPaidOffDebtIds,
+    });
+    return { paidOffDebts, utilization, milestones };
+  }, [debts, archivedPaidOffDebtIds, activeProgressDebts, transactions, currencyCode]);
 
   const fallbackPlanned = activeProgressDebts
     .filter(d => d.balance > 0)
@@ -995,4 +1018,4 @@ export function ProgressScreen({
       onSelect={setPeriod} onClose={() => setShowDate(false)} /> : null}
     </>
   );
-}
+});

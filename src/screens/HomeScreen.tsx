@@ -1,6 +1,6 @@
 import { settingsFailureSnapshot } from '../settings-contract';
 import { BitLessMark } from '../components/BitLessMark';
-import React, { useState, useRef, useEffect, useCallback, useMemo, type ReactNode, type ComponentRef } from 'react';
+import React, { memo, useState, useRef, useEffect, useCallback, useMemo, type ReactNode, type ComponentRef } from 'react';
 import {
   AppState,
   Keyboard,
@@ -13,7 +13,7 @@ import { Pressable, ScrollView, Text, TextInput, View, useNativeAppearance } fro
 import Svg, { Path } from 'react-native-svg';
 import * as ExpoCrypto from 'expo-crypto';
 import type { Session } from '@supabase/supabase-js';
-import { AppIcon } from '../components/AppIcon';
+import { AppIcon, type NavigationTabIconName } from '../components/AppIcon';
 import { AccountMark } from '../components/AccountMark';
 import { AmountText } from '../components/AmountText';
 import { HeroGradient } from '../components/HeroGradient';
@@ -25,7 +25,7 @@ import {
   SnapshotCard,
   ui,
 } from '../components/FinancialScreen';
-import { FiveTabShell } from '../FiveTabShell';
+import { FiveTabShell, HomePaneVisibilityContext } from '../FiveTabShell';
 import { DebtScreen } from './DebtScreen';
 import { TransactionsScreen } from './TransactionsScreen';
 import { BudgetScreen } from './BudgetScreen';
@@ -129,12 +129,28 @@ export type DebtDetailsDraft = {
   annualFeeNextDate: string;
 };
 
+const EMPTY_PAIRINGS: NonNullable<UserOnboardingData['loanBillPairingByDebtId']> = {};
+const EMPTY_ARCHIVED_IDS: readonly string[] = [];
+const DEVICE_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const SHORT_ACTIVITY_DATE_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const INSPIRE_BAR_COLORS = ['#14B8A6', '#06B6D4', '#38BDF8', '#60A5FA', '#A78BFA', '#F472B6', '#FBBF24'] as const;
+const INSPIRE_STRATEGY_ROWS_LIGHT = [
+  { bg: '#FFF8E5', border: '#F3E0B2' },
+  { bg: '#F3EEFF', border: '#DFD3FA' },
+  { bg: '#E8F8FC', border: '#CBE6EC' },
+] as const;
+const INSPIRE_STRATEGY_ROWS_DARK = [
+  { bg: '#21231B', border: '#3B3822' },
+  { bg: '#1C1B2F', border: '#302C4D' },
+  { bg: '#123240', border: '#224658' },
+] as const;
+
 function formatShortActivityDate(isoDate: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
   if (!match) return isoDate;
   const parsed = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0));
   if (Number.isNaN(parsed.getTime())) return isoDate;
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(parsed);
+  return SHORT_ACTIVITY_DATE_FMT.format(parsed);
 }
 
 export type HomeScreenProps = {
@@ -217,7 +233,6 @@ export function HomeScreen({
   financeRecordsVerified = false,
   reloadFeedback = null,
 }: HomeScreenProps) {
-  const insets = useSafeAreaInsets();
   const canEdit = session
     ? (onboardingData.householdContext ? canEditHousehold(onboardingData.householdContext) : false)
     : true;
@@ -232,18 +247,32 @@ export function HomeScreen({
       refreshPromiseRef.current = null;
     }
   }, [refreshOwnerKey]);
+  const REFRESH_SAFETY_TIMEOUT_MS = 16_000;
   useEffect(() => {
     reloadRef.current = onReload;
     reloadingRef.current = reloading;
   }, [onReload, reloading]);
+  useEffect(() => () => {
+    refreshPromiseRef.current = null;
+  }, []);
   const refreshAccountData = useCallback((): Promise<void> => {
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
     if (reloadingRef.current) return Promise.resolve();
     const requestedOwner = refreshOwnerRef.current;
     const reload = reloadRef.current;
-    const promise = Promise.resolve().then(() => {
-      if (refreshOwnerRef.current === requestedOwner) return reload();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const promise = new Promise<void>((resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error('Refresh timed out.'));
+      }, REFRESH_SAFETY_TIMEOUT_MS);
+      Promise.resolve()
+        .then(() => {
+          if (refreshOwnerRef.current === requestedOwner) return reload();
+          return undefined;
+        })
+        .then(resolve, reject);
     }).finally(() => {
+      if (timeoutId !== null) clearTimeout(timeoutId);
       if (refreshPromiseRef.current === promise) refreshPromiseRef.current = null;
     });
     refreshPromiseRef.current = promise;
@@ -256,13 +285,15 @@ export function HomeScreen({
   const [settingsUncertain, setSettingsUncertain] = useState(false);
   const [checkingSettings, setCheckingSettings] = useState(false);
   const settingsUncertainRef = useRef(false);
-  const markSettingsUncertain = () => { settingsUncertainRef.current = true; setSettingsUncertain(true); };
-  const requireConfirmedSettings = () => {
+  const markSettingsUncertain = useCallback(() => {
+    settingsUncertainRef.current = true;
+    setSettingsUncertain(true);
+  }, []);
+  const requireConfirmedSettings = useCallback(() => {
     if (settingsUncertainRef.current) throw new Error('Check the unconfirmed settings save before making another settings change.');
-  };
+  }, []);
 
   const [showSettings, setShowSettings] = useState(false);
-  const [homeVisible, setHomeVisible] = useState(true);
   const [homeInformationOpen, setHomeInformationOpen] = useState(false);
   const homeScrollRef = useRef<ComponentRef<typeof NativeScrollView>>(null);
   const pairingReviewY = useRef(0);
@@ -285,33 +316,23 @@ export function HomeScreen({
   }, [onboardingData]);
   const [pairingBusy, setPairingBusy] = useState(false);
 
-  // Add/Edit Debt form state
-  const [editingDebtId, setEditingDebtId] = useState<string | null>(null);
+  // Add/Edit Debt form state (draft inputs isolated inside DebtEditorModal)
   const draftDebtIdRef = useRef<string | null>(null);
   const draftDebtPaidTodayRef = useRef<Record<string, boolean>>({});
-  const [showDebtForm, setShowDebtForm] = useState(false);
-  const [confirmLoanDeletion, setConfirmLoanDeletion] = useState(false);
-  const [debtCategory, setDebtCategory] = useState<DebtCategory>('Credit card');
-  const [debtName, setDebtName] = useState('');
-  const [debtBalance, setDebtBalance] = useState('');
-  const [debtOriginalBalance, setDebtOriginalBalance] = useState('');
-  const [debtApr, setDebtApr] = useState('');
-  const [debtMinimum, setDebtMinimum] = useState('');
-  const [mortgageEscrow, setMortgageEscrow] = useState('');
-  const [debtDueDay, setDebtDueDay] = useState('');
-  const [debtCreditLimit, setDebtCreditLimit] = useState('');
-  const [debtAnnualFeeAmount, setDebtAnnualFeeAmount] = useState('');
-  const [debtAnnualFeeNextDate, setDebtAnnualFeeNextDate] = useState('');
-  const [debtMinimumMode, setDebtMinimumMode] = useState<'auto' | 'manual'>('auto');
-  const [showDebtMoreDetails, setShowDebtMoreDetails] = useState(false);
-  const [showDebtDuePicker, setShowDebtDuePicker] = useState(false);
-  const [showDebtRenewalPicker, setShowDebtRenewalPicker] = useState(false);
-  const [showDebtCategoryPicker, setShowDebtCategoryPicker] = useState(false);
+  const debtEditorKeyRef = useRef(0);
+  const [debtEditorSession, setDebtEditorSession] = useState<{
+    key: number;
+    editingDebt: DebtItem | null;
+    initialDraft: DebtDetailsDraft;
+    initialShowMoreDetails: boolean;
+  } | null>(null);
+  const showDebtForm = debtEditorSession !== null;
+  const editingDebtId = debtEditorSession?.editingDebt?.id ?? null;
 
-  const householdTimeZone =
-    onboardingData?.householdTimeZone ||
-    Intl.DateTimeFormat().resolvedOptions().timeZone ||
-    'UTC';
+  const householdTimeZone = onboardingData?.householdTimeZone || DEVICE_TIME_ZONE;
+  const todayKey = currentHouseholdDate(householdTimeZone);
+  const archivedPaidOffIds = onboardingData.archivedPaidOffDebtIds ?? EMPTY_ARCHIVED_IDS;
+  const stableLoanBillPairings = onboardingData.loanBillPairingByDebtId ?? EMPTY_PAIRINGS;
 
   const plan: PayoffPlanResult = useMemo(
     () =>
@@ -322,24 +343,59 @@ export function HomeScreen({
         new Date(),
         currencyCode,
         householdTimeZone,
-        onboardingData.archivedPaidOffDebtIds,
+        archivedPaidOffIds,
       ),
-    [onboardingData.debts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, householdTimeZone, onboardingData.archivedPaidOffDebtIds],
+    // Invalidate on household date rollover alongside inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onboardingData.debts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffIds, todayKey],
   );
 
-  const todayKey = currentHouseholdDate(householdTimeZone);
+  const progressDebts = useMemo(
+    () =>
+      onboardingData.debts.filter(
+        item => (item.category === 'Credit card' || item.category === 'Personal loan') && !isPaidOffAccountArchived(item, archivedPaidOffIds),
+      ),
+    [onboardingData.debts, archivedPaidOffIds],
+  );
+
+  const progressPayoffPlan: PayoffPlanResult = useMemo(
+    () =>
+      calculatePayoffPlan(
+        progressDebts,
+        onboardingData.strategy,
+        onboardingData.extraMonthlyPayment,
+        new Date(),
+        currencyCode,
+        householdTimeZone,
+        archivedPaidOffIds,
+      ),
+    // Invalidate on household date rollover alongside inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [progressDebts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffIds, todayKey],
+  );
+
   const loanRuntime = useMemo(() => unifiedLoanRuntime({ debts: onboardingData.debts, bills: recurringBills, pairings: onboardingData.loanBillPairingByDebtId, archived: onboardingData.archivedPaidOffDebtIds, currency: currencyCode }), [onboardingData.debts, recurringBills, onboardingData.loanBillPairingByDebtId, onboardingData.archivedPaidOffDebtIds, currencyCode]);
   const loanBillPairs = loanRuntime.legacyPairs;
   const historicalLoanBillIds = loanRuntime.aliases;
   const canonicalPlanAliases = useMemo(() => Object.fromEntries(Object.entries(loanRuntime.aliases).filter(([id]) => !loanRuntime.legacyPairs[id] && !loanRuntime.excludedDebtIds.includes(id))), [loanRuntime]);
   const effectiveDebtSplitPlans = useMemo(() => resolveUnifiedDebtSplitPlans(onboardingData.debtPaymentSplitPlansByDebtId, onboardingData.billPaymentSplitPlansByBillId, canonicalPlanAliases), [onboardingData.debtPaymentSplitPlansByDebtId, onboardingData.billPaymentSplitPlansByBillId, canonicalPlanAliases]);
-  const identityLoanBillPairs = uniqueHistoricalBillIdByDebtId(onboardingData.loanBillPairingByDebtId);
+  const identityLoanBillPairs = useMemo(
+    () => uniqueHistoricalBillIdByDebtId(onboardingData.loanBillPairingByDebtId),
+    [onboardingData.loanBillPairingByDebtId],
+  );
   const pairingAudit = loanRuntime.audit;
   const scheduledDebtAccounts = useMemo(() => onboardingData.debts.filter(debt => !loanRuntime.excludedDebtIds.includes(debt.id)), [onboardingData.debts, loanRuntime]);
-  const incompleteLoanSchedules = loansWithIncompleteSchedule(onboardingData.debts, onboardingData.archivedPaidOffDebtIds);
-  const debtById = new Map(onboardingData.debts.map(debt => [debt.id, debt]));
-  const linkedDebtByBillId = new Map(
-    Object.entries(identityLoanBillPairs).map(([debtId, billId]) => [billId, debtById.get(debtId)]),
+  const incompleteLoanSchedules = useMemo(
+    () => loansWithIncompleteSchedule(onboardingData.debts, archivedPaidOffIds),
+    [onboardingData.debts, archivedPaidOffIds],
+  );
+  const debtById = useMemo(
+    () => new Map(onboardingData.debts.map(debt => [debt.id, debt])),
+    [onboardingData.debts],
+  );
+  const linkedDebtByBillId = useMemo(
+    () => new Map(Object.entries(identityLoanBillPairs).map(([debtId, billId]) => [billId, debtById.get(debtId)])),
+    [identityLoanBillPairs, debtById],
   );
   const archivedLinkedBillIds = loanRuntime.excludedBillIds;
   const windowEndKey = addCalendarDays(todayKey, 10);
@@ -393,116 +449,151 @@ export function HomeScreen({
     [scheduledRows, effectiveDebtSplitPlans, onboardingData.billPaymentSplitPlansByBillId, historicalLoanBillIds, transactions, todayKey],
   );
 
-  const installmentsByRowId = new Map<string, typeof plannedInstallments>();
-  for (const event of plannedInstallments) {
-    const existing = installmentsByRowId.get(event.obligationId);
-    if (existing) existing.push(event);
-    else installmentsByRowId.set(event.obligationId, [event]);
-  }
-
-  const allUpcomingCandidates: HomeUpcomingItem[] = [];
-  for (const row of scheduledRows) {
-    const match = row.state.confirmedMatch;
-    if (row.state.status === 'paid' || match.isSatisfied) continue;
-    const linkedDebt = row.kind === 'bill' && row.bill ? linkedDebtByBillId.get(row.bill.id) : undefined;
-    const baseName = row.kind === 'debt'
-      ? (row.debt?.name ?? row.name.replace(/\s+minimum$/i, ''))
-      : (linkedDebt?.name ?? row.bill?.name ?? row.name);
-    const category = row.kind === 'debt' ? row.debt?.category : (linkedDebt?.category ?? row.bill?.category);
-    const accountId = row.kind === 'debt' ? row.debt?.id : row.bill?.creditAccountId;
-    const totalPaidMajor = moneyToMajor(match.totalPaid);
-    const pendingAmountMajor = moneyToMajor(row.state.pendingAmount);
-    const isPendingConfirmation = row.state.status === 'pending_confirmation';
-    const settlementStatus = row.state.status as 'unpaid' | 'partially_paid' | 'pending_confirmation';
-    const rowEvents = installmentsByRowId.get(row.id) ?? [];
-
-    if (rowEvents.length > 0) {
-      const confirmedPaidMinor = Math.max(0, row.requiredAmount.minorUnits - match.remainingAmount.minorUnits);
-      for (const event of rowEvents) {
-        if (event.status === 'covered') continue;
-        if (event.date > windowEndKey) continue;
-        const neededForTargetMinor = Math.max(0, event.cumulativeTargetMinor - confirmedPaidMinor);
-        const installmentRemainingMinor = Math.min(event.amountMinor, match.remainingAmount.minorUnits, neededForTargetMinor);
-        if (installmentRemainingMinor <= 0 && event.status !== 'pending') continue;
-        const isPastDue = event.date < todayKey;
-        const isCritical = isPastDue || event.date <= criticalEndKey;
-        const installmentAmountMajor = installmentRemainingMinor / 10 ** currencyScale;
-        const installmentPaidMinor = Math.max(0, event.amountMinor - installmentRemainingMinor);
-        const installmentPartial = installmentPaidMinor > 0 && installmentRemainingMinor > 0;
-        allUpcomingCandidates.push({
-          id: `${row.id}:inst:${event.installment}`,
-          name: baseName,
-          dueDate: event.date,
-          amount: installmentAmountMajor,
-          isPartiallyPaid: installmentPartial || match.isPartiallyPaid,
-          isPastDue,
-          isCritical,
-          totalPaid: installmentPartial ? installmentPaidMinor / 10 ** currencyScale : totalPaidMajor,
-          settlementStatus: event.status === 'pending' ? 'pending_confirmation' : (installmentPartial || match.isPartiallyPaid) ? 'partially_paid' : 'unpaid',
-          isPendingConfirmation: event.status === 'pending' || isPendingConfirmation,
-          pendingAmount: pendingAmountMajor,
-          category,
-          installmentLabel: `Installment ${event.installment}`,
-          payTarget: {
-            type: row.kind,
-            name: baseName,
-            dueDate: row.dueDate,
-            requiredAmount: moneyToMajor(row.requiredAmount),
-            overridePayAmount: installmentAmountMajor,
-            installmentLabel: `Installment ${event.installment} (${event.date})`,
-            accountId,
-            bill: row.bill,
-            debt: row.debt,
-          },
-        });
-      }
-      continue;
+  const { futureUpcomingItems, sortedUpcomingItems } = useMemo(() => {
+    const installmentsByRowId = new Map<string, typeof plannedInstallments>();
+    for (const event of plannedInstallments) {
+      const existing = installmentsByRowId.get(event.obligationId);
+      if (existing) existing.push(event);
+      else installmentsByRowId.set(event.obligationId, [event]);
     }
 
-    if (row.dueDate > windowEndKey) continue;
-    const isPastDue = row.dueDate < todayKey;
-    const isCritical = isPastDue || row.dueDate <= criticalEndKey;
-    allUpcomingCandidates.push({
-      id: row.id,
-      name: baseName,
-      dueDate: row.dueDate,
-      amount: moneyToMajor(match.remainingAmount),
-      isPartiallyPaid: match.isPartiallyPaid,
-      isPastDue,
-      isCritical,
-      totalPaid: totalPaidMajor,
-      settlementStatus,
-      isPendingConfirmation,
-      pendingAmount: pendingAmountMajor,
-      category,
-      payTarget: {
-        type: row.kind,
+    const allUpcomingCandidates: HomeUpcomingItem[] = [];
+    for (const row of scheduledRows) {
+      const match = row.state.confirmedMatch;
+      if (row.state.status === 'paid' || match.isSatisfied) continue;
+      const linkedDebt = row.kind === 'bill' && row.bill ? linkedDebtByBillId.get(row.bill.id) : undefined;
+      const baseName = row.kind === 'debt'
+        ? (row.debt?.name ?? row.name.replace(/\s+minimum$/i, ''))
+        : (linkedDebt?.name ?? row.bill?.name ?? row.name);
+      const category = row.kind === 'debt' ? row.debt?.category : (linkedDebt?.category ?? row.bill?.category);
+      const accountId = row.kind === 'debt' ? row.debt?.id : row.bill?.creditAccountId;
+      const totalPaidMajor = moneyToMajor(match.totalPaid);
+      const pendingAmountMajor = moneyToMajor(row.state.pendingAmount);
+      const isPendingConfirmation = row.state.status === 'pending_confirmation';
+      const settlementStatus = row.state.status as 'unpaid' | 'partially_paid' | 'pending_confirmation';
+      const rowEvents = installmentsByRowId.get(row.id) ?? [];
+
+      if (rowEvents.length > 0) {
+        const confirmedPaidMinor = Math.max(0, row.requiredAmount.minorUnits - match.remainingAmount.minorUnits);
+        for (const event of rowEvents) {
+          if (event.status === 'covered') continue;
+          if (event.date > windowEndKey) continue;
+          const neededForTargetMinor = Math.max(0, event.cumulativeTargetMinor - confirmedPaidMinor);
+          const installmentRemainingMinor = Math.min(event.amountMinor, match.remainingAmount.minorUnits, neededForTargetMinor);
+          if (installmentRemainingMinor <= 0 && event.status !== 'pending') continue;
+          const isPastDue = event.date < todayKey;
+          const isCritical = isPastDue || event.date <= criticalEndKey;
+          const installmentAmountMajor = installmentRemainingMinor / 10 ** currencyScale;
+          const installmentPaidMinor = Math.max(0, event.amountMinor - installmentRemainingMinor);
+          const installmentPartial = installmentPaidMinor > 0 && installmentRemainingMinor > 0;
+          allUpcomingCandidates.push({
+            id: `${row.id}:inst:${event.installment}`,
+            name: baseName,
+            dueDate: event.date,
+            amount: installmentAmountMajor,
+            isPartiallyPaid: installmentPartial || match.isPartiallyPaid,
+            isPastDue,
+            isCritical,
+            totalPaid: installmentPartial ? installmentPaidMinor / 10 ** currencyScale : totalPaidMajor,
+            settlementStatus: event.status === 'pending' ? 'pending_confirmation' : (installmentPartial || match.isPartiallyPaid) ? 'partially_paid' : 'unpaid',
+            isPendingConfirmation: event.status === 'pending' || isPendingConfirmation,
+            pendingAmount: pendingAmountMajor,
+            category,
+            installmentLabel: `Installment ${event.installment}`,
+            payTarget: {
+              type: row.kind,
+              name: baseName,
+              dueDate: row.dueDate,
+              requiredAmount: moneyToMajor(row.requiredAmount),
+              overridePayAmount: installmentAmountMajor,
+              installmentLabel: `Installment ${event.installment} (${event.date})`,
+              accountId,
+              bill: row.bill,
+              debt: row.debt,
+            },
+          });
+        }
+        continue;
+      }
+
+      if (row.dueDate > windowEndKey) continue;
+      const isPastDue = row.dueDate < todayKey;
+      const isCritical = isPastDue || row.dueDate <= criticalEndKey;
+      allUpcomingCandidates.push({
+        id: row.id,
         name: baseName,
         dueDate: row.dueDate,
-        requiredAmount: moneyToMajor(row.requiredAmount),
-        accountId,
-        bill: row.bill,
-        debt: row.debt,
-      },
-    });
-  }
+        amount: moneyToMajor(match.remainingAmount),
+        isPartiallyPaid: match.isPartiallyPaid,
+        isPastDue,
+        isCritical,
+        totalPaid: totalPaidMajor,
+        settlementStatus,
+        isPendingConfirmation,
+        pendingAmount: pendingAmountMajor,
+        category,
+        payTarget: {
+          type: row.kind,
+          name: baseName,
+          dueDate: row.dueDate,
+          requiredAmount: moneyToMajor(row.requiredAmount),
+          accountId,
+          bill: row.bill,
+          debt: row.debt,
+        },
+      });
+    }
 
-  const futureUpcomingItems = allUpcomingCandidates.filter(item => !item.isPastDue);
-  const sortedUpcomingItems = [...allUpcomingCandidates].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
-  const upcomingItems = showAllUpcoming ? sortedUpcomingItems : sortedUpcomingItems.slice(0, 4);
+    const future = allUpcomingCandidates.filter(item => !item.isPastDue);
+    const sorted = [...allUpcomingCandidates].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
+    return { futureUpcomingItems: future, sortedUpcomingItems: sorted };
+  }, [scheduledRows, plannedInstallments, linkedDebtByBillId, windowEndKey, todayKey, criticalEndKey, currencyScale]);
+  const upcomingItems = useMemo(
+    () => (showAllUpcoming ? sortedUpcomingItems : sortedUpcomingItems.slice(0, 4)),
+    [showAllUpcoming, sortedUpcomingItems],
+  );
 
-  const overdueItems = calculateOverdueObligations({
-    debts: scheduledDebtAccounts,
-    recurringBills,
-    transactions,
-    asOfDate: todayKey,
-    currencyCode,
-    schedules: onboardingData.obligationSchedules,
-    loanBillPairs,
-    historicalBillIdsByDebtId: historicalLoanBillIds,
-    excludedBillIds: archivedLinkedBillIds,
-  });
-  const pendingTxCount = transactions.filter(tx => tx.isPending && !tx.deletedAt).length;
+  const overdueItems = useMemo(
+    () =>
+      calculateOverdueObligations({
+        debts: scheduledDebtAccounts,
+        recurringBills,
+        transactions,
+        asOfDate: todayKey,
+        currencyCode,
+        schedules: onboardingData.obligationSchedules,
+        loanBillPairs,
+        historicalBillIdsByDebtId: historicalLoanBillIds,
+        excludedBillIds: archivedLinkedBillIds,
+      }),
+    [
+      scheduledDebtAccounts,
+      recurringBills,
+      transactions,
+      todayKey,
+      currencyCode,
+      onboardingData.obligationSchedules,
+      loanBillPairs,
+      historicalLoanBillIds,
+      archivedLinkedBillIds,
+    ],
+  );
+  const pendingTxCount = useMemo(
+    () => transactions.filter(tx => tx.isPending && !tx.deletedAt).length,
+    [transactions],
+  );
+  const recentTxs = useMemo(
+    () =>
+      [...transactions]
+        .filter(t => t.deletedAt === null)
+        .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 3),
+    [transactions],
+  );
+  const homeActiveDebts = useMemo(
+    () => onboardingData.debts.filter(item => !isPaidOffAccountArchived(item, archivedPaidOffIds)),
+    [onboardingData.debts, archivedPaidOffIds],
+  );
   const pairingReviewCount = pairingAudit.divergentLinks.length + pairingAudit.invalidLinks.length;
   const hasWelcomeAttention = overdueItems.length > 0 || sortedUpcomingItems.length > 0 || pendingTxCount > 0 || pairingReviewCount > 0;
 
@@ -518,88 +609,86 @@ export function HomeScreen({
     return () => clearTimeout(id);
   }, [financeRecordsVerified, hasWelcomeAttention]);
 
-  const clearErrors = () => setLocalError('');
+  const clearErrors = useCallback(() => setLocalError(''), []);
 
-  const openSettings = () => {
+  const openSettings = useCallback(() => {
     clearErrors();
     setShowSettings(true);
-  };
+  }, [clearErrors]);
 
-  const closeSettings = () => {
+  const closeSettings = useCallback(() => {
     setShowSettings(false);
-  };
+  }, []);
 
-  const openNewDebtEditor = (
+  const openNewDebtEditor = useCallback((
     category: DebtCategory = 'Credit card',
     prefill?: { name?: string; minimumPayment?: string; dueDay?: string },
   ) => {
     clearErrors();
     draftDebtIdRef.current = null;
     draftDebtPaidTodayRef.current = {};
-    setEditingDebtId(null);
-    setDebtCategory(category);
-    setDebtName(prefill?.name ?? '');
-    setDebtBalance('');
-    setDebtOriginalBalance('');
-    setDebtApr('');
-    setDebtMinimum(prefill?.minimumPayment ?? '');
-    setDebtMinimumMode(prefill?.minimumPayment?.trim() ? 'manual' : 'auto');
-    setMortgageEscrow('');
-    setDebtDueDay(prefill?.dueDay ?? '');
-    setDebtCreditLimit('');
-    setDebtAnnualFeeAmount('');
-    setDebtAnnualFeeNextDate('');
-    setShowDebtMoreDetails(false);
-    setShowDebtDuePicker(false);
-    setShowDebtRenewalPicker(false);
-    setShowDebtCategoryPicker(false);
-    setShowDebtForm(true);
-  };
+    debtEditorKeyRef.current += 1;
+    setDebtEditorSession({
+      key: debtEditorKeyRef.current,
+      editingDebt: null,
+      initialDraft: {
+        category,
+        name: prefill?.name ?? '',
+        balance: '',
+        originalBalance: '',
+        apr: '',
+        minimumPayment: prefill?.minimumPayment ?? '',
+        minimumMode: prefill?.minimumPayment?.trim() ? 'manual' : 'auto',
+        mortgageEscrow: '',
+        dueDay: prefill?.dueDay ?? '',
+        creditLimit: '',
+        annualFeeAmount: '',
+        annualFeeNextDate: '',
+      },
+      initialShowMoreDetails: false,
+    });
+  }, [clearErrors]);
 
-  const openEditDebtEditor = (item: DebtItem) => {
+  const openEditDebtEditor = useCallback((item: DebtItem) => {
     clearErrors();
     draftDebtIdRef.current = null;
     draftDebtPaidTodayRef.current = {};
-    setEditingDebtId(item.id);
-    setDebtCategory(item.category);
-    setDebtName(item.name);
-    setDebtBalance(formatEditableMoney(item.balance, currencyCode));
-    setDebtOriginalBalance(item.originalBalance !== null ? formatEditableMoney(item.originalBalance, currencyCode) : '');
-    setDebtApr(String(item.apr));
-    setDebtMinimum(formatEditableMoney(item.minimumPayment, currencyCode));
-    setDebtMinimumMode('manual');
-    setMortgageEscrow(onboardingData.mortgageEscrowByDebtId?.[item.id] !== undefined
-      ? formatEditableMoney(onboardingData.mortgageEscrowByDebtId[item.id], currencyCode)
-      : '');
-    setDebtDueDay(item.dueDay !== null ? String(item.dueDay) : '');
-    setDebtCreditLimit(item.creditLimit !== null ? formatEditableMoney(item.creditLimit, currencyCode) : '');
-    setDebtAnnualFeeAmount(item.annualFeeAmount != null ? formatEditableMoney(item.annualFeeAmount, currencyCode) : '');
-    setDebtAnnualFeeNextDate(item.annualFeeNextDueDate ?? '');
-    setShowDebtMoreDetails(
-      item.originalBalance !== null ||
-      item.creditLimit !== null ||
-      item.annualFeeAmount != null ||
-      Boolean(item.annualFeeNextDueDate),
-    );
-    setShowDebtDuePicker(false);
-    setShowDebtRenewalPicker(false);
-    setShowDebtCategoryPicker(false);
-    setShowDebtForm(true);
-  };
+    debtEditorKeyRef.current += 1;
+    setDebtEditorSession({
+      key: debtEditorKeyRef.current,
+      editingDebt: item,
+      initialDraft: {
+        category: item.category,
+        name: item.name,
+        balance: formatEditableMoney(item.balance, currencyCode),
+        originalBalance: item.originalBalance !== null ? formatEditableMoney(item.originalBalance, currencyCode) : '',
+        apr: String(item.apr),
+        minimumPayment: formatEditableMoney(item.minimumPayment, currencyCode),
+        minimumMode: 'manual',
+        mortgageEscrow: onboardingData.mortgageEscrowByDebtId?.[item.id] !== undefined
+          ? formatEditableMoney(onboardingData.mortgageEscrowByDebtId[item.id], currencyCode)
+          : '',
+        dueDay: item.dueDay !== null ? String(item.dueDay) : '',
+        creditLimit: item.creditLimit !== null ? formatEditableMoney(item.creditLimit, currencyCode) : '',
+        annualFeeAmount: item.annualFeeAmount != null ? formatEditableMoney(item.annualFeeAmount, currencyCode) : '',
+        annualFeeNextDate: item.annualFeeNextDueDate ?? '',
+      },
+      initialShowMoreDetails:
+        item.originalBalance !== null ||
+        item.creditLimit !== null ||
+        item.annualFeeAmount != null ||
+        Boolean(item.annualFeeNextDueDate),
+    });
+  }, [clearErrors, currencyCode, onboardingData.mortgageEscrowByDebtId]);
 
-  const closeDebtEditor = () => {
+  const closeDebtEditor = useCallback(() => {
     clearErrors();
-    setShowDebtForm(false);
-    setConfirmLoanDeletion(false);
-    setEditingDebtId(null);
-    setShowDebtDuePicker(false);
-    setShowDebtRenewalPicker(false);
-    setShowDebtCategoryPicker(false);
+    setDebtEditorSession(null);
     draftDebtIdRef.current = null;
     draftDebtPaidTodayRef.current = {};
-  };
+  }, [clearErrors]);
 
-  const saveDebtRecord = async (
+  const saveDebtRecord = useCallback(async (
     targetDebtId: string | null,
     draft: DebtDetailsDraft,
     { isDraftFlow }: { isDraftFlow: boolean },
@@ -761,40 +850,28 @@ export function HomeScreen({
       savingRef.current = false;
       setSaving(false);
     }
-  };
+  }, [requireConfirmedSettings, recurringBills, currencyCode, householdTimeZone, transactions, session, onUpdateOnboardingData, markSettingsUncertain]);
 
-  const handleSaveDebt = async () => {
+  const handleSaveDebt = useCallback(async (targetDebtId: string | null, draft: DebtDetailsDraft): Promise<boolean> => {
     clearErrors();
     try {
-      const saved = await saveDebtRecord(editingDebtId, {
-        category: debtCategory,
-        name: debtName,
-        balance: debtBalance,
-        originalBalance: debtOriginalBalance,
-        apr: debtApr,
-        minimumPayment: debtMinimum,
-        minimumMode: debtMinimumMode,
-        mortgageEscrow,
-        dueDay: debtDueDay,
-        creditLimit: debtCreditLimit,
-        annualFeeAmount: debtAnnualFeeAmount,
-        annualFeeNextDate: debtAnnualFeeNextDate,
-      }, { isDraftFlow: true });
+      const saved = await saveDebtRecord(targetDebtId, draft, { isDraftFlow: true });
       if (saved) {
-        setShowDebtForm(false);
-        setEditingDebtId(null);
+        setDebtEditorSession(null);
       }
+      return saved;
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Unable to save debt account.');
+      return false;
     }
-  };
+  }, [clearErrors, saveDebtRecord]);
 
-  const handleSaveDebtDetails = async (debtId: string, draft: DebtDetailsDraft): Promise<boolean> => {
+  const handleSaveDebtDetails = useCallback(async (debtId: string, draft: DebtDetailsDraft): Promise<boolean> => {
     clearErrors();
     return saveDebtRecord(debtId, draft, { isDraftFlow: false });
-  };
+  }, [clearErrors, saveDebtRecord]);
 
-  const handleDeleteDebt = async (debtId: string) => {
+  const handleDeleteDebt = useCallback(async (debtId: string) => {
     if (savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
@@ -822,8 +899,7 @@ export function HomeScreen({
         ));
       }
       if (editingDebtId === debtId) {
-        setShowDebtForm(false);
-        setEditingDebtId(null);
+        setDebtEditorSession(null);
         draftDebtIdRef.current = null;
         delete draftDebtPaidTodayRef.current[debtId];
       }
@@ -833,9 +909,9 @@ export function HomeScreen({
       savingRef.current = false;
       setSaving(false);
     }
-  };
+  }, [clearErrors, recurringBills, transactions, onUpdateOnboardingData, onUpdateTransactions, onUpdateRecurringBills, onUpdateReconciliationAnchors, reconciliationAnchors, editingDebtId]);
 
-  const reconcileSettingsSave = async () => {
+  const reconcileSettingsSave = useCallback(async () => {
     if (!session || checkingSettings) return;
     setCheckingSettings(true);
     try {
@@ -849,9 +925,9 @@ export function HomeScreen({
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : 'Unable to check this save. Try again when connected.');
     } finally { setCheckingSettings(false); }
-  };
+  }, [session, checkingSettings, onboardingData.householdId, onboardingData.userId, onUpdateOnboardingData]);
 
-  const handleToggleHomeStrategy = async (nextStrategy: PayoffStrategy) => {
+  const handleToggleHomeStrategy = useCallback(async (nextStrategy: PayoffStrategy) => {
     requireConfirmedSettings();
     const currentData = latestOnboardingRef.current;
     if (currentData.strategy === nextStrategy) return;
@@ -885,9 +961,9 @@ export function HomeScreen({
       savingRef.current = false;
       setSaving(false);
     }
-  };
+  }, [requireConfirmedSettings, clearErrors, session, onUpdateOnboardingData, markSettingsUncertain]);
 
-  const handleSaveExtra = async (amount: number) => {
+  const handleSaveExtra = useCallback(async (amount: number) => {
     requireConfirmedSettings();
     if (savingRef.current) {
       const error = new Error('Another change is still saving. Try again in a moment.');
@@ -918,9 +994,9 @@ export function HomeScreen({
       savingRef.current = false;
       setSaving(false);
     }
-  };
+  }, [requireConfirmedSettings, clearErrors, session, onUpdateOnboardingData, markSettingsUncertain]);
 
-  const handleSaveMortgageExtra = async (debtId: string, amount: number) => {
+  const handleSaveMortgageExtra = useCallback(async (debtId: string, amount: number) => {
     requireConfirmedSettings();
     if (savingRef.current) throw new Error('Another change is still saving. Try again in a moment.');
     const priorData = latestOnboardingRef.current;
@@ -944,9 +1020,9 @@ export function HomeScreen({
       savingRef.current = false;
       setSaving(false);
     }
-  };
+  }, [requireConfirmedSettings, session, onUpdateOnboardingData, markSettingsUncertain]);
 
-  const saveBudgetSettings = async (patch: Partial<UserOnboardingData>) => {
+  const saveBudgetSettings = useCallback(async (patch: Partial<UserOnboardingData>) => {
     requireConfirmedSettings();
     if (savingRef.current) throw new Error('Another settings change is saving. Try again shortly.');
     savingRef.current = true;
@@ -962,9 +1038,9 @@ export function HomeScreen({
       latestOnboardingRef.current = reconciled; onUpdateOnboardingData(reconciled);
       throw error;
     } finally { savingRef.current = false; setSaving(false); }
-  };
+  }, [requireConfirmedSettings, session, onUpdateOnboardingData, markSettingsUncertain]);
 
-  const handleMarkDebtPaid = async (debtId: string) => {
+  const handleMarkDebtPaid = useCallback(async (debtId: string) => {
     if (!canEdit) throw new Error('You need household edit access to archive an account.');
     requireConfirmedSettings();
     if (savingRef.current) throw new Error('Another change is still saving. Try again shortly.');
@@ -991,31 +1067,31 @@ export function HomeScreen({
       savingRef.current = false;
       setSaving(false);
     }
-  };
+  }, [canEdit, requireConfirmedSettings, clearErrors, onUpdateOnboardingData, markSettingsUncertain]);
 
-  const handleSaveBudgetIncome = async (patch: Pick<UserOnboardingData, 'primaryIncomeName' | 'primaryIncomeAmount' | 'primaryGrossIncomeAmount' | 'primaryPayFrequency' | 'primaryMonthlyIncome' | 'additionalIncomes'>) => {
+  const handleSaveBudgetIncome = useCallback(async (patch: Pick<UserOnboardingData, 'primaryIncomeName' | 'primaryIncomeAmount' | 'primaryGrossIncomeAmount' | 'primaryPayFrequency' | 'primaryMonthlyIncome' | 'additionalIncomes'>) => {
     await saveBudgetSettings(patch);
-  };
+  }, [saveBudgetSettings]);
 
-  const handleSaveLoanBillPairings = async (loanBillPairingByDebtId: NonNullable<UserOnboardingData['loanBillPairingByDebtId']>) => {
+  const handleSaveLoanBillPairings = useCallback(async (loanBillPairingByDebtId: NonNullable<UserOnboardingData['loanBillPairingByDebtId']>) => {
     for (const [id, relation] of Object.entries(latestOnboardingRef.current.loanBillPairingByDebtId ?? {})) {
       if (relation?.status === 'linked' && (loanBillPairingByDebtId[id]?.status !== 'linked' || loanBillPairingByDebtId[id]?.billId !== relation.billId)) throw new Error('Historical loan identity cannot be detached. Use the shared loan editor.');
     }
     await saveBudgetSettings({ loanBillPairingByDebtId });
-  };
-  const handleSaveRecurringBillCategoryLabels = async (recurringBillCategoryLabelByBillId: NonNullable<UserOnboardingData['recurringBillCategoryLabelByBillId']>) => {
+  }, [saveBudgetSettings]);
+  const handleSaveRecurringBillCategoryLabels = useCallback(async (recurringBillCategoryLabelByBillId: NonNullable<UserOnboardingData['recurringBillCategoryLabelByBillId']>) => {
     await saveBudgetSettings({ recurringBillCategoryLabelByBillId });
-  };
-  const handleSaveDebtPaymentSplitPlans = async (debtPaymentSplitPlansByDebtId: NonNullable<UserOnboardingData['debtPaymentSplitPlansByDebtId']>) => {
+  }, [saveBudgetSettings]);
+  const handleSaveDebtPaymentSplitPlans = useCallback(async (debtPaymentSplitPlansByDebtId: NonNullable<UserOnboardingData['debtPaymentSplitPlansByDebtId']>) => {
     const billPaymentSplitPlansByBillId = { ...(latestOnboardingRef.current.billPaymentSplitPlansByBillId ?? {}) };
     for (const billIds of Object.values(canonicalPlanAliases)) for (const id of billIds) delete billPaymentSplitPlansByBillId[id];
     await saveBudgetSettings({ debtPaymentSplitPlansByDebtId, billPaymentSplitPlansByBillId });
-  };
-  const handleSaveBillPaymentSplitPlans = async (billPaymentSplitPlansByBillId: NonNullable<UserOnboardingData['billPaymentSplitPlansByBillId']>) => {
+  }, [canonicalPlanAliases, saveBudgetSettings]);
+  const handleSaveBillPaymentSplitPlans = useCallback(async (billPaymentSplitPlansByBillId: NonNullable<UserOnboardingData['billPaymentSplitPlansByBillId']>) => {
     await saveBudgetSettings({ billPaymentSplitPlansByBillId });
-  };
+  }, [saveBudgetSettings]);
 
-  const handleResolveDivergentLink = async (link: DivergentLoanBillLink, mode: 'use_loan' | 'use_bill') => {
+  const handleResolveDivergentLink = useCallback(async (link: DivergentLoanBillLink, mode: 'use_loan' | 'use_bill') => {
     if (!canEdit || pairingBusy || savingRef.current) return;
     if (settingsUncertainRef.current) { setLocalError('Check the unconfirmed settings save before resolving another loan.'); return; }
     clearErrors();
@@ -1038,666 +1114,351 @@ export function HomeScreen({
       setLocalError(error instanceof Error ? error.message : 'Unable to verify the loan conversion.');
     }
     finally { savingRef.current = false; setPairingBusy(false); }
-  };
+  }, [canEdit, pairingBusy, clearErrors, recurringBills, currencyCode, householdTimeZone, onUpdateOnboardingData, markSettingsUncertain]);
 
-  const parsedDraftBalance = parseMoneyInput(debtBalance, currencyCode, true);
-  const parsedDraftApr = parsePercentInput(debtApr);
-  const autoEstimatedMin = parsedDraftBalance !== null && parsedDraftBalance > 0
-    ? estimateMinimumPayment(parsedDraftBalance, parsedDraftApr !== null && parsedDraftApr >= 0 ? parsedDraftApr : 0, currencyCode)
-    : 0;
-  const parsedDebtDueDay = debtDueDay.trim() ? Number(debtDueDay.trim()) : null;
-  const isCreditCardDebt = debtCategory === 'Credit card' || onboardingData.debts.find(item => item.id === editingDebtId)?.category === 'Credit card';
-  const editingLoan = onboardingData.debts.find(item => item.id === editingDebtId && (item.category === 'Mortgage' || item.category === 'Auto loan'));
-  const deletingLoanBill = confirmLoanDeletion && editingLoan
-    ? recurringBills.find(bill => bill.id === identityLoanBillPairs[editingLoan.id])
-    : undefined;
-
-  const debtEditor: ReactNode = showDebtForm ? (
-    <HomeAppearance>{({ isLight, palette, ctaBg, ctaFg }) => {
-      const groupedCardStyle = {
-        borderRadius: 16,
-        borderWidth: 1,
-        borderColor: palette.border,
-        backgroundColor: isLight ? palette.canvas : palette.raised,
-        paddingHorizontal: 14,
-      };
-      const rowStyle = {
-        minHeight: 50,
-        paddingVertical: 8,
-        flexDirection: 'row' as const,
-        alignItems: 'center' as const,
-        justifyContent: 'space-between' as const,
-        gap: 12,
-      };
-      const rowBorderStyle = { borderBottomWidth: 1, borderBottomColor: palette.border };
-      const inlineInputStyle = {
-        minHeight: 40,
-        paddingVertical: 6,
-        paddingHorizontal: 0,
-        textAlign: 'right' as const,
-        color: palette.text,
-        fontSize: 15,
-        fontWeight: '600' as const,
-      };
-      return (
-        <>
-          <SheetModal
-            visible={showDebtForm}
-            onClose={closeDebtEditor}
-            contentSized
-            closeLabel="Close debt editor"
-            footer={(
-              <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 16, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface, gap: 8 }}>
-                {!!localError ? (
-                  <Text style={[styles.errorText, { marginTop: 0, textAlign: 'center' }]} accessibilityRole="alert">
-                    {localError}
-                  </Text>
-                ) : null}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Save debt account"
-                  disabled={saving}
-                  style={{
-                    minHeight: 48,
-                    borderRadius: 12,
-                    backgroundColor: ctaBg,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    opacity: saving ? 0.5 : 1,
-                  }}
-                  onPress={() => void handleSaveDebt()}
-                >
-                  <Text style={{ color: ctaFg, fontSize: 15, fontWeight: '700' }}>
-                    {saving ? 'Saving\u2026' : 'Save'}
-                  </Text>
-                </Pressable>
-              </View>
-            )}
-          >
-            <View style={{ gap: 14 }}>
-              <SheetFormHeader
-                centered
-                title={editingDebtId ? 'Edit Debt Account' : 'Add Debt Account'}
-                subtitle={currencyCode}
-                closeLabel="Close debt editor"
-                onClose={closeDebtEditor}
-              />
-
-              <View style={groupedCardStyle}>
-                <View style={[rowStyle, rowBorderStyle, { minHeight: 44 }]}>
-                  <Text style={[ui.heading, { fontSize: 15 }]}>Debt details</Text>
-                </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Account type: ${debtCategory}`}
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    setShowDebtCategoryPicker(true);
-                  }}
-                  style={[rowStyle, rowBorderStyle]}
-                >
-                  <Text style={[ui.text, { color: palette.muted }]}>Account type *</Text>
-                  <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
-                    <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>{debtCategory}</Text>
-                    <AppIcon name="chevronDown" size={16} color={palette.brand} />
-                  </View>
-                </Pressable>
-                <View style={rowStyle}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Account name *</Text>
-                  <TextInput
-                    accessibilityLabel="Debt name"
-                    accessibilityHint="Required"
-                    style={[inlineInputStyle, { flex: 1, minWidth: 110 }]}
-                    value={debtName}
-                    onChangeText={setDebtName}
-                    placeholder="e.g., Chase Sapphire"
-                    placeholderTextColor={palette.muted}
-                  />
-                </View>
-              </View>
-
-              <View style={groupedCardStyle}>
-                <View style={[rowStyle, rowBorderStyle, { minHeight: 44 }]}>
-                  <Text style={[ui.heading, { fontSize: 15 }]}>Payment & Terms</Text>
-                </View>
-                <View style={[rowStyle, rowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Current balance *</Text>
-                  <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                    <TextInput
-                      accessibilityLabel="Current balance"
-                      accessibilityHint="Required"
-                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
-                      value={debtBalance}
-                      onChangeText={text => setDebtBalance(prev => acceptMoneyEdit(prev, text, currencyCode, true))}
-                      placeholder="0.00"
-                      placeholderTextColor={palette.muted}
-                    />
-                  </View>
-                </View>
-                <View style={[rowStyle, rowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Original balance</Text>
-                  <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                    <TextInput
-                      accessibilityLabel="Original balance"
-                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                      keyboardType="decimal-pad"
-                      value={debtOriginalBalance}
-                      onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                      placeholder="Optional"
-                      placeholderTextColor={palette.muted}
-                    />
-                  </View>
-                </View>
-                <View style={[rowStyle, rowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>APR *</Text>
-                  <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                    <TextInput
-                      accessibilityLabel="APR percentage"
-                      accessibilityHint="Required"
-                      style={[inlineInputStyle, { flex: 1, minWidth: 72 }]}
-                      keyboardType="decimal-pad"
-                      value={debtApr}
-                      onChangeText={text => setDebtApr(prev => acceptAprEdit(prev, text))}
-                      placeholder="0.00"
-                      placeholderTextColor={palette.muted}
-                    />
-                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>%</Text>
-                  </View>
-                </View>
-                <View style={[{ paddingVertical: 10, gap: 8 }, rowBorderStyle]}>
-                  <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
-                    <Text style={[ui.text, { color: palette.muted }]}>Minimum payment *</Text>
-                    <View style={[ui.row, { gap: 4, padding: 3, borderRadius: 10, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border }]}>
-                      {(['auto', 'manual'] as const).map(mode => {
-                        const active = debtMinimumMode === mode;
-                        return (
-                          <Pressable
-                            key={mode}
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: active }}
-                            accessibilityLabel={`Minimum payment ${mode}`}
-                            onPress={() => {
-                              if (mode === 'manual' && !debtMinimum.trim() && autoEstimatedMin > 0) {
-                                setDebtMinimum(formatEditableMoney(autoEstimatedMin, currencyCode));
-                              }
-                              setDebtMinimumMode(mode);
-                            }}
-                            style={{
-                              minHeight: 32,
-                              paddingHorizontal: 10,
-                              borderRadius: 7,
-                              justifyContent: 'center',
-                              backgroundColor: active ? palette.tint : 'transparent',
-                            }}
-                          >
-                            <Text style={{ fontSize: 12, fontWeight: '700', color: active ? palette.brand : palette.muted }}>
-                              {mode === 'auto' ? 'Auto' : 'Manual'}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  </View>
-                  {debtMinimumMode === 'auto' ? (
-                    <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', minHeight: 32 }]}>
-                      <Text style={[ui.small, { color: palette.muted }]}>Estimated minimum</Text>
-                      <Text style={[ui.text, { color: palette.text, fontWeight: '700' }]}>
-                        {autoEstimatedMin > 0 ? formatCurrency(autoEstimatedMin, currencySymbol) : formatCurrency(0, currencySymbol)}
-                      </Text>
-                    </View>
-                  ) : (
-                    <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', minHeight: 40 }]}>
-                      <Text style={[ui.small, { color: palette.muted }]}>Monthly minimum</Text>
-                      <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                        <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                        <TextInput
-                          accessibilityLabel="Minimum monthly payment"
-                          accessibilityHint="Required"
-                          style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                          keyboardType="decimal-pad"
-                          value={debtMinimum}
-                          onChangeText={text => setDebtMinimum(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                          placeholder="0.00"
-                          placeholderTextColor={palette.muted}
-                        />
-                      </View>
-                    </View>
-                  )}
-                </View>
-                {debtCategory === 'Mortgage' ? (
-                  <View style={[rowStyle, rowBorderStyle]}>
-                    <Text style={[ui.text, { color: palette.muted }]}>Monthly escrow</Text>
-                    <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                      <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                      <TextInput
-                        accessibilityLabel="Mortgage monthly escrow"
-                        style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                        keyboardType="decimal-pad"
-                        value={mortgageEscrow}
-                        onChangeText={text => setMortgageEscrow(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                        placeholder="Optional"
-                        placeholderTextColor={palette.muted}
-                      />
-                    </View>
-                  </View>
-                ) : null}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={parsedDebtDueDay ? `Due day: Day ${parsedDebtDueDay}` : 'Due day: Choose day'}
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    setShowDebtDuePicker(true);
-                  }}
-                  style={rowStyle}
-                >
-                  <Text style={[ui.text, { color: palette.muted }]}>Due day</Text>
-                  <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
-                    <Text style={[ui.text, { color: parsedDebtDueDay ? palette.text : palette.brand, fontWeight: '600' }]}>
-                      {parsedDebtDueDay ? `Day ${parsedDebtDueDay}` : 'Choose day'}
-                    </Text>
-                    <AppIcon name="calendar" size={16} color={palette.brand} />
-                  </View>
-                </Pressable>
-                {!editingDebtId && parsedDebtDueDay !== null && Number.isInteger(parsedDebtDueDay) && parsedDebtDueDay >= 1 && parsedDebtDueDay <= 31 ? (
-                  <Text style={[ui.small, { color: palette.muted, paddingBottom: 10 }]}>
-                    {`First due date: ${obligationFirstDueDate(parsedDebtDueDay, currentHouseholdDate(householdTimeZone), currencyCode)}`}
-                  </Text>
-                ) : null}
-              </View>
-
-              {isCreditCardDebt ? (
-                <View style={{ gap: 8 }}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ expanded: showDebtMoreDetails }}
-                    onPress={() => setShowDebtMoreDetails(prev => !prev)}
-                    style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}
-                  >
-                    <Text style={{ color: palette.brand, fontSize: 14, fontWeight: '600' }}>More details</Text>
-                    <AppIcon name={showDebtMoreDetails ? 'chevronDown' : 'chevronRight'} size={15} color={palette.brand} />
-                  </Pressable>
-
-                  {showDebtMoreDetails ? (
-                    <View style={groupedCardStyle}>
-                      <View style={[rowStyle, rowBorderStyle]}>
-                        <Text style={[ui.text, { color: palette.muted }]}>Credit limit</Text>
-                        <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                          <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                          <TextInput
-                            accessibilityLabel="Credit limit"
-                            style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                            keyboardType="decimal-pad"
-                            value={debtCreditLimit}
-                            onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                            placeholder="Optional"
-                            placeholderTextColor={palette.muted}
-                          />
-                        </View>
-                      </View>
-                      <View style={[rowStyle, rowBorderStyle]}>
-                        <Text style={[ui.text, { color: palette.muted }]}>Annual fee</Text>
-                        <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
-                          <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                          <TextInput
-                            accessibilityLabel="Annual credit-card fee"
-                            style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
-                            keyboardType="decimal-pad"
-                            value={debtAnnualFeeAmount}
-                            onChangeText={text => setDebtAnnualFeeAmount(prev => acceptMoneyEdit(prev, text, currencyCode))}
-                            placeholder="Optional"
-                            placeholderTextColor={palette.muted}
-                          />
-                        </View>
-                      </View>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={debtAnnualFeeNextDate ? `Next renewal: ${formatShortDate(debtAnnualFeeNextDate)}` : 'Next renewal: Choose date'}
-                        onPress={() => {
-                          Keyboard.dismiss();
-                          setShowDebtRenewalPicker(true);
-                        }}
-                        style={rowStyle}
-                      >
-                        <Text style={[ui.text, { color: palette.muted }]}>Next renewal</Text>
-                        <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
-                          <Text style={[ui.text, { color: debtAnnualFeeNextDate ? palette.text : palette.brand, fontWeight: '600' }]}>
-                            {debtAnnualFeeNextDate ? formatShortDate(debtAnnualFeeNextDate) : 'Choose date'}
-                          </Text>
-                          <AppIcon name="calendar" size={16} color={palette.brand} />
-                        </View>
-                      </Pressable>
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-
-              {canEdit && editingLoan ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Delete ${editingLoan.name}`}
-                  disabled={saving}
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    setConfirmLoanDeletion(true);
-                  }}
-                  style={{ minHeight: 44, alignItems: 'center', justifyContent: 'center' }}
-                >
-                  <Text style={{ color: '#F08B78', fontSize: 15, fontWeight: '600' }}>Delete account</Text>
-                </Pressable>
-              ) : null}
-
-              <AdaptiveModal visible={showDebtCategoryPicker} transparent animationType="fade" onRequestClose={() => setShowDebtCategoryPicker(false)}>
-                <TouchableWithoutFeedback onPress={() => setShowDebtCategoryPicker(false)}>
-                  <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' }}>
-                    <TouchableWithoutFeedback>
-                      <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '72%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
-                          <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>Select Debt Category</Text>
-                          <Pressable accessibilityRole="button" accessibilityLabel="Close picker" onPress={() => setShowDebtCategoryPicker(false)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}>
-                            <AppIcon name="close" size={20} color={palette.muted} />
-                          </Pressable>
-                        </View>
-                        <ScrollView style={{ maxHeight: 380 }} contentContainerStyle={{ padding: 16, gap: 6 }} keyboardShouldPersistTaps="handled">
-                          {DEBT_CATEGORY_DROPDOWN_OPTIONS.map(option => {
-                            const selected = option.value === debtCategory;
-                            return (
-                              <Pressable
-                                key={option.value}
-                                accessibilityRole="button"
-                                accessibilityState={{ selected }}
-                                onPress={() => {
-                                  setDebtCategory(option.value);
-                                  if (option.value !== 'Credit card') {
-                                    setDebtCreditLimit('');
-                                    setDebtAnnualFeeAmount('');
-                                    setDebtAnnualFeeNextDate('');
-                                    setShowDebtMoreDetails(false);
-                                  }
-                                  setShowDebtCategoryPicker(false);
-                                }}
-                                style={{
-                                  minHeight: 52,
-                                  paddingHorizontal: 14,
-                                  paddingVertical: 10,
-                                  borderRadius: 12,
-                                  borderWidth: 1,
-                                  borderColor: selected ? palette.brand : 'transparent',
-                                  backgroundColor: selected ? palette.tint : 'transparent',
-                                  flexDirection: 'row',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  gap: 10,
-                                }}
-                              >
-                                <View style={[ui.row, { gap: 10, flex: 1 }]}>
-                                  {option.icon ? <AppIcon name={option.icon} size={18} color={selected ? palette.brand : palette.muted} /> : null}
-                                  <View style={{ flex: 1 }}>
-                                    <Text style={{ color: selected ? palette.brand : palette.text, fontSize: 15, fontWeight: '600' }}>{option.label}</Text>
-                                    {option.subtitle ? <Text style={[ui.small, { color: palette.muted }]}>{option.subtitle}</Text> : null}
-                                  </View>
-                                </View>
-                                {selected ? <AppIcon name="check" size={18} color={palette.brand} /> : null}
-                              </Pressable>
-                            );
-                          })}
-                        </ScrollView>
-                      </View>
-                    </TouchableWithoutFeedback>
-                  </View>
-                </TouchableWithoutFeedback>
-              </AdaptiveModal>
-
-              <DueDayPickerModal
-                visible={showDebtDuePicker}
-                value={parsedDebtDueDay}
-                title="Select due day"
-                subtitle="Monthly payment due date"
-                allowClear
-                onSelect={day => setDebtDueDay(day === null ? '' : String(day))}
-                onClose={() => setShowDebtDuePicker(false)}
-              />
-
-              <CalendarDatePickerModal
-                visible={showDebtRenewalPicker}
-                value={debtAnnualFeeNextDate}
-                timeZone={householdTimeZone}
-                title="Annual fee next renewal"
-                allowClear
-                onSelect={date => setDebtAnnualFeeNextDate(date)}
-                onClose={() => setShowDebtRenewalPicker(false)}
-              />
-              {canEdit && editingLoan ? (
-                <ConfirmModal
-                  insideSheet
-                  visible={confirmLoanDeletion}
-                  title="Delete account and history?"
-                  message={`Once deleted, ${editingLoan.name} and its recorded transaction and reconciliation history can never be retrieved.${deletingLoanBill ? ` The linked recurring item “${deletingLoanBill.name}” and its recorded history will also be permanently deleted.` : ''}`}
-                  confirmLabel="Delete account & history"
-                  busy={saving}
-                  onConfirm={() => {
-                    void handleDeleteDebt(editingLoan.id).finally(() => setConfirmLoanDeletion(false));
-                  }}
-                  onCancel={() => setConfirmLoanDeletion(false)}
-                />
-              ) : null}
-            </View>
-          </SheetModal>
-        </>
-      );
-    }}</HomeAppearance>
+  const debtEditor: ReactNode = debtEditorSession ? (
+    <DebtEditorModal
+      key={debtEditorSession.key}
+      editingDebt={debtEditorSession.editingDebt}
+      initialDraft={debtEditorSession.initialDraft}
+      initialShowMoreDetails={debtEditorSession.initialShowMoreDetails}
+      debts={onboardingData.debts}
+      recurringBills={recurringBills}
+      identityLoanBillPairs={identityLoanBillPairs}
+      currencyCode={currencyCode}
+      currencySymbol={currencySymbol}
+      householdTimeZone={householdTimeZone}
+      canEdit={canEdit}
+      saving={saving}
+      localError={localError}
+      onClose={closeDebtEditor}
+      onSave={handleSaveDebt}
+      onDelete={handleDeleteDebt}
+    />
   ) : null;
 
-  return (
-    <FiveTabShell
-      userId={session?.user.id ?? onboardingData.userId}
-      key={session?.user.id ?? onboardingData.userId}
-      onRefresh={refreshAccountData}
-      refreshing={reloading}
-      refreshFeedback={reloadFeedback}
-      settingsSaveWarning={settingsUncertain ? { checking: checkingSettings, onCheck: () => { void reconcileSettingsSave(); } } : undefined}
-      settingsVisible={showSettings}
-      onCloseSettings={closeSettings}
-      onHomeVisibilityChange={setHomeVisible}
-      overlay={debtEditor}
-      settings={close => (
-        <SettingsScreen
-          session={session}
-          onboardingData={onboardingData}
-          householdSummaries={householdSummaries}
-          onSwitchHousehold={onSwitchHousehold}
-          onRefreshHouseholdContexts={onRefreshHouseholdContexts}
-          onAcceptHouseholdInvite={onAcceptHouseholdInvite}
-          transactions={transactions}
-          recurringBills={recurringBills}
-          reconciliationAnchors={reconciliationAnchors}
-          currencyCode={currencyCode}
-          currencySymbol={currencySymbol}
-          authBusy={authBusy}
-          onClose={close}
-          onUpdateOnboardingData={onUpdateOnboardingData}
-          settingsUncertain={settingsUncertain}
-          onSettingsUncertain={markSettingsUncertain}
-          onUpdateTransactions={onUpdateTransactions}
-          onUpdateRecurringBills={onUpdateRecurringBills}
-          onUpdateReconciliationAnchors={onUpdateReconciliationAnchors}
-          onSignOut={onSignOut}
-          onDeleteAccount={onDeleteAccount}
-          accountDeletionEnabled={accountDeletionEnabled}
-        />
-      )}
-      debt={(targetDebtId: string | null, clearTarget: () => void, section: string, resetKey: number, navigate: (tab: any, section?: string) => void) => (
-        <DebtScreen
-          key={refreshOwnerKey}
-          debts={onboardingData.debts}
-          archivedPaidOffDebtIds={onboardingData.archivedPaidOffDebtIds}
-          initialSelectedId={targetDebtId}
-          initialSection={section}
-          onDismiss={() => { clearTarget(); setShowDebtForm(false); setEditingDebtId(null); }}
-          plan={plan}
-          currencySymbol={currencySymbol}
-          currencyCode={currencyCode}
-          transactions={transactions}
-          reconciliationAnchors={reconciliationAnchors}
-          editor={null}
-          editorOpen={showDebtForm}
-          error={localError}
-          canEdit={canEdit}
-          onAdd={() => openNewDebtEditor('Credit card')}
-          onEdit={openEditDebtEditor}
-          onSaveDebtDetails={handleSaveDebtDetails}
-          onMarkPaid={handleMarkDebtPaid}
-          onRemove={item => { void handleDeleteDebt(item.id); }}
-          onReconcile={onReconcileDebt}
-          onSettings={openSettings}
-          strategy={onboardingData.strategy}
-          extraMonthlyPayment={onboardingData.extraMonthlyPayment}
-          onStrategy={handleToggleHomeStrategy}
-          onExtra={handleSaveExtra}
-          mortgageEscrowByDebtId={onboardingData.mortgageEscrowByDebtId}
-          mortgageExtraPaymentByDebtId={onboardingData.mortgageExtraPaymentByDebtId}
-          onMortgageExtra={handleSaveMortgageExtra}
-          recurringBills={recurringBills}
-          loanBillPairings={onboardingData.loanBillPairingByDebtId ?? {}}
-          onSaveLoanBillPairings={handleSaveLoanBillPairings}
-          obligationSchedules={onboardingData.obligationSchedules}
-          householdTimeZone={householdTimeZone}
-          onAddTransaction={onAddTransaction}
-          onRecordBillPayment={onRecordBillPayment}
-          onSelectTransaction={tx => navigate('transactions', tx.id)}
-        />
-      )}
-      transactions={(targetTransactionId: string | null, clearTarget: () => void, section: string) => (
-        <TransactionsScreen
-          initialTransactionId={targetTransactionId}
-          initialSection={section}
-          onEditDismiss={clearTarget}
-          debts={onboardingData.debts}
-          archivedPaidOffDebtIds={onboardingData.archivedPaidOffDebtIds}
-          mortgageEscrowByDebtId={onboardingData.mortgageEscrowByDebtId}
-          transactions={transactions}
-          recurringBills={recurringBills}
-          obligationSchedules={onboardingData.obligationSchedules}
-          debtPaymentSplitPlansByDebtId={effectiveDebtSplitPlans}
-          onSaveDebtPaymentSplitPlans={handleSaveDebtPaymentSplitPlans}
-          billPaymentSplitPlansByBillId={onboardingData.billPaymentSplitPlansByBillId}
-          onSaveBillPaymentSplitPlans={handleSaveBillPaymentSplitPlans}
-          loanBillPairs={loanBillPairs}
-          identityLoanBillPairs={identityLoanBillPairs}
-          historicalBillIdsByDebtId={historicalLoanBillIds}
-          excludedObligationDebtIds={loanRuntime.excludedDebtIds}
-          excludedObligationBillIds={archivedLinkedBillIds}
-          householdTimeZone={householdTimeZone}
-          currencySymbol={currencySymbol}
-          currencyCode={currencyCode}
-          canEdit={canEdit}
-          onRecordBillPayment={onRecordBillPayment}
-          onConfirmAnnualFee={onConfirmAnnualFee}
-          onAddTransaction={onAddTransaction}
-          onUpdateTransaction={onUpdateTransaction}
-          onUpdateTransactions={onUpdateTransactions}
-          onDeleteTransaction={onDeleteTransaction}
-          onSettings={openSettings}
-        />
-      )}
-      budget={navigate => (
-        <BudgetScreen
-          key={refreshOwnerKey}
-          data={onboardingData}
-          currencySymbol={currencySymbol}
-          currencyCode={currencyCode}
-          householdTimeZone={householdTimeZone}
-          transactions={transactions}
-          recurringBills={recurringBills}
-          historicalBillIdsByDebtId={historicalLoanBillIds}
-          canEdit={canEdit}
-          onAddRecurringBill={onAddRecurringBill}
-          onDeleteRecurringBill={onDeleteRecurringBill}
-          onOpenStrategy={() => navigate('debt', 'Strategy')}
-          onSaveObligationSchedule={onSaveObligationSchedule}
-          onEditDebt={debtId => navigate('debt', debtId)}
-          onAddLoan={(category, prefill) => openNewDebtEditor(category, prefill)}
-          onEditLoan={openEditDebtEditor}
-          onOpenPurchase={transactionId => navigate('transactions', transactionId)}
-          onSaveIncome={handleSaveBudgetIncome}
-          onSaveLoanBillPairings={handleSaveLoanBillPairings}
-          onSaveRecurringBillCategoryLabels={handleSaveRecurringBillCategoryLabels}
-          onSettings={openSettings}
-          error={localError}
-        />
-      )}
-      progress={(navigate: (tab: any, section?: string) => void) => {
-        const progressDebts = onboardingData.debts.filter(
-          item => (item.category === 'Credit card' || item.category === 'Personal loan') && !isPaidOffAccountArchived(item, onboardingData.archivedPaidOffDebtIds),
-        );
-        const progressPayoffPlan = calculatePayoffPlan(
-          progressDebts,
-          onboardingData.strategy,
-          onboardingData.extraMonthlyPayment,
-          new Date(),
-          currencyCode,
-          householdTimeZone,
-          onboardingData.archivedPaidOffDebtIds ?? [],
-        );
-        return (
-          <ProgressScreen
-            debts={onboardingData.debts}
-            archivedPaidOffDebtIds={onboardingData.archivedPaidOffDebtIds}
-            transactions={transactions}
-            currencySymbol={currencySymbol}
-            currencyCode={currencyCode}
-            strategy={plan.strategy}
-            plannedMonthlyPayment={progressPayoffPlan.monthlyTotalPayment}
-            householdTimeZone={householdTimeZone}
-            onSettings={openSettings}
-            onSelectDebt={debtId => navigate('debt', debtId)}
-            onOpenStrategy={() => navigate('debt', 'Strategy')}
-          />
-        );
-      }}
-      home={(navigate: (tab: any, section?: string) => void) => (
-        <HomeAppearance>{({ palette, isLight, isInspire }) => {
-          const payColors = payActionColors(palette, isLight);
-          const nonMortgageDebts = activeDebts(onboardingData.debts);
-          const activeAccountDebts = nonMortgageDebts.filter(
-            item => !isPaidOffAccountArchived(item, onboardingData.archivedPaidOffDebtIds),
-          );
-          const hasAutoDebt = activeAccountDebts.some(d => d.category === 'Auto loan');
-          const rawEstimateDate = homeDebtFreeEstimateDate(plan.debtFreeDateLabel);
-          const displayEstimateDate = /^[A-Za-z]{3}\s+\d{4}$/.test(rawEstimateDate)
-            ? rawEstimateDate.toUpperCase()
-            : rawEstimateDate;
-          const activeBalanceStats = calculateBalanceSnapshot(nonMortgageDebts);
-          const freedomPercent =
-            nonMortgageDebts.length > 0 && activeBalanceStats.balance === 0
-              ? 100
-              : Math.max(0, Math.min(100, activeBalanceStats.percent));
-          const debtById = new Map(onboardingData.debts.map(d => [d.id, d]));
-          const recentTxs = [...transactions]
-            .filter(t => t.deletedAt === null)
-            .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
-            .slice(0, 3);
-          const inspireBarColors = ['#14B8A6', '#06B6D4', '#38BDF8', '#60A5FA', '#A78BFA', '#F472B6', '#FBBF24'];
-          const inspireStrategyRows = isLight
-            ? [
-                { bg: '#FFF8E5', border: '#F3E0B2' },
-                { bg: '#F3EEFF', border: '#DFD3FA' },
-                { bg: '#E8F8FC', border: '#CBE6EC' },
-              ]
-            : [
-                { bg: '#21231B', border: '#3B3822' },
-                { bg: '#1C1B2F', border: '#302C4D' },
-                { bg: '#123240', border: '#224658' },
-              ];
-          const criticalColor = palette.neg;
-          const criticalBg = isLight ? 'rgba(217, 68, 54, 0.10)' : 'rgba(240, 139, 120, 0.14)';
-          return (
+  const handleCheckSettingsSave = useCallback(() => {
+    void reconcileSettingsSave();
+  }, [reconcileSettingsSave]);
+
+  const settingsSaveWarning = useMemo(
+    () => (settingsUncertain ? { checking: checkingSettings, onCheck: handleCheckSettingsSave } : undefined),
+    [settingsUncertain, checkingSettings, handleCheckSettingsSave],
+  );
+
+  const handleAddCreditCard = useCallback(() => openNewDebtEditor('Credit card'), [openNewDebtEditor]);
+
+  const handleRemoveDebtItem = useCallback((item: DebtItem) => {
+    void handleDeleteDebt(item.id);
+  }, [handleDeleteDebt]);
+
+  const closeWelcome = useCallback(() => setWelcomePending(false), []);
+  const closePaySheet = useCallback(() => setPayUpcomingTarget(null), []);
+  const toggleShowAllUpcoming = useCallback(() => setShowAllUpcoming(value => !value), []);
+
+  const { hasAutoDebt, displayEstimateDate, freedomPercent } = useMemo(() => {
+    const nonMortgageDebts = activeDebts(onboardingData.debts);
+    const activeAccountDebts = nonMortgageDebts.filter(
+      item => !isPaidOffAccountArchived(item, archivedPaidOffIds),
+    );
+    const nextHasAutoDebt = activeAccountDebts.some(d => d.category === 'Auto loan');
+    const rawEstimateDate = homeDebtFreeEstimateDate(plan.debtFreeDateLabel);
+    const nextDisplayEstimateDate = /^[A-Za-z]{3}\s+\d{4}$/.test(rawEstimateDate)
+      ? rawEstimateDate.toUpperCase()
+      : rawEstimateDate;
+    const activeBalanceStats = calculateBalanceSnapshot(nonMortgageDebts);
+    const nextFreedomPercent =
+      nonMortgageDebts.length > 0 && activeBalanceStats.balance === 0
+        ? 100
+        : Math.max(0, Math.min(100, activeBalanceStats.percent));
+    return {
+      hasAutoDebt: nextHasAutoDebt,
+      displayEstimateDate: nextDisplayEstimateDate,
+      freedomPercent: nextFreedomPercent,
+    };
+  }, [onboardingData.debts, archivedPaidOffIds, plan.debtFreeDateLabel]);
+
+  const renderSettings = useCallback((close: () => void) => (
+    <SettingsScreen
+      session={session}
+      onboardingData={onboardingData}
+      householdSummaries={householdSummaries}
+      onSwitchHousehold={onSwitchHousehold}
+      onRefreshHouseholdContexts={onRefreshHouseholdContexts}
+      onAcceptHouseholdInvite={onAcceptHouseholdInvite}
+      transactions={transactions}
+      recurringBills={recurringBills}
+      reconciliationAnchors={reconciliationAnchors}
+      currencyCode={currencyCode}
+      currencySymbol={currencySymbol}
+      authBusy={authBusy}
+      onClose={close}
+      onUpdateOnboardingData={onUpdateOnboardingData}
+      settingsUncertain={settingsUncertain}
+      onSettingsUncertain={markSettingsUncertain}
+      onUpdateTransactions={onUpdateTransactions}
+      onUpdateRecurringBills={onUpdateRecurringBills}
+      onUpdateReconciliationAnchors={onUpdateReconciliationAnchors}
+      onSignOut={onSignOut}
+      onDeleteAccount={onDeleteAccount}
+      accountDeletionEnabled={accountDeletionEnabled}
+    />
+  ), [
+    session,
+    onboardingData,
+    householdSummaries,
+    onSwitchHousehold,
+    onRefreshHouseholdContexts,
+    onAcceptHouseholdInvite,
+    transactions,
+    recurringBills,
+    reconciliationAnchors,
+    currencyCode,
+    currencySymbol,
+    authBusy,
+    onUpdateOnboardingData,
+    settingsUncertain,
+    markSettingsUncertain,
+    onUpdateTransactions,
+    onUpdateRecurringBills,
+    onUpdateReconciliationAnchors,
+    onSignOut,
+    onDeleteAccount,
+    accountDeletionEnabled,
+  ]);
+
+  const renderDebt = useCallback((
+    targetDebtId: string | null,
+    clearTarget: () => void,
+    section: string,
+    _resetKey: number,
+    navigate: (tab: NavigationTabIconName, section?: string) => void,
+  ) => (
+    <DebtScreen
+      key={refreshOwnerKey}
+      debts={onboardingData.debts}
+      archivedPaidOffDebtIds={archivedPaidOffIds}
+      initialSelectedId={targetDebtId}
+      initialSection={section}
+      onDismiss={() => { clearTarget(); closeDebtEditor(); }}
+      plan={plan}
+      currencySymbol={currencySymbol}
+      currencyCode={currencyCode}
+      transactions={transactions}
+      reconciliationAnchors={reconciliationAnchors}
+      editor={null}
+      editorOpen={showDebtForm}
+      error={localError}
+      canEdit={canEdit}
+      onAdd={handleAddCreditCard}
+      onEdit={openEditDebtEditor}
+      onSaveDebtDetails={handleSaveDebtDetails}
+      onMarkPaid={handleMarkDebtPaid}
+      onRemove={handleRemoveDebtItem}
+      onReconcile={onReconcileDebt}
+      onSettings={openSettings}
+      strategy={onboardingData.strategy}
+      extraMonthlyPayment={onboardingData.extraMonthlyPayment}
+      onStrategy={handleToggleHomeStrategy}
+      onExtra={handleSaveExtra}
+      mortgageEscrowByDebtId={onboardingData.mortgageEscrowByDebtId}
+      mortgageExtraPaymentByDebtId={onboardingData.mortgageExtraPaymentByDebtId}
+      onMortgageExtra={handleSaveMortgageExtra}
+      recurringBills={recurringBills}
+      loanBillPairings={stableLoanBillPairings}
+      onSaveLoanBillPairings={handleSaveLoanBillPairings}
+      obligationSchedules={onboardingData.obligationSchedules}
+      householdTimeZone={householdTimeZone}
+      onAddTransaction={onAddTransaction}
+      onRecordBillPayment={onRecordBillPayment}
+      onSelectTransaction={tx => navigate('transactions', tx.id)}
+    />
+  ), [
+    refreshOwnerKey,
+    onboardingData.debts,
+    archivedPaidOffIds,
+    closeDebtEditor,
+    plan,
+    currencySymbol,
+    currencyCode,
+    transactions,
+    reconciliationAnchors,
+    showDebtForm,
+    localError,
+    canEdit,
+    handleAddCreditCard,
+    openEditDebtEditor,
+    handleSaveDebtDetails,
+    handleMarkDebtPaid,
+    handleRemoveDebtItem,
+    onReconcileDebt,
+    openSettings,
+    onboardingData.strategy,
+    onboardingData.extraMonthlyPayment,
+    handleToggleHomeStrategy,
+    handleSaveExtra,
+    onboardingData.mortgageEscrowByDebtId,
+    onboardingData.mortgageExtraPaymentByDebtId,
+    handleSaveMortgageExtra,
+    recurringBills,
+    stableLoanBillPairings,
+    handleSaveLoanBillPairings,
+    onboardingData.obligationSchedules,
+    householdTimeZone,
+    onAddTransaction,
+    onRecordBillPayment,
+  ]);
+
+  const renderTransactions = useCallback((
+    targetTransactionId: string | null,
+    clearTarget: () => void,
+    section: string,
+  ) => (
+    <TransactionsScreen
+      initialTransactionId={targetTransactionId}
+      initialSection={section}
+      onEditDismiss={clearTarget}
+      debts={onboardingData.debts}
+      archivedPaidOffDebtIds={archivedPaidOffIds}
+      mortgageEscrowByDebtId={onboardingData.mortgageEscrowByDebtId}
+      transactions={transactions}
+      recurringBills={recurringBills}
+      obligationSchedules={onboardingData.obligationSchedules}
+      debtPaymentSplitPlansByDebtId={effectiveDebtSplitPlans}
+      onSaveDebtPaymentSplitPlans={handleSaveDebtPaymentSplitPlans}
+      billPaymentSplitPlansByBillId={onboardingData.billPaymentSplitPlansByBillId}
+      onSaveBillPaymentSplitPlans={handleSaveBillPaymentSplitPlans}
+      loanBillPairs={loanBillPairs}
+      identityLoanBillPairs={identityLoanBillPairs}
+      historicalBillIdsByDebtId={historicalLoanBillIds}
+      excludedObligationDebtIds={loanRuntime.excludedDebtIds}
+      excludedObligationBillIds={archivedLinkedBillIds}
+      householdTimeZone={householdTimeZone}
+      currencySymbol={currencySymbol}
+      currencyCode={currencyCode}
+      canEdit={canEdit}
+      onRecordBillPayment={onRecordBillPayment}
+      onConfirmAnnualFee={onConfirmAnnualFee}
+      onAddTransaction={onAddTransaction}
+      onUpdateTransaction={onUpdateTransaction}
+      onUpdateTransactions={onUpdateTransactions}
+      onDeleteTransaction={onDeleteTransaction}
+      onSettings={openSettings}
+    />
+  ), [
+    onboardingData.debts,
+    archivedPaidOffIds,
+    onboardingData.mortgageEscrowByDebtId,
+    transactions,
+    recurringBills,
+    onboardingData.obligationSchedules,
+    effectiveDebtSplitPlans,
+    handleSaveDebtPaymentSplitPlans,
+    onboardingData.billPaymentSplitPlansByBillId,
+    handleSaveBillPaymentSplitPlans,
+    loanBillPairs,
+    identityLoanBillPairs,
+    historicalLoanBillIds,
+    loanRuntime.excludedDebtIds,
+    archivedLinkedBillIds,
+    householdTimeZone,
+    currencySymbol,
+    currencyCode,
+    canEdit,
+    onRecordBillPayment,
+    onConfirmAnnualFee,
+    onAddTransaction,
+    onUpdateTransaction,
+    onUpdateTransactions,
+    onDeleteTransaction,
+    openSettings,
+  ]);
+
+  const renderBudget = useCallback((navigate: (tab: NavigationTabIconName, section?: string) => void) => (
+    <BudgetScreen
+      key={refreshOwnerKey}
+      data={onboardingData}
+      currencySymbol={currencySymbol}
+      currencyCode={currencyCode}
+      householdTimeZone={householdTimeZone}
+      transactions={transactions}
+      recurringBills={recurringBills}
+      historicalBillIdsByDebtId={historicalLoanBillIds}
+      canEdit={canEdit}
+      onAddRecurringBill={onAddRecurringBill}
+      onDeleteRecurringBill={onDeleteRecurringBill}
+      onOpenStrategy={() => navigate('debt', 'Strategy')}
+      onSaveObligationSchedule={onSaveObligationSchedule}
+      onEditDebt={debtId => navigate('debt', debtId)}
+      onAddLoan={(category, prefill) => openNewDebtEditor(category, prefill)}
+      onEditLoan={openEditDebtEditor}
+      onOpenPurchase={transactionId => navigate('transactions', transactionId)}
+      onSaveIncome={handleSaveBudgetIncome}
+      onSaveLoanBillPairings={handleSaveLoanBillPairings}
+      onSaveRecurringBillCategoryLabels={handleSaveRecurringBillCategoryLabels}
+      onSettings={openSettings}
+      error={localError}
+    />
+  ), [
+    refreshOwnerKey,
+    onboardingData,
+    currencySymbol,
+    currencyCode,
+    householdTimeZone,
+    transactions,
+    recurringBills,
+    historicalLoanBillIds,
+    canEdit,
+    onAddRecurringBill,
+    onDeleteRecurringBill,
+    onSaveObligationSchedule,
+    openNewDebtEditor,
+    openEditDebtEditor,
+    handleSaveBudgetIncome,
+    handleSaveLoanBillPairings,
+    handleSaveRecurringBillCategoryLabels,
+    openSettings,
+    localError,
+  ]);
+
+  const renderProgress = useCallback((navigate: (tab: NavigationTabIconName, section?: string) => void) => (
+    <ProgressScreen
+      debts={onboardingData.debts}
+      archivedPaidOffDebtIds={archivedPaidOffIds}
+      transactions={transactions}
+      currencySymbol={currencySymbol}
+      currencyCode={currencyCode}
+      strategy={plan.strategy}
+      plannedMonthlyPayment={progressPayoffPlan.monthlyTotalPayment}
+      householdTimeZone={householdTimeZone}
+      onSettings={openSettings}
+      onSelectDebt={debtId => navigate('debt', debtId)}
+      onOpenStrategy={() => navigate('debt', 'Strategy')}
+    />
+  ), [
+    onboardingData.debts,
+    archivedPaidOffIds,
+    transactions,
+    currencySymbol,
+    currencyCode,
+    plan.strategy,
+    progressPayoffPlan.monthlyTotalPayment,
+    householdTimeZone,
+    openSettings,
+  ]);
+
+  const renderHome = useCallback((navigate: (tab: NavigationTabIconName, section?: string) => void) => (
+    <HomeAppearance>{({ palette, isLight, isInspire }) => {
+      const payColors = payActionColors(palette, isLight);
+      const inspireStrategyRows = isLight ? INSPIRE_STRATEGY_ROWS_LIGHT : INSPIRE_STRATEGY_ROWS_DARK;
+      const criticalColor = palette.neg;
+      const criticalBg = isLight ? 'rgba(217, 68, 54, 0.10)' : 'rgba(240, 139, 120, 0.14)';
+      return (
         <View style={[styles.root, { backgroundColor: isInspire ? 'transparent' : palette.canvas }]}>
-          <WelcomeSheet
+          <HomePaneVisibilityContext.Consumer>
+            {homeVisible => <WelcomeSheet
             visible={welcomePending && homeVisible && appActive && !showSettings && !showDebtForm && !homeInformationOpen && payUpcomingTarget === null}
-            onClose={() => setWelcomePending(false)}
+            onClose={closeWelcome}
             name={greetingName}
             timeZone={householdTimeZone}
             overdue={overdueItems}
@@ -1716,11 +1477,14 @@ export function HomeScreen({
             }}
             onPending={() => { setWelcomePending(false); navigate('transactions', 'History'); }}
             onPairing={() => { setWelcomePending(false); homeScrollRef.current?.scrollTo({ y: pairingReviewY.current, animated: true }); }}
-          />
+            />}
+          </HomePaneVisibilityContext.Consumer>
           <ObligationPaySheet
             target={payUpcomingTarget}
-            onClose={() => setPayUpcomingTarget(null)}
+            onClose={closePaySheet}
             transactions={transactions}
+            debts={onboardingData.debts}
+            mortgageEscrowByDebtId={onboardingData.mortgageEscrowByDebtId}
             loanBillPairs={loanBillPairs}
             historicalBillIdsByDebtId={historicalLoanBillIds}
             householdTimeZone={householdTimeZone}
@@ -1843,7 +1607,7 @@ export function HomeScreen({
               <View style={{ flexDirection: 'row', gap: 6 }}>
                 {[0, 1, 2, 3, 4, 5, 6].map(segmentIdx => {
                   const segFill = Math.max(0, Math.min(1, (freedomPercent / 100) * 7 - segmentIdx));
-                  const segColor = isInspire ? inspireBarColors[segmentIdx % inspireBarColors.length] : palette.homeFill;
+                  const segColor = isInspire ? INSPIRE_BAR_COLORS[segmentIdx % INSPIRE_BAR_COLORS.length] : palette.homeFill;
                   return (
                     <View
                       key={segmentIdx}
@@ -1950,8 +1714,14 @@ export function HomeScreen({
             ) : null}
             {incompleteLoanSchedules.length > 0 ? <Card><Text style={ui.heading}>Loan due dates needed</Text><Text style={ui.small}>These accounts are included in Budget but cannot appear in payment reminders until a due day is set.</Text>{incompleteLoanSchedules.map(debt => <Pressable key={debt.id} accessibilityRole="button" disabled={!canEdit} onPress={() => openEditDebtEditor(debt)} style={ui.button}><Text style={ui.buttonText}>{debt.name} - Set due day</Text></Pressable>)}</Card> : null}
             <SnapshotCard
-              debts={onboardingData.debts.filter(item => !isPaidOffAccountArchived(item, onboardingData.archivedPaidOffDebtIds))}
+              debts={homeActiveDebts}
               referenceDebts={onboardingData.debts}
+              mortgageEscrowByDebtId={onboardingData.mortgageEscrowByDebtId}
+              transactions={transactions}
+              loanBillPairs={loanBillPairs}
+              historicalBillIdsByDebtId={historicalLoanBillIds}
+              todayDate={todayKey}
+              currencyCode={currencyCode}
               currencySymbol={currencySymbol}
               onInformationVisibilityChange={setHomeInformationOpen}
             />
@@ -1965,7 +1735,7 @@ export function HomeScreen({
                     accessibilityRole="button"
                     accessibilityLabel={showAllUpcoming ? 'Show fewer upcoming bills' : 'Show all upcoming bills'}
                     style={[ui.row, { gap: 4, alignItems: 'center', paddingVertical: 4, backgroundColor: 'transparent', borderWidth: 0 }]}
-                    onPress={() => setShowAllUpcoming(value => !value)}
+                    onPress={toggleShowAllUpcoming}
                   >
                     <Text style={[ui.buttonText, { color: isInspire ? palette.accentInk : palette.brand, fontWeight: '700' }]}>
                       {showAllUpcoming ? 'Show less' : `See all (${sortedUpcomingItems.length})`}
@@ -2190,9 +1960,79 @@ export function HomeScreen({
             </Card>
           </PullToRefreshScrollView>
         </View>
-          );
-        }}</HomeAppearance>
-      )}
+      );
+    }}</HomeAppearance>
+  ), [
+    welcomePending,
+    appActive,
+    showSettings,
+    showDebtForm,
+    homeInformationOpen,
+    payUpcomingTarget,
+    closeWelcome,
+    greetingName,
+    householdTimeZone,
+    overdueItems,
+    futureUpcomingItems,
+    pendingTxCount,
+    reloading,
+    localError,
+    reloadFeedback,
+    financeRecordsVerified,
+    pairingReviewCount,
+    sortedUpcomingItems.length,
+    closePaySheet,
+    transactions,
+    loanBillPairs,
+    historicalLoanBillIds,
+    currencyCode,
+    currencySymbol,
+    onRecordBillPayment,
+    onAddTransaction,
+    onUpdateTransaction,
+    canEdit,
+    openSettings,
+    refreshAccountData,
+    hasAutoDebt,
+    displayEstimateDate,
+    plan.monthsToPayoff,
+    plan.payoffOrder,
+    freedomPercent,
+    onboardingData.strategy,
+    onboardingData.debts,
+    onboardingData.mortgageEscrowByDebtId,
+    pairingAudit.divergentLinks,
+    pairingAudit.invalidLinks,
+    pairingBusy,
+    handleResolveDivergentLink,
+    incompleteLoanSchedules,
+    openEditDebtEditor,
+    homeActiveDebts,
+    upcomingItems,
+    showAllUpcoming,
+    toggleShowAllUpcoming,
+    recentTxs,
+    debtById,
+    todayKey,
+  ]);
+
+  return (
+    <FiveTabShell
+      userId={session?.user.id ?? onboardingData.userId}
+      key={session?.user.id ?? onboardingData.userId}
+      onRefresh={refreshAccountData}
+      refreshing={reloading}
+      refreshFeedback={reloadFeedback}
+      settingsSaveWarning={settingsSaveWarning}
+      settingsVisible={showSettings}
+      onCloseSettings={closeSettings}
+      overlay={debtEditor}
+      settings={renderSettings}
+      debt={renderDebt}
+      transactions={renderTransactions}
+      budget={renderBudget}
+      progress={renderProgress}
+      home={renderHome}
     />
   );
 }
@@ -2200,6 +2040,542 @@ export function HomeScreen({
 function HomeAppearance({ children }: { children: (appearance: ReturnType<typeof useNativeAppearance>) => ReactNode }) {
   return <>{children(useNativeAppearance())}</>;
 }
+
+const DebtEditorModal = memo(function DebtEditorModal({
+  editingDebt,
+  initialDraft,
+  initialShowMoreDetails,
+  debts,
+  recurringBills,
+  identityLoanBillPairs,
+  currencyCode,
+  currencySymbol,
+  householdTimeZone,
+  canEdit,
+  saving,
+  localError,
+  onClose,
+  onSave,
+  onDelete,
+}: {
+  editingDebt: DebtItem | null;
+  initialDraft: DebtDetailsDraft;
+  initialShowMoreDetails: boolean;
+  debts: DebtItem[];
+  recurringBills: RecurringBill[];
+  identityLoanBillPairs: Record<string, string>;
+  currencyCode: string;
+  currencySymbol: string;
+  householdTimeZone: string;
+  canEdit: boolean;
+  saving: boolean;
+  localError: string;
+  onClose: () => void;
+  onSave: (targetDebtId: string | null, draft: DebtDetailsDraft) => Promise<boolean>;
+  onDelete: (debtId: string) => Promise<void>;
+}) {
+  const insets = useSafeAreaInsets();
+  const { isLight, palette, ctaBg, ctaFg } = useNativeAppearance();
+  const [debtCategory, setDebtCategory] = useState<DebtCategory>(initialDraft.category);
+  const [debtName, setDebtName] = useState(initialDraft.name);
+  const [debtBalance, setDebtBalance] = useState(initialDraft.balance);
+  const [debtOriginalBalance, setDebtOriginalBalance] = useState(initialDraft.originalBalance);
+  const [debtApr, setDebtApr] = useState(initialDraft.apr);
+  const [debtMinimum, setDebtMinimum] = useState(initialDraft.minimumPayment);
+  const [debtMinimumMode, setDebtMinimumMode] = useState<'auto' | 'manual'>(initialDraft.minimumMode);
+  const [mortgageEscrow, setMortgageEscrow] = useState(initialDraft.mortgageEscrow);
+  const [debtDueDay, setDebtDueDay] = useState(initialDraft.dueDay);
+  const [debtCreditLimit, setDebtCreditLimit] = useState(initialDraft.creditLimit);
+  const [debtAnnualFeeAmount, setDebtAnnualFeeAmount] = useState(initialDraft.annualFeeAmount);
+  const [debtAnnualFeeNextDate, setDebtAnnualFeeNextDate] = useState(initialDraft.annualFeeNextDate);
+  const [showDebtMoreDetails, setShowDebtMoreDetails] = useState(initialShowMoreDetails);
+  const [showDebtDuePicker, setShowDebtDuePicker] = useState(false);
+  const [showDebtRenewalPicker, setShowDebtRenewalPicker] = useState(false);
+  const [showDebtCategoryPicker, setShowDebtCategoryPicker] = useState(false);
+  const [confirmLoanDeletion, setConfirmLoanDeletion] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const actionBusyRef = useRef(false);
+
+  const busy = saving || submitting || deleting;
+  const editingDebtId = editingDebt?.id ?? null;
+  const parsedDraftBalance = parseMoneyInput(debtBalance, currencyCode, true);
+  const parsedDraftApr = parsePercentInput(debtApr);
+  const autoEstimatedMin = parsedDraftBalance !== null && parsedDraftBalance > 0
+    ? estimateMinimumPayment(parsedDraftBalance, parsedDraftApr !== null && parsedDraftApr >= 0 ? parsedDraftApr : 0, currencyCode)
+    : 0;
+  const parsedDebtDueDay = debtDueDay.trim() ? Number(debtDueDay.trim()) : null;
+  const isCreditCardDebt = debtCategory === 'Credit card' || debts.find(item => item.id === editingDebtId)?.category === 'Credit card';
+  const editingLoan = editingDebt && (editingDebt.category === 'Mortgage' || editingDebt.category === 'Auto loan') ? editingDebt : undefined;
+  const deletingLoanBill = confirmLoanDeletion && editingLoan
+    ? recurringBills.find(bill => bill.id === identityLoanBillPairs[editingLoan.id])
+    : undefined;
+
+  const groupedCardStyle = {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: isLight ? palette.canvas : palette.raised,
+    paddingHorizontal: 14,
+  };
+  const rowStyle = {
+    minHeight: 50,
+    paddingVertical: 8,
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
+    gap: 12,
+  };
+  const rowBorderStyle = { borderBottomWidth: 1, borderBottomColor: palette.border };
+  const inlineInputStyle = {
+    minHeight: 40,
+    paddingVertical: 6,
+    paddingHorizontal: 0,
+    textAlign: 'right' as const,
+    color: palette.text,
+    fontSize: 15,
+    fontWeight: '600' as const,
+  };
+
+  const handleSavePress = () => {
+    if (busy || actionBusyRef.current) return;
+    actionBusyRef.current = true;
+    setSubmitting(true);
+    void onSave(editingDebtId, {
+      category: debtCategory,
+      name: debtName,
+      balance: debtBalance,
+      originalBalance: debtOriginalBalance,
+      apr: debtApr,
+      minimumPayment: debtMinimum,
+      minimumMode: debtMinimumMode,
+      mortgageEscrow,
+      dueDay: debtDueDay,
+      creditLimit: debtCreditLimit,
+      annualFeeAmount: debtAnnualFeeAmount,
+      annualFeeNextDate: debtAnnualFeeNextDate,
+    }).finally(() => {
+      actionBusyRef.current = false;
+      setSubmitting(false);
+    });
+  };
+
+  return (
+    <SheetModal
+      visible
+      onClose={onClose}
+      contentSized
+      closeLabel="Close debt editor"
+      footer={(
+        <View style={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 16, borderTopWidth: 1, borderTopColor: palette.border, backgroundColor: palette.surface, gap: 8 }}>
+          {!!localError ? (
+            <Text style={[styles.errorText, { marginTop: 0, textAlign: 'center' }]} accessibilityRole="alert">
+              {localError}
+            </Text>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Save debt account"
+            disabled={busy}
+            style={{
+              minHeight: 48,
+              borderRadius: 12,
+              backgroundColor: ctaBg,
+              alignItems: 'center',
+              justifyContent: 'center',
+              opacity: busy ? 0.5 : 1,
+            }}
+            onPress={handleSavePress}
+          >
+            <Text style={{ color: ctaFg, fontSize: 15, fontWeight: '700' }}>
+              {submitting || saving ? 'Saving\u2026' : 'Save'}
+            </Text>
+          </Pressable>
+        </View>
+      )}
+    >
+      <View style={{ gap: 14 }}>
+        <SheetFormHeader
+          centered
+          title={editingDebtId ? 'Edit Debt Account' : 'Add Debt Account'}
+          subtitle={currencyCode}
+          closeLabel="Close debt editor"
+          onClose={onClose}
+        />
+
+        <View style={groupedCardStyle}>
+          <View style={[rowStyle, rowBorderStyle, { minHeight: 44 }]}>
+            <Text style={[ui.heading, { fontSize: 15 }]}>Debt details</Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Account type: ${debtCategory}`}
+            onPress={() => {
+              Keyboard.dismiss();
+              setShowDebtCategoryPicker(true);
+            }}
+            style={[rowStyle, rowBorderStyle]}
+          >
+            <Text style={[ui.text, { color: palette.muted }]}>Account type *</Text>
+            <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+              <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>{debtCategory}</Text>
+              <AppIcon name="chevronDown" size={16} color={palette.brand} />
+            </View>
+          </Pressable>
+          <View style={rowStyle}>
+            <Text style={[ui.text, { color: palette.muted }]}>Account name *</Text>
+            <TextInput
+              accessibilityLabel="Debt name"
+              accessibilityHint="Required"
+              style={[inlineInputStyle, { flex: 1, minWidth: 110 }]}
+              value={debtName}
+              onChangeText={setDebtName}
+              placeholder="e.g., Chase Sapphire"
+              placeholderTextColor={palette.muted}
+            />
+          </View>
+        </View>
+
+        <View style={groupedCardStyle}>
+          <View style={[rowStyle, rowBorderStyle, { minHeight: 44 }]}>
+            <Text style={[ui.heading, { fontSize: 15 }]}>Payment & Terms</Text>
+          </View>
+          <View style={[rowStyle, rowBorderStyle]}>
+            <Text style={[ui.text, { color: palette.muted }]}>Current balance *</Text>
+            <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+              <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+              <TextInput
+                accessibilityLabel="Current balance"
+                accessibilityHint="Required"
+                style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                value={debtBalance}
+                onChangeText={text => setDebtBalance(prev => acceptMoneyEdit(prev, text, currencyCode, true))}
+                placeholder="0.00"
+                placeholderTextColor={palette.muted}
+              />
+            </View>
+          </View>
+          <View style={[rowStyle, rowBorderStyle]}>
+            <Text style={[ui.text, { color: palette.muted }]}>Original balance</Text>
+            <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+              <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+              <TextInput
+                accessibilityLabel="Original balance"
+                style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                keyboardType="decimal-pad"
+                value={debtOriginalBalance}
+                onChangeText={text => setDebtOriginalBalance(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                placeholder="Optional"
+                placeholderTextColor={palette.muted}
+              />
+            </View>
+          </View>
+          <View style={[rowStyle, rowBorderStyle]}>
+            <Text style={[ui.text, { color: palette.muted }]}>APR *</Text>
+            <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+              <TextInput
+                accessibilityLabel="APR percentage"
+                accessibilityHint="Required"
+                style={[inlineInputStyle, { flex: 1, minWidth: 72 }]}
+                keyboardType="decimal-pad"
+                value={debtApr}
+                onChangeText={text => setDebtApr(prev => acceptAprEdit(prev, text))}
+                placeholder="0.00"
+                placeholderTextColor={palette.muted}
+              />
+              <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>%</Text>
+            </View>
+          </View>
+          <View style={[{ paddingVertical: 10, gap: 8 }, rowBorderStyle]}>
+            <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
+              <Text style={[ui.text, { color: palette.muted }]}>Minimum payment *</Text>
+              <View style={[ui.row, { gap: 4, padding: 3, borderRadius: 10, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.border }]}>
+                {(['auto', 'manual'] as const).map(mode => {
+                  const active = debtMinimumMode === mode;
+                  return (
+                    <Pressable
+                      key={mode}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      accessibilityLabel={`Minimum payment ${mode}`}
+                      onPress={() => {
+                        if (mode === 'manual' && !debtMinimum.trim() && autoEstimatedMin > 0) {
+                          setDebtMinimum(formatEditableMoney(autoEstimatedMin, currencyCode));
+                        }
+                        setDebtMinimumMode(mode);
+                      }}
+                      style={{
+                        minHeight: 32,
+                        paddingHorizontal: 10,
+                        borderRadius: 7,
+                        justifyContent: 'center',
+                        backgroundColor: active ? palette.tint : 'transparent',
+                      }}
+                    >
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: active ? palette.brand : palette.muted }}>
+                        {mode === 'auto' ? 'Auto' : 'Manual'}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+            {debtMinimumMode === 'auto' ? (
+              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', minHeight: 32 }]}>
+                <Text style={[ui.small, { color: palette.muted }]}>Estimated minimum</Text>
+                <Text style={[ui.text, { color: palette.text, fontWeight: '700' }]}>
+                  {autoEstimatedMin > 0 ? formatCurrency(autoEstimatedMin, currencySymbol) : formatCurrency(0, currencySymbol)}
+                </Text>
+              </View>
+            ) : (
+              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', minHeight: 40 }]}>
+                <Text style={[ui.small, { color: palette.muted }]}>Monthly minimum</Text>
+                <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+                  <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                  <TextInput
+                    accessibilityLabel="Minimum monthly payment"
+                    accessibilityHint="Required"
+                    style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                    keyboardType="decimal-pad"
+                    value={debtMinimum}
+                    onChangeText={text => setDebtMinimum(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                    placeholder="0.00"
+                    placeholderTextColor={palette.muted}
+                  />
+                </View>
+              </View>
+            )}
+          </View>
+          {debtCategory === 'Mortgage' ? (
+            <View style={[rowStyle, rowBorderStyle]}>
+              <Text style={[ui.text, { color: palette.muted }]}>Monthly escrow</Text>
+              <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+                <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                <TextInput
+                  accessibilityLabel="Mortgage monthly escrow"
+                  style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                  keyboardType="decimal-pad"
+                  value={mortgageEscrow}
+                  onChangeText={text => setMortgageEscrow(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                  placeholder="Optional"
+                  placeholderTextColor={palette.muted}
+                />
+              </View>
+            </View>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={parsedDebtDueDay ? `Due day: Day ${parsedDebtDueDay}` : 'Due day: Choose day'}
+            onPress={() => {
+              Keyboard.dismiss();
+              setShowDebtDuePicker(true);
+            }}
+            style={rowStyle}
+          >
+            <Text style={[ui.text, { color: palette.muted }]}>Due day</Text>
+            <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+              <Text style={[ui.text, { color: parsedDebtDueDay ? palette.text : palette.brand, fontWeight: '600' }]}>
+                {parsedDebtDueDay ? `Day ${parsedDebtDueDay}` : 'Choose day'}
+              </Text>
+              <AppIcon name="calendar" size={16} color={palette.brand} />
+            </View>
+          </Pressable>
+          {!editingDebtId && parsedDebtDueDay !== null && Number.isInteger(parsedDebtDueDay) && parsedDebtDueDay >= 1 && parsedDebtDueDay <= 31 ? (
+            <Text style={[ui.small, { color: palette.muted, paddingBottom: 10 }]}>
+              {`First due date: ${obligationFirstDueDate(parsedDebtDueDay, currentHouseholdDate(householdTimeZone), currencyCode)}`}
+            </Text>
+          ) : null}
+        </View>
+
+        {isCreditCardDebt ? (
+          <View style={{ gap: 8 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showDebtMoreDetails }}
+              onPress={() => setShowDebtMoreDetails(prev => !prev)}
+              style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 4 }}
+            >
+              <Text style={{ color: palette.brand, fontSize: 14, fontWeight: '600' }}>More details</Text>
+              <AppIcon name={showDebtMoreDetails ? 'chevronDown' : 'chevronRight'} size={15} color={palette.brand} />
+            </Pressable>
+
+            {showDebtMoreDetails ? (
+              <View style={groupedCardStyle}>
+                <View style={[rowStyle, rowBorderStyle]}>
+                  <Text style={[ui.text, { color: palette.muted }]}>Credit limit</Text>
+                  <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                    <TextInput
+                      accessibilityLabel="Credit limit"
+                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                      keyboardType="decimal-pad"
+                      value={debtCreditLimit}
+                      onChangeText={text => setDebtCreditLimit(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                      placeholder="Optional"
+                      placeholderTextColor={palette.muted}
+                    />
+                  </View>
+                </View>
+                <View style={[rowStyle, rowBorderStyle]}>
+                  <Text style={[ui.text, { color: palette.muted }]}>Annual fee</Text>
+                  <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
+                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                    <TextInput
+                      accessibilityLabel="Annual credit-card fee"
+                      style={[inlineInputStyle, { flex: 1, minWidth: 90 }]}
+                      keyboardType="decimal-pad"
+                      value={debtAnnualFeeAmount}
+                      onChangeText={text => setDebtAnnualFeeAmount(prev => acceptMoneyEdit(prev, text, currencyCode))}
+                      placeholder="Optional"
+                      placeholderTextColor={palette.muted}
+                    />
+                  </View>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={debtAnnualFeeNextDate ? `Next renewal: ${formatShortDate(debtAnnualFeeNextDate)}` : 'Next renewal: Choose date'}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setShowDebtRenewalPicker(true);
+                  }}
+                  style={rowStyle}
+                >
+                  <Text style={[ui.text, { color: palette.muted }]}>Next renewal</Text>
+                  <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+                    <Text style={[ui.text, { color: debtAnnualFeeNextDate ? palette.text : palette.brand, fontWeight: '600' }]}>
+                      {debtAnnualFeeNextDate ? formatShortDate(debtAnnualFeeNextDate) : 'Choose date'}
+                    </Text>
+                    <AppIcon name="calendar" size={16} color={palette.brand} />
+                  </View>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {canEdit && editingLoan ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${editingLoan.name}`}
+            disabled={busy}
+            onPress={() => {
+              Keyboard.dismiss();
+              setConfirmLoanDeletion(true);
+            }}
+            style={{ minHeight: 44, alignItems: 'center', justifyContent: 'center', opacity: busy ? 0.5 : 1 }}
+          >
+            <Text style={{ color: '#F08B78', fontSize: 15, fontWeight: '600' }}>
+              {deleting ? 'Deleting\u2026' : 'Delete account'}
+            </Text>
+          </Pressable>
+        ) : null}
+
+        <AdaptiveModal visible={showDebtCategoryPicker} transparent animationType="fade" onRequestClose={() => setShowDebtCategoryPicker(false)}>
+          <TouchableWithoutFeedback onPress={() => setShowDebtCategoryPicker(false)}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' }}>
+              <TouchableWithoutFeedback>
+                <View style={{ backgroundColor: palette.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: palette.border, maxHeight: '72%', paddingBottom: bottomInsetPadding(insets.bottom, 16) }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 18, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: palette.border }}>
+                    <Text style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>Select Debt Category</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Close picker" onPress={() => setShowDebtCategoryPicker(false)} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}>
+                      <AppIcon name="close" size={20} color={palette.muted} />
+                    </Pressable>
+                  </View>
+                  <ScrollView style={{ maxHeight: 380 }} contentContainerStyle={{ padding: 16, gap: 6 }} keyboardShouldPersistTaps="handled">
+                    {DEBT_CATEGORY_DROPDOWN_OPTIONS.map(option => {
+                      const selected = option.value === debtCategory;
+                      return (
+                        <Pressable
+                          key={option.value}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected }}
+                          onPress={() => {
+                            setDebtCategory(option.value);
+                            if (option.value !== 'Credit card') {
+                              setDebtCreditLimit('');
+                              setDebtAnnualFeeAmount('');
+                              setDebtAnnualFeeNextDate('');
+                              setShowDebtMoreDetails(false);
+                            }
+                            setShowDebtCategoryPicker(false);
+                          }}
+                          style={{
+                            minHeight: 52,
+                            paddingHorizontal: 14,
+                            paddingVertical: 10,
+                            borderRadius: 12,
+                            borderWidth: 1,
+                            borderColor: selected ? palette.brand : 'transparent',
+                            backgroundColor: selected ? palette.tint : 'transparent',
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                          }}
+                        >
+                          <View style={[ui.row, { gap: 10, flex: 1 }]}>
+                            {option.icon ? <AppIcon name={option.icon} size={18} color={selected ? palette.brand : palette.muted} /> : null}
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ color: selected ? palette.brand : palette.text, fontSize: 15, fontWeight: '600' }}>{option.label}</Text>
+                              {option.subtitle ? <Text style={[ui.small, { color: palette.muted }]}>{option.subtitle}</Text> : null}
+                            </View>
+                          </View>
+                          {selected ? <AppIcon name="check" size={18} color={palette.brand} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </AdaptiveModal>
+
+        <DueDayPickerModal
+          visible={showDebtDuePicker}
+          value={parsedDebtDueDay}
+          title="Select due day"
+          subtitle="Monthly payment due date"
+          allowClear
+          onSelect={day => setDebtDueDay(day === null ? '' : String(day))}
+          onClose={() => setShowDebtDuePicker(false)}
+        />
+
+        <CalendarDatePickerModal
+          visible={showDebtRenewalPicker}
+          value={debtAnnualFeeNextDate}
+          timeZone={householdTimeZone}
+          title="Annual fee next renewal"
+          allowClear
+          onSelect={date => setDebtAnnualFeeNextDate(date)}
+          onClose={() => setShowDebtRenewalPicker(false)}
+        />
+        {canEdit && editingLoan ? (
+          <ConfirmModal
+            insideSheet
+            visible={confirmLoanDeletion}
+            title="Delete account and history?"
+            message={`Once deleted, ${editingLoan.name} and its recorded transaction and reconciliation history can never be retrieved.${deletingLoanBill ? ` The linked recurring item “${deletingLoanBill.name}” and its recorded history will also be permanently deleted.` : ''}`}
+            confirmLabel="Delete account & history"
+            busy={busy}
+            onConfirm={() => {
+              if (busy || actionBusyRef.current) return;
+              actionBusyRef.current = true;
+              setDeleting(true);
+              void onDelete(editingLoan.id).finally(() => {
+                actionBusyRef.current = false;
+                setDeleting(false);
+                setConfirmLoanDeletion(false);
+              });
+            }}
+            onCancel={() => setConfirmLoanDeletion(false)}
+          />
+        ) : null}
+      </View>
+    </SheetModal>
+  );
+});
 
 const styles = StyleSheet.create({
   quietSection: { paddingHorizontal: 16, paddingVertical: 10, borderWidth: 0, borderRadius: 0, backgroundColor: 'transparent', elevation: 0, shadowOpacity: 0 },

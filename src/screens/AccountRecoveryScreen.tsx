@@ -1,10 +1,27 @@
 import React, { useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, TextInput, View, useNativeAppearance } from '../components/NativeAppearance';
 import type { HouseholdMembershipSummary } from '../household-context';
-import type { DebtCategoryDiagnostic } from '../onboarding-storage';
+import type { DebtCategoryDiagnostic, HouseholdRecoveryKind } from '../onboarding-storage';
 import { REPAIR_CATEGORIES, type RepairCategory } from '../debt-category-repair';
 
-type Props = { email: string; issue: string; diagnostics: DebtCategoryDiagnostic[]; households: HouseholdMembershipSummary[]; currentId?: string; currentRole?: HouseholdMembershipSummary['role']; actionBusy?: boolean; onRepair: (diagnostic: DebtCategoryDiagnostic, category: RepairCategory) => Promise<void>; onSwitch: (id: string) => Promise<void>; onJoin: (input: string) => Promise<void>; onRefresh: () => void | Promise<void>; onSignOut: () => void };
+type Props = {
+  email: string;
+  issue: string;
+  diagnostics: DebtCategoryDiagnostic[];
+  recoveryKind?: HouseholdRecoveryKind;
+  pendingOperationCount?: number;
+  households: HouseholdMembershipSummary[];
+  currentId?: string;
+  currentRole?: HouseholdMembershipSummary['role'];
+  actionBusy?: boolean;
+  onRepair: (diagnostic: DebtCategoryDiagnostic, category: RepairCategory) => Promise<void>;
+  onSyncAndRecover?: () => Promise<void>;
+  onAcceptServerState?: () => Promise<void>;
+  onSwitch: (id: string) => Promise<void>;
+  onJoin: (input: string) => Promise<void>;
+  onRefresh: () => void | Promise<void>;
+  onSignOut: () => void;
+};
 export function AccountRecoveryScreen(p: Props) {
   const { palette, ctaBg, ctaFg } = useNativeAppearance();
   const busyRef = useRef(false);
@@ -16,10 +33,44 @@ export function AccountRecoveryScreen(p: Props) {
   const surface = palette.surface;
   const run = async (work: () => Promise<void>) => { if (busyRef.current) return; busyRef.current = true; setBusy(true); setError(''); try { await work(); } catch (e) { setError(e instanceof Error ? e.message : 'Please try again.'); } finally { busyRef.current = false; setBusy(false); } };
   const actionBusy = busy || !!p.actionBusy;
+  const pendingCount = p.pendingOperationCount ?? 0;
+  const showPendingRecovery = (p.recoveryKind === 'pending_finance_commands' || pendingCount > 0)
+    && Boolean(p.currentId)
+    && Boolean(p.onSyncAndRecover || p.onAcceptServerState);
   return <ScrollView contentContainerStyle={{ flexGrow: 1, padding: 24, backgroundColor: palette.canvas }} keyboardShouldPersistTaps="handled">
     <Text accessibilityRole="header" style={{ fontSize: 28, fontWeight: '700', color: fg }}>Your account</Text>
     <Text style={{ color: fg, marginVertical: 12 }}>{p.email}</Text>
     <View style={{ padding: 16, borderRadius: 14, backgroundColor: surface }}><Text accessibilityRole="alert" style={{ color: fg, fontWeight: '700' }}>{p.issue}</Text>
+      {showPendingRecovery && (
+        <View style={{ marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: palette.border }}>
+          <Text style={{ color: fg, fontWeight: '700' }}>
+            {pendingCount > 0
+              ? `${pendingCount} unresolved local finance ${pendingCount === 1 ? 'change' : 'changes'} need recovery`
+              : 'Pending finance changes need recovery'}
+          </Text>
+          <Text style={{ color: palette.muted, marginTop: 4 }}>
+            Sync against the server to confirm saved changes, or use the authoritative server data and archive local evidence.
+          </Text>
+          {p.onSyncAndRecover && (
+            <ActionButton
+              label={actionBusy ? 'Syncing…' : 'Sync & Recover'}
+              disabled={actionBusy}
+              bg={ctaBg}
+              fg={ctaFg}
+              onPress={() => { void run(() => p.onSyncAndRecover!()); }}
+            />
+          )}
+          {p.onAcceptServerState && (
+            <ActionButton
+              label={actionBusy ? 'Applying…' : 'Use Server Data & Continue'}
+              disabled={actionBusy}
+              bg={palette.raised}
+              fg={fg}
+              onPress={() => { void run(() => p.onAcceptServerState!()); }}
+            />
+          )}
+        </View>
+      )}
       {p.diagnostics.map(d => <View key={d.id} style={{ marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: palette.border }}>
         <Text style={{ color: fg, fontWeight: '700' }}>{d.name}</Text>
         <Text style={{ color: palette.muted, marginTop: 4 }}>{d.issue}{d.category ? `: ${d.category}` : ''}</Text>

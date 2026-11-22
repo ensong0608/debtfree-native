@@ -20,11 +20,24 @@ import { Pressable, ScrollView, Text, View, appearanceColor, useNativeAppearance
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
 import { AppIcon } from './AppIcon';
 import { PullToRefreshScrollView } from './PullToRefreshScrollView';
-import { useTabShell } from './TabShellContext';
+import { useTabRefresh } from './TabShellContext';
 import { AmountText } from './AmountText';
 import { InformationButton } from './InformationSheet';
 import { InspireCornerArt, InspireQuote } from './InspireArt';
-import { formatCurrency, categoryDebts, calculateBalanceSnapshot, type DebtItem } from '../onboarding-domain';
+import {
+  formatCurrency,
+  categoryDebts,
+  calculateBalanceSnapshot,
+  canSuggestLoanPaymentSplit,
+  findPreviousLoanPaymentDate,
+  resolveAutoLoanSplitSuggestion,
+  resolveNextAutoDueDate,
+  suggestLoanPaymentSplit,
+  type DebtItem,
+} from '../onboarding-domain';
+import { currentHouseholdDate, type DateOnly } from '../finance/calendar';
+import type { LedgerTransaction } from '../finance/ledger';
+import { getCurrency } from '../finance/currencies';
 
 export function useScrollFadeOpacity() {
   const [opacity] = useState(() => new Animated.Value(1));
@@ -204,7 +217,7 @@ export function FinancialScreen({
   addLabel?: string;
 }) {
   const { palette, isInspire } = useNativeAppearance();
-  const shell = useTabShell();
+  const tabRefresh = useTabRefresh();
   const { opacity: fabOpacity, scrollHandlers } = useScrollFadeOpacity();
   const canSwipeSegments = Boolean(segments && segments.length > 1 && onSelect);
   const useSideBySidePager = Boolean(segments && segments.length > 1 && renderSegment);
@@ -322,9 +335,9 @@ export function FinancialScreen({
     [pagerScrollX],
   );
 
-  const refreshHeaderNotice = shell?.refreshFeedback && shell.refreshFeedback.kind !== 'success' ? (
-    <Text accessibilityLiveRegion="polite" style={[ui.small, { color: shell.refreshFeedback.kind === 'error' ? '#F08B78' : palette.muted }]}>
-      {shell.refreshFeedback.message}
+  const refreshHeaderNotice = tabRefresh?.refreshFeedback && tabRefresh.refreshFeedback.kind !== 'success' ? (
+    <Text accessibilityLiveRegion="polite" style={[ui.small, { color: tabRefresh.refreshFeedback.kind === 'error' ? '#F08B78' : palette.muted }]}>
+      {tabRefresh.refreshFeedback.message}
     </Text>
   ) : null;
 
@@ -441,8 +454,8 @@ export function FinancialScreen({
                       <PullToRefreshScrollView
                         contentContainerStyle={[ui.screen, onAdd ? { paddingBottom: 92 } : null]}
                         keyboardShouldPersistTaps="handled"
-                        refreshing={Boolean(shell?.refreshing)}
-                        onRefresh={shell?.onRefresh}
+                        refreshing={Boolean(tabRefresh?.refreshing)}
+                        onRefresh={tabRefresh?.onRefresh}
                         headerContent={refreshHeaderNotice}
                         {...scrollHandlers}
                         onScroll={event => {
@@ -473,8 +486,8 @@ export function FinancialScreen({
               key={selected ?? title}
               contentContainerStyle={[ui.screen, onAdd ? { paddingBottom: 92 } : null]}
               keyboardShouldPersistTaps="handled"
-              refreshing={Boolean(shell?.refreshing)}
-              onRefresh={shell?.onRefresh}
+              refreshing={Boolean(tabRefresh?.refreshing)}
+              onRefresh={tabRefresh?.onRefresh}
               headerContent={refreshHeaderNotice}
               {...scrollHandlers}
             >
@@ -725,11 +738,23 @@ export function snapshot(debts: DebtItem[]) {
 export function SnapshotCard({
   debts,
   referenceDebts = debts,
+  mortgageEscrowByDebtId,
+  transactions = [],
+  loanBillPairs,
+  historicalBillIdsByDebtId,
+  todayDate,
+  currencyCode = 'USD',
   currencySymbol,
   onInformationVisibilityChange,
 }: {
   debts: DebtItem[];
   referenceDebts?: DebtItem[];
+  mortgageEscrowByDebtId?: Readonly<Record<string, number>>;
+  transactions?: readonly LedgerTransaction[];
+  loanBillPairs?: Readonly<Record<string, string>>;
+  historicalBillIdsByDebtId?: Readonly<Record<string, readonly string[]>>;
+  todayDate?: DateOnly;
+  currencyCode?: string;
   currencySymbol: string;
   onInformationVisibilityChange?: (visible: boolean) => void;
 }) {
@@ -786,6 +811,74 @@ export function SnapshotCard({
             const radius = 37;
             const circumference = 2 * Math.PI * radius;
             const dashLength = (paidRatio / 100) * circumference;
+            const activeHomeMortgages = category === 'Home'
+              ? categoryDebts(debts, 'Home').filter(d => d.balance > 0 && d.minimumPayment > 0)
+              : [];
+            const canShowMortgageSplit = activeHomeMortgages.length > 0
+              && activeHomeMortgages.every(d => canSuggestLoanPaymentSplit(d, mortgageEscrowByDebtId?.[d.id]));
+            const scaleFactor = 10 ** getCurrency(currencyCode).scale;
+            const roundCurrency = (v: number) => Math.round((v + Number.EPSILON) * scaleFactor) / scaleFactor;
+            const mortgageSplitTotals = canShowMortgageSplit
+              ? activeHomeMortgages.reduce(
+                  (acc, d) => {
+                    const split = suggestLoanPaymentSplit({
+                      balance: d.balance,
+                      aprPercent: d.apr,
+                      paymentAmount: d.minimumPayment,
+                      escrowAmount: mortgageEscrowByDebtId?.[d.id],
+                      currencyCode,
+                    });
+                    return {
+                      principal: roundCurrency(acc.principal + split.principal),
+                      interest: roundCurrency(acc.interest + split.interest),
+                      escrow: roundCurrency(acc.escrow + split.escrow),
+                    };
+                  },
+                  { principal: 0, interest: 0, escrow: 0 },
+                )
+              : null;
+            const activeAutoLoans = category === 'Auto'
+              ? categoryDebts(debts, 'Auto').filter(d => d.balance > 0 && d.minimumPayment > 0)
+              : [];
+            const canShowAutoSplit = activeAutoLoans.length > 0
+              && activeAutoLoans.every(d => canSuggestLoanPaymentSplit(d));
+            const refToday = todayDate ?? currentHouseholdDate();
+            const autoSplitTotals = canShowAutoSplit
+              ? activeAutoLoans.reduce(
+                  (acc, d) => {
+                    const linkedBillIds = Array.from(new Set([
+                      loanBillPairs?.[d.id],
+                      ...(historicalBillIdsByDebtId?.[d.id] ?? []),
+                    ].filter((value): value is string => Boolean(value))));
+                    const lastPaymentDate = findPreviousLoanPaymentDate({
+                      debtId: d.id,
+                      transactions,
+                      onOrBeforeDate: refToday,
+                      linkedBillIds,
+                    });
+                    const nextDueDate = resolveNextAutoDueDate({
+                      dueDay: d.dueDay,
+                      today: refToday,
+                      lastPaymentDate,
+                    });
+                    const est = resolveAutoLoanSplitSuggestion({
+                      debt: d,
+                      paymentAmount: d.minimumPayment,
+                      paymentDate: nextDueDate ?? refToday,
+                      transactions,
+                      currencyCode,
+                      preferredMethod: nextDueDate === null ? 'monthly' : undefined,
+                      linkedBillIds,
+                    });
+                    return {
+                      principal: roundCurrency(acc.principal + est.suggestion.principal),
+                      interest: roundCurrency(acc.interest + est.suggestion.interest),
+                      dailyCost: roundCurrency(acc.dailyCost + est.dailyInterestCost),
+                    };
+                  },
+                  { principal: 0, interest: 0, dailyCost: 0 },
+                )
+              : null;
             return (
               <View key={category} style={{ width, paddingVertical: 2 }}>
                 <View style={[ui.row, { alignItems: 'center', gap: 14 }]}>
@@ -876,6 +969,65 @@ export function SnapshotCard({
                     </View>
                   </View>
                 </View>
+                {mortgageSplitTotals ? (
+                  <View
+                    style={{
+                      marginTop: 10,
+                      borderRadius: 12,
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      backgroundColor: palette.raised,
+                      borderWidth: isInspire ? 1.5 : 1,
+                      borderColor: palette.cardBorder,
+                      gap: 4,
+                    }}
+                  >
+                    <Text style={[ui.small, { color: palette.muted, fontWeight: '700' }]}>Next payment est.</Text>
+                    <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[ui.small, { color: palette.muted }]}>Principal</Text>
+                        <AmountText value={formatCurrency(mortgageSplitTotals.principal, currencySymbol)} style={[ui.small, { fontWeight: '800', color: palette.posInk }]} />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[ui.small, { color: palette.muted }]}>Interest</Text>
+                        <AmountText value={formatCurrency(mortgageSplitTotals.interest, currencySymbol)} style={[ui.small, { fontWeight: '800', color: palette.neg }]} />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0, alignItems: 'flex-end' }}>
+                        <Text style={[ui.small, { color: palette.muted }]}>Escrow</Text>
+                        <AmountText value={formatCurrency(mortgageSplitTotals.escrow, currencySymbol)} style={[ui.small, { fontWeight: '800', color: palette.text, textAlign: 'right' }]} />
+                      </View>
+                    </View>
+                  </View>
+                ) : autoSplitTotals ? (
+                  <View
+                    style={{
+                      marginTop: 10,
+                      borderRadius: 12,
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      backgroundColor: palette.raised,
+                      borderWidth: isInspire ? 1.5 : 1,
+                      borderColor: palette.cardBorder,
+                      gap: 4,
+                    }}
+                  >
+                    <Text style={[ui.small, { color: palette.muted, fontWeight: '700' }]}>Next payment est.</Text>
+                    <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[ui.small, { color: palette.muted }]}>Principal</Text>
+                        <AmountText value={formatCurrency(autoSplitTotals.principal, currencySymbol)} style={[ui.small, { fontWeight: '800', color: palette.posInk }]} />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[ui.small, { color: palette.muted }]}>Interest</Text>
+                        <AmountText value={formatCurrency(autoSplitTotals.interest, currencySymbol)} style={[ui.small, { fontWeight: '800', color: palette.neg }]} />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0, alignItems: 'flex-end' }}>
+                        <Text style={[ui.small, { color: palette.muted }]}>Daily cost</Text>
+                        <AmountText value={`${formatCurrency(autoSplitTotals.dailyCost, currencySymbol)}/d`} style={[ui.small, { fontWeight: '800', color: palette.text, textAlign: 'right' }]} />
+                      </View>
+                    </View>
+                  </View>
+                ) : null}
               </View>
             );
           })}

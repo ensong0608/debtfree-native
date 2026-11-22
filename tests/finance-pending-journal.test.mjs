@@ -259,3 +259,27 @@ test('household preflight discovers stale membership-version commands before swi
   assert.equal(after.commands.length, 2);
   assert.equal(after.unresolved, 2);
 });
+
+test('resolved acceptServerState commands retain failure/dispatchState for audit without blocking summary or readback', async () => {
+  const { createPendingJournal, summarizePendingCommands } = require('../src/finance/pending-journal.ts');
+  const store = memoryStore();
+  const journal = createPendingJournal(store);
+  await journal.save(command('archived-rejected', { dispatchState: 'uncertain' }));
+  await journal.markRejected('user-a', 'archived-rejected', 'Rejected earlier');
+  const evidence = { byDomain: {
+    transactions: { authoritative: true, complete: true, rows: [] },
+    bills: { authoritative: true, complete: true, rows: [] },
+    anchors: { authoritative: true, complete: true, rows: [] },
+  } };
+  const resolved = await journal.acceptServerState('user-a', 'archived-rejected', evidence, true);
+  assert.equal(resolved.resolution.kind, 'accepted_server_state');
+  assert.equal(resolved.failure.kind, 'rejected');
+  assert.equal(resolved.dispatchState, 'uncertain');
+  const summary = summarizePendingCommands([resolved]);
+  assert.equal(summary.total, 0);
+  assert.equal(summary.rejected, 0);
+  assert.equal(summary.resolved, 1);
+  const readback = await journal.evaluateReadback('user-a', 'archived-rejected', evidence);
+  assert.equal(readback.outcome, 'retained');
+  assert.equal(readback.command.resolution.kind, 'accepted_server_state');
+});

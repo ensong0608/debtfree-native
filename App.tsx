@@ -10,7 +10,10 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { useFonts, Montserrat_400Regular, Montserrat_500Medium, Montserrat_700Bold } from '@expo-google-fonts/montserrat';
+import { useFonts } from '@expo-google-fonts/montserrat/useFonts';
+import { Montserrat_400Regular } from '@expo-google-fonts/montserrat/400Regular';
+import { Montserrat_500Medium } from '@expo-google-fonts/montserrat/500Medium';
+import { Montserrat_700Bold } from '@expo-google-fonts/montserrat/700Bold';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as SecureStore from 'expo-secure-store';
@@ -52,7 +55,7 @@ import { recoveryFailure, resolveRecoverySourceContext } from './src/recovery-do
 import { AccountRecoveryScreen } from './src/screens/AccountRecoveryScreen';
 import { FontText as Text, NativeAppearanceProvider } from './src/components/NativeAppearance';
 import { repairDebtCategory } from './src/debt-category-repair';
-import { getPendingFinanceSummary } from './src/finance-storage';
+import { getPendingFinanceSummary, recoverPendingFinanceWrites } from './src/finance-storage';
 import { AppIcon } from './src/components/AppIcon';
 import { DebtFreeFlow } from './src/OnboardingAndHome';
 import { acceptOnboardingSnapshot } from './src/onboarding-snapshot';
@@ -317,6 +320,80 @@ function RootApp() {
       }
     }
   }, [presentPendingInviteAfterBusy, setStage, setAuthScreen]);
+
+  const runPendingFinanceRecovery = useCallback(async (mode: 'readback' | 'accept_all_server_state'): Promise<void> => {
+    if (busyRef.current) throw new Error('Another account action is already running.');
+    const currentSession = sessionRef.current;
+    const context = recoveryContextRef.current;
+    if (!currentSession || !context || context.userId !== currentSession.user.id) {
+      throw new Error('The signed-in household could not be verified. Refresh and try again.');
+    }
+    const request = ++generation.current;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      const recovery = await recoverPendingFinanceWrites(
+        mode === 'readback'
+          ? { userId: currentSession.user.id, householdContext: context, session: currentSession, action: 'readback' }
+          : { userId: currentSession.user.id, householdContext: context, session: currentSession, action: 'accept_all_server_state', acknowledgeServerState: true },
+      );
+      if (!mounted.current || request !== generation.current || sessionRef.current?.user.id !== currentSession.user.id
+          || recoveryContextRef.current?.householdId !== context.householdId) {
+        throw new Error('The recovery action was superseded. Refresh household data before continuing.');
+      }
+      const remainingCount = recovery.operations.filter(op => !op.resolution).length;
+      if (remainingCount > 0) {
+        const updatedIssue = new HouseholdDataUnavailableError(
+          context,
+          recoveryIssue?.summaries ?? householdSummaries,
+          recoveryIssue?.diagnostics ?? [],
+          {
+            recoveryKind: 'pending_finance_commands',
+            pendingOperationCount: remainingCount,
+            message: `${remainingCount} pending finance ${remainingCount === 1 ? 'change' : 'changes'} could not be confirmed on the server. Tap "Use Server Data & Continue" to archive local evidence and open your household.`,
+          },
+        );
+        setRecoveryIssue(updatedIssue);
+        setError(updatedIssue.message);
+        throw updatedIssue;
+      }
+      const refreshed = await loadUserOnboardingData(currentSession, { householdId: context.householdId });
+      if (!mounted.current || request !== generation.current || sessionRef.current?.user.id !== currentSession.user.id) {
+        throw new Error('The recovery action was superseded. Refresh household data before continuing.');
+      }
+      recoveryContextRef.current = null;
+      setRecoveryIssue(null);
+      onboardingDataRef.current = refreshed;
+      setOnboardingData(refreshed);
+      setHouseholdSummaries(current => current.map(summary => summary.householdId === refreshed.householdId
+        ? { ...summary, role: context.role, membershipVersion: context.membershipVersion }
+        : summary));
+      setStage(resolveAuthenticatedStage(refreshed));
+      setAuthScreen('ready');
+      setError('');
+    } catch (err) {
+      if (err instanceof HouseholdDataUnavailableError && mounted.current && request === generation.current
+          && sessionRef.current?.user.id === currentSession.user.id) {
+        recoveryContextRef.current = err.context;
+        setRecoveryIssue(err);
+        if (err.summaries.length > 0) setHouseholdSummaries(err.summaries);
+        setError(err.message);
+      } else if (!(err instanceof HouseholdDataUnavailableError) && mounted.current && request === generation.current) {
+        setError(err instanceof Error ? err.message : 'Unable to recover pending household changes. Refresh and try again.');
+      }
+      throw err;
+    } finally {
+      if (mounted.current && request === generation.current) {
+        busyRef.current = false;
+        setBusy(false);
+        void presentPendingInviteAfterBusy().catch(() => {});
+      }
+    }
+  }, [householdSummaries, presentPendingInviteAfterBusy, recoveryIssue?.diagnostics, recoveryIssue?.summaries, setAuthScreen, setStage]);
+
+  const handleSyncAndRecoverPending = useCallback(() => runPendingFinanceRecovery('readback'), [runPendingFinanceRecovery]);
+  const handleAcceptServerStateAndContinue = useCallback(() => runPendingFinanceRecovery('accept_all_server_state'), [runPendingFinanceRecovery]);
 
   const handleAcceptHouseholdInvite = useCallback(async (rawTokenOrUrl: string): Promise<void> => {
     const currentSession = sessionRef.current;
@@ -855,7 +932,7 @@ function RootApp() {
   }
 
   if (authState === 'recovery' && session) {
-    return <NativeAppearanceProvider userId={session.user.id}><SafeAreaView style={{ flex: 1 }}><AccountRecoveryScreen email={session.user.email ?? 'Signed in'} issue={error || 'Your household could not be loaded. Refresh to try again.'} diagnostics={recoveryIssue?.diagnostics ?? []} households={householdSummaries} currentId={recoveryIssue?.context?.householdId} currentRole={recoveryIssue?.context?.role} actionBusy={busy} onRepair={handleRepairDebtCategory} onSwitch={handleSwitchHousehold} onJoin={handleAcceptHouseholdInvite} onRefresh={retry} onSignOut={() => void logout()} /></SafeAreaView></NativeAppearanceProvider>;
+    return <NativeAppearanceProvider userId={session.user.id}><SafeAreaView style={{ flex: 1 }}><AccountRecoveryScreen email={session.user.email ?? 'Signed in'} issue={error || 'Your household could not be loaded. Refresh to try again.'} diagnostics={recoveryIssue?.diagnostics ?? []} recoveryKind={recoveryIssue?.recoveryKind} pendingOperationCount={recoveryIssue?.pendingOperationCount ?? 0} households={householdSummaries} currentId={recoveryIssue?.context?.householdId} currentRole={recoveryIssue?.context?.role} actionBusy={busy} onRepair={handleRepairDebtCategory} onSyncAndRecover={handleSyncAndRecoverPending} onAcceptServerState={handleAcceptServerStateAndContinue} onSwitch={handleSwitchHousehold} onJoin={handleAcceptHouseholdInvite} onRefresh={retry} onSignOut={() => void logout()} /></SafeAreaView></NativeAppearanceProvider>;
   }
 
   if (authState === 'checking') {

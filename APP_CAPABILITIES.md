@@ -6,13 +6,13 @@ This inventory reflects the native app source. Availability can depend on the pl
 
 ## Home
 
-- See debt balance snapshots and estimated payoff dates across cards and loans, mortgages, and auto debt. The balance snapshot and recorded payment activity answer different questions.
+- See debt balance snapshots and estimated payoff dates across cards and loans, mortgages, and auto debt, along with next-payment principal, interest, and escrow estimates for active mortgages (once monthly escrow is entered) and daily-interest principal, interest, and daily cost estimates for active auto loans. The balance snapshot and recorded payment activity answer different questions.
 - Review the active payoff strategy and jump directly to **Accounts → Strategy**.
-- See unpaid and partly paid obligations that need attention, including overdue items, when there are applicable entries. Open an obligation to record a payment. Review recent ledger activity and open transaction details from Home.
+- See unpaid and partly paid obligations that need attention, including overdue items, when there are applicable entries. Open an obligation to record a payment, with an editable principal, interest, and escrow breakdown for mortgage and auto loan payments (auto loans estimate Actual/365 daily interest from the prior payment date with a Daily/Monthly switch and monthly fallback). Review recent ledger activity and open transaction details from Home.
 
 ## Accounts and debt payoff
 
-- Track credit cards, personal loans, auto loans, and mortgages. Browse active accounts by category, search and sort them, and open each account's **Overview**, **Transactions**, and **Detail**.
+- Track credit cards, personal loans, auto loans, and mortgages. Browse active accounts by category, search and sort them, and open each account's **Overview**, **Transactions**, and **Detail**, including next-payment principal, interest, and escrow or daily-interest estimates on active mortgage and auto loan overviews.
 - See institution marks in account lists and Strategy, with offline support for recognized names such as U.S. Bank, USBconnect, and PenFed.
 - Maintain balances, rates, credit limits, minimum payments, due dates, and account-specific terms. Reconcile an account to a verified statement balance. Track expected credit-card annual fees separately from recorded fees.
 - Mark a zero-balance account as paid off and browse it in **Paid Off**. History stays available. A balance above zero returns the account to active tracking.
@@ -21,9 +21,9 @@ This inventory reflects the native app source. Availability can depend on the pl
 
 ## Transactions and obligations
 
-- Manually add, edit, and delete ledger entries for payments, purchases, fees, interest, and other activity. History supports search, date sorting, lifetime/year/month views, and filters by transaction type and one or more accounts, including paid-off accounts.
+- Manually add, edit, and delete ledger entries for payments, purchases, fees, interest, and other activity. History supports search, lifetime/year/month views, multi-select transaction-type and account/group filters with active filter chips, sorting by date or amount (including paid-off accounts), and due-cycle cues when an entry is applied to a different month's cycle.
 - When adding a transaction, expand **More details** for an optional payee and note or the applicable payment breakdown. A purchase can reuse an account from recent confirmed purchase history with one tap.
-- Keep history attached to the same account or recurring bill when its name changes. Link a mortgage or auto loan to its matching recurring bill so the same obligation can be tracked together. Record loan payments with principal, interest, and applicable escrow. The principal allocation determines the loan balance reduction.
+- Keep history attached to the same account or recurring bill when its name changes. Link a mortgage or auto loan to its matching recurring bill so the same obligation can be tracked together. Record loan payments from Transactions, Accounts, or payment sheets with editable estimated principal, interest, and applicable escrow (once mortgage escrow is entered; auto loans estimate Actual/365 daily simple interest from the prior payment date with a Daily/Monthly switch on the payment sheet and monthly fallback when no prior payment exists), or clear the split to record cashflow only. The principal allocation determines the loan balance reduction.
 - Browse bills, debt minimums, and annual card fees in **Transactions → Scheduled** using a monthly calendar or due-date list. Record full, partial, or advance payments against the applicable cycle while preserving the actual transaction date.
 - Change the due day for account minimums and recurring bills. The next unpaid reminder can move to the new date, and future reminders follow the new day. Moving an overdue reminder requires confirmation.
 - Plan an obligation in two, three, or four installments. The plan shows intended amounts and dates. The obligation keeps its original due date and payment requirement.
@@ -33,7 +33,7 @@ This inventory reflects the native app source. Availability can depend on the pl
 - Manage primary and additional income sources on different pay schedules. View normalized monthly take-home income and enter optional gross income separately.
 - Create, edit, or end recurring bills. Use built-in or custom category labels and record the payment method, including the specific credit card used.
 - Review monthly cash flow by category, including recurring bills, mortgage and auto commitments, the card debt payment plan, and money available or a shortfall. Find the monthly reserve estimate for annual card fees.
-- Expand Budget categories to see commitments, payment cycle status, and the card used when applicable. **Budget → Expense** summarizes monthly `Actual Cash Flow`, `Cash to Debt Payments`, `Others`, `Charges`, and `Net Balance Change` in a donut chart and metric breakdown, with expandable categories below. The Expense net subtracts full debt payments from unpaid charges. Expand an expense category to see recorded entries, and tap one to open its transaction details.
+- Expand Budget categories to see commitments, payment cycle status, and the card used when applicable. **Budget → Expense** has one month switcher, a cash outflow semi-circle with expandable cash category rows, a separate Debt Tug-of-War comparison for payments to debt and new card charges, and a non-counted summary of obligations paid earlier for the selected month. Expand a cash category or card charges to see recorded entries (with cross-month due-cycle cues), and tap one to open its transaction details.
 
 ## Progress
 

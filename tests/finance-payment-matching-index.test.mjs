@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   buildTransactionObligationIndex,
   calculateOverdueObligations,
+  findUnassignedPaymentsForObligation,
   getObligationPaymentState,
   getScheduledObligationRows,
   matchPaymentsToObligation,
+  paymentMatchesObligation,
 } from '../src/finance/payment-matching.ts';
 import { makeMoney } from '../src/finance/money.ts';
 
@@ -307,4 +309,133 @@ test('multi-year transaction ledgers resolve scheduled and overdue obligations c
     currencyCode: 'USD',
   });
   assert.equal(scheduled.length, (debts.length + bills.length) * 12);
+});
+
+test('findUnassignedPaymentsForObligation surfaces manual bill charges and same-month moved debt payments while excluding foreign bill tags', () => {
+  const cardBillObligation = {
+    id: 'bill-cc',
+    kind: 'bill',
+    name: 'Netflix',
+    dueDate: '2026-11-20',
+    dueCycleMonth: '2026-11',
+    requiredAmount: makeMoney('USD', 1599),
+    accountId: 'card-1',
+    billId: 'bill-cc',
+  };
+  const debitBillObligation = {
+    id: 'bill-debit',
+    kind: 'bill',
+    name: 'Water Utility',
+    dueDate: '2026-11-22',
+    dueCycleMonth: '2026-11',
+    requiredAmount: makeMoney('USD', 4200),
+    accountId: null,
+    billId: 'bill-debit',
+  };
+  const debtObligation = {
+    id: 'minimum:card-1',
+    kind: 'debt',
+    name: 'Sapphire',
+    dueDate: '2026-11-25',
+    dueCycleMonth: '2026-11',
+    requiredAmount: makeMoney('USD', 12000),
+    accountId: 'card-1',
+  };
+
+  const ccAmountMatch = makeTx({
+    id: 'tx:cc-amt',
+    accountId: 'card-1',
+    date: '2026-11-12',
+    amount: makeMoney('USD', 1599),
+    category: 'subscription',
+    payee: 'Streaming Co',
+    memo: 'Monthly charge',
+  });
+  const ccForeignMemo = makeTx({
+    id: 'tx:cc-foreign',
+    accountId: 'card-1',
+    date: '2026-11-12',
+    amount: makeMoney('USD', 1599),
+    category: 'subscription',
+    payee: 'Netflix',
+    memo: 'Payment [bill:other-bill]',
+  });
+  const ccRepaymentIgnored = makeTx({
+    id: 'tx:cc-repay',
+    accountId: 'card-1',
+    date: '2026-11-12',
+    amount: makeMoney('USD', 1599),
+    category: 'payment',
+    payee: 'Netflix',
+  });
+  const debitAmountMatch = makeTx({
+    id: 'tx:debit-amt',
+    accountId: null,
+    date: '2026-11-14',
+    amount: makeMoney('USD', 4200),
+    category: 'debit_bill',
+    payee: 'City Services',
+    memo: 'Nov cycle',
+  });
+  const debitForeignMemo = makeTx({
+    id: 'tx:debit-foreign',
+    accountId: null,
+    date: '2026-11-14',
+    amount: makeMoney('USD', 4200),
+    category: 'debit_bill',
+    payee: 'Water Utility',
+    memo: '[bill:different-bill]',
+  });
+  const movedDebtPayment = makeTx({
+    id: 'tx:debt-moved',
+    accountId: 'card-1',
+    date: '2026-11-10',
+    appliesToDate: '2026-11-10',
+    amount: makeMoney('USD', 12000),
+    category: 'payment',
+    payee: 'Payment',
+  });
+  const otherMonthDebtPayment = makeTx({
+    id: 'tx:debt-oct',
+    accountId: 'card-1',
+    date: '2026-10-10',
+    appliesToDate: '2026-10-10',
+    amount: makeMoney('USD', 12000),
+    category: 'payment',
+    payee: 'Payment',
+  });
+
+  const allTxs = [
+    ccAmountMatch,
+    ccForeignMemo,
+    ccRepaymentIgnored,
+    debitAmountMatch,
+    debitForeignMemo,
+    movedDebtPayment,
+    otherMonthDebtPayment,
+  ];
+
+  assert.deepEqual(
+    findUnassignedPaymentsForObligation(cardBillObligation, allTxs).map(tx => tx.id),
+    ['tx:cc-amt'],
+  );
+  assert.deepEqual(
+    findUnassignedPaymentsForObligation(debitBillObligation, allTxs).map(tx => tx.id),
+    ['tx:debit-amt'],
+  );
+  assert.deepEqual(
+    findUnassignedPaymentsForObligation(debtObligation, allTxs).map(tx => tx.id),
+    ['tx:cc-repay', 'tx:debt-moved'],
+  );
+
+  // Confirm matching marks each obligation paid
+  const matchedCc = { ...ccAmountMatch, appliesToDate: cardBillObligation.dueDate, memo: `${ccAmountMatch.memo} [bill:${cardBillObligation.billId}]` };
+  const matchedDebit = { ...debitAmountMatch, appliesToDate: debitBillObligation.dueDate, memo: `${debitAmountMatch.memo} [bill:${debitBillObligation.billId}]` };
+  const matchedDebt = { ...movedDebtPayment, appliesToDate: debtObligation.dueDate };
+  assert.equal(paymentMatchesObligation(matchedCc, cardBillObligation), true);
+  assert.equal(getObligationPaymentState(cardBillObligation, [matchedCc], 'USD').status, 'paid');
+  assert.equal(paymentMatchesObligation(matchedDebit, debitBillObligation), true);
+  assert.equal(getObligationPaymentState(debitBillObligation, [matchedDebit], 'USD').status, 'paid');
+  assert.equal(paymentMatchesObligation(matchedDebt, debtObligation), true);
+  assert.equal(getObligationPaymentState(debtObligation, [matchedDebt], 'USD').status, 'paid');
 });
