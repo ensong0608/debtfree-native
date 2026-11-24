@@ -1458,7 +1458,7 @@ export const DebtScreen = memo(function DebtScreen({
                     overflow: 'hidden',
                     flex: 1,
                     minHeight: 58,
-                    paddingHorizontal: 13,
+                    paddingHorizontal: 10,
                     paddingVertical: 10,
                     gap: 3,
                     justifyContent: 'center',
@@ -1470,14 +1470,14 @@ export const DebtScreen = memo(function DebtScreen({
                   }}
                 >
                   {isInspire ? <InspireCornerArt kind={value === 'snowball' ? 'corner-wave' : 'corner-ridge'} borderRadius={15} /> : null}
-                  <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
-                    <AppIcon name={value === 'snowball' ? 'bolt' : 'progress'} size={16} color={palette.accentInk} />
-                    <Text numberOfLines={1} style={[ui.buttonText, { color: palette.text, fontSize: 15, textAlign: 'left', flexShrink: 1 }]}>
+                  <View style={[ui.row, { gap: 4, alignItems: 'center' }]}>
+                    <AppIcon name={value === 'snowball' ? 'bolt' : 'progress'} size={14} color={palette.accentInk} />
+                    <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85} style={[ui.buttonText, { color: palette.text, fontSize: 13.5, textAlign: 'left', flexShrink: 1 }]}>
                       {value === 'snowball' ? 'Snowball' : value === 'avalanche' ? 'Avalanche' : 'Custom'}
                     </Text>
                   </View>
-                  <Text numberOfLines={1} style={[ui.small, { textAlign: 'left' }]}>
-                    {value === 'snowball' ? 'Smallest balance first' : value === 'avalanche' ? 'Highest APR first' : 'Your order'}
+                  <Text numberOfLines={1} style={[ui.small, { fontSize: 11.5, textAlign: 'left' }]}>
+                    {value === 'snowball' ? 'Low balance' : value === 'avalanche' ? 'High APR' : 'Your order'}
                   </Text>
                 </Pressable>
               );
@@ -2716,14 +2716,23 @@ export const DebtScreen = memo(function DebtScreen({
                 </Pressable>
                 <View style={[detailRowStyle, detailRowBorderStyle]}>
                   <Text style={[ui.text, { color: palette.muted, fontWeight: '700' }]}>Promotional APR</Text>
-                  {canEdit && (detailDraft.promoApr || detailDraft.promoEndDate || detailDraft.postPromoApr) ? <Pressable accessibilityRole="button" onPress={() => updateDetailDraft(prev => ({ ...prev, promoApr: '', promoEndDate: '', postPromoApr: '' }))}><Text style={{ color: palette.brand }}>Clear</Text></Pressable> : null}
+                  {canEdit && (detailDraft.promoApr || detailDraft.promoEndDate || detailDraft.postPromoApr) ? <Pressable accessibilityRole="button" onPress={() => updateDetailDraft(prev => ({ ...prev, promoApr: '', promoEndDate: '', postPromoApr: '' }))}><Text style={{ color: palette.brand, fontWeight: '600' }}>Clear</Text></Pressable> : null}
                 </View>
                 {(['promoApr', 'postPromoApr'] as const).map(field => <View key={field} style={[detailRowStyle, detailRowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>{field === 'promoApr' ? 'Promo APR %' : 'After promo APR %'}</Text>
-                  <TextInput editable={canEdit} accessibilityLabel={field === 'promoApr' ? 'Promo APR %' : 'After promo APR %'} style={detailMoneyInputStyle} keyboardType="decimal-pad" value={detailDraft[field]} onChangeText={value => updateDetailDraft(prev => ({ ...prev, [field]: acceptAprEdit(prev[field], value) }))} placeholder="Optional" placeholderTextColor={palette.muted} />
+                  <Text style={[ui.text, { color: palette.muted }]}>{field === 'promoApr' ? 'Promo APR' : 'After promo APR'}</Text>
+                  <View style={detailPillStyle}>
+                    <TextInput editable={canEdit} accessibilityLabel={field === 'promoApr' ? 'Promo APR %' : 'After promo APR %'} style={detailMoneyInputStyle} keyboardType="decimal-pad" value={detailDraft[field]} onChangeText={value => updateDetailDraft(prev => ({ ...prev, [field]: acceptAprEdit(prev[field], value) }))} placeholder="Optional" placeholderTextColor={palette.muted} />
+                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>%</Text>
+                  </View>
                 </View>)}
                 <Pressable accessibilityRole="button" accessibilityLabel="Promo ends" disabled={!canEdit} onPress={() => setShowPromoPicker(true)} style={detailRowStyle}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Promo ends</Text><Text style={{ color: palette.brand }}>{detailDraft.promoEndDate ? formatShortDate(detailDraft.promoEndDate) : 'Choose date'}</Text>
+                  <Text style={[ui.text, { color: palette.muted }]}>Promo ends</Text>
+                  <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+                    <Text style={[ui.text, { color: detailDraft.promoEndDate ? palette.text : palette.brand, fontWeight: '600' }]}>
+                      {detailDraft.promoEndDate ? formatShortDate(detailDraft.promoEndDate) : canEdit ? 'Choose date' : 'Not set'}
+                    </Text>
+                    {canEdit ? <AppIcon name="calendar" size={16} color={palette.brand} /> : null}
+                  </View>
                 </Pressable>
               </>
             ) : null}

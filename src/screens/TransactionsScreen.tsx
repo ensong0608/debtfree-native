@@ -1324,7 +1324,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
             </Card>
           </View>
 
-          <View style={[ui.row, { gap: 8, marginVertical: 2 }]}>
+          <View style={[ui.row, { gap: 6, marginVertical: 2 }]}>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Select transaction date range, ${dateFilterLabel}`}
@@ -1336,7 +1336,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
                   minWidth: 0,
                   minHeight: 42,
                   borderRadius: 999,
-                  paddingHorizontal: 14,
+                  paddingHorizontal: 11,
                   backgroundColor: palette.surface,
                   borderWidth: isInspire ? 1.5 : 1,
                   borderColor: palette.cardBorder,
@@ -1422,7 +1422,29 @@ export const TransactionsScreen = memo(function TransactionsScreen({
             >
               <AppIcon name="sort" size={18} color={sort !== 'newest' ? palette.brand : palette.accentInk} />
             </Pressable>
-            {canEdit ? <Pressable accessibilityRole="button" onPress={() => setShowCsvImport(true)} style={{ paddingHorizontal: 6, justifyContent: 'center' }}><Text style={{ color: palette.brand, fontSize: 12 }}>Import CSV</Text></Pressable> : null}
+            {canEdit ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Import CSV"
+                onPress={() => setShowCsvImport(true)}
+                style={[
+                  ui.button,
+                  {
+                    height: 42,
+                    minHeight: 42,
+                    borderRadius: 21,
+                    paddingHorizontal: 10,
+                    backgroundColor: palette.surface,
+                    borderWidth: isInspire ? 1.5 : 1,
+                    borderColor: palette.cardBorder,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  },
+                ]}
+              >
+                <Text style={{ color: palette.brand, fontSize: 12, fontWeight: '700' }}>CSV</Text>
+              </Pressable>
+            ) : null}
           </View>
           {searchOpen ? (
             <View style={[ui.inputWrap, { marginVertical: 2, paddingHorizontal: 12 }]}>

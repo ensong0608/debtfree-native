@@ -883,7 +883,14 @@ function BudgetScreenInner({
                       <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: color }} />
                       <View style={{ flex: 1, minWidth: 0 }}>
                         <Text style={[ui.heading, { fontSize: 16 }]} numberOfLines={1}>{category?.label ?? item.label}</Text>
-                        <Text numberOfLines={1} style={[ui.small, { marginTop: 1 }]}>{category?.subtitle ?? 'Recorded transactions'}</Text>
+                        <View style={[ui.row, { gap: 6, marginTop: 1, alignItems: 'center' }]}>
+                          <Text numberOfLines={1} style={[ui.small, { flexShrink: 1 }]}>{category?.subtitle ?? 'Recorded transactions'}</Text>
+                          {onSaveVariableCategoryCaps && canEdit && item.categoryKey !== 'debts' && item.categoryKey !== 'housing' && item.categoryKey !== 'auto' ? (
+                            <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${item.label} cap`} hitSlop={6} onPress={() => { setCapKey(item.categoryKey); setCapAmount(data.variableCategoryCaps?.[item.categoryKey] != null ? String(data.variableCategoryCaps[item.categoryKey]) : ''); setCapError(''); }} style={{ paddingHorizontal: 7, paddingVertical: 1.5, borderRadius: 999, backgroundColor: palette.raised, borderWidth: 1, borderColor: palette.border }}>
+                              <Text style={{ color: palette.brand, fontSize: 11, fontWeight: '700' }}>Cap</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
                       </View>
                     </View>
                     <View style={{ alignItems: 'flex-end', maxWidth: '42%', minWidth: 0 }}>
@@ -892,11 +899,10 @@ function BudgetScreenInner({
                     </View>
                     <AppIcon name={isExpanded ? 'chevronDown' : 'chevronRight'} size={15} color="#AAB3AD" />
                   </Pressable>
-                  {onSaveVariableCategoryCaps && canEdit ? <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${item.label} cap`} onPress={() => { setCapKey(item.categoryKey); setCapAmount(data.variableCategoryCaps?.[item.categoryKey] != null ? String(data.variableCategoryCaps[item.categoryKey]) : ''); setCapError(''); }}><Text style={[ui.small, { color: palette.brand, fontWeight: '700' }]}>Cap</Text></Pressable> : null}
                   {data.variableCategoryCaps?.[item.categoryKey] != null && data.variableCategoryCaps[item.categoryKey] > 0 ? (() => {
                     const cap = data.variableCategoryCaps![item.categoryKey];
                     const remaining = cap - item.amount;
-                    return <View style={{ gap: 4 }}><Text style={[ui.small, { color: remaining >= 0 ? posInkColor : '#F08B78' }]}>{`${formatCurrency(item.amount, currencySymbol)} / ${formatCurrency(cap, currencySymbol)} ? ${remaining >= 0 ? formatCurrency(remaining, currencySymbol) + ' left' : '+' + formatCurrency(-remaining, currencySymbol)}`}</Text><View style={{ height: 6, borderRadius: 3, backgroundColor: palette.raised, overflow: 'hidden' }}><View style={{ height: '100%', width: `${Math.min(100, Math.max(0, item.amount / cap * 100))}%`, backgroundColor: remaining >= 0 ? posInkColor : '#F08B78' }} /></View></View>;
+                    return <View style={{ gap: 4 }}><Text style={[ui.small, { color: remaining >= 0 ? posInkColor : '#F08B78' }]}>{`${formatCurrency(item.amount, currencySymbol)} / ${formatCurrency(cap, currencySymbol)} · ${remaining >= 0 ? formatCurrency(remaining, currencySymbol) + ' left' : '+' + formatCurrency(-remaining, currencySymbol)}`}</Text><View style={{ height: 6, borderRadius: 3, backgroundColor: palette.raised, overflow: 'hidden' }}><View style={{ height: '100%', width: `${Math.min(100, Math.max(0, item.amount / cap * 100))}%`, backgroundColor: remaining >= 0 ? posInkColor : '#F08B78' }} /></View></View>;
                   })() : null}
                   {isExpanded ? renderExpenseTransactions(drilldown) : null}
                 </View>

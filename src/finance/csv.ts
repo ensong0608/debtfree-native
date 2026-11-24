@@ -47,11 +47,12 @@ export function buildSplitTransactionPayloads<T extends { amount: Money }>(total
   if (parts.length < 2 || parts.some(p => p.amount.currency !== total.currency || !Number.isSafeInteger(p.amount.minorUnits) || p.amount.minorUnits <= 0) || parts.reduce((sum, p) => sum + BigInt(p.amount.minorUnits), 0n) !== BigInt(total.minorUnits)) throw new RangeError('Split amounts must add up to the total');
   return parts.map(part => ({ ...part }));
 }
+const GENERIC_PAYEES = new Set(['purchase', 'single purchase', 'payment', 'debit', 'cash / debit', 'other', 'fee', 'interest', 'refund']);
 export function detectRecurringCandidates(transactions: readonly LedgerTransaction[], existingBills: readonly RecurringBill[]): { payee: string; amount: Money; transactionIds: string[] }[] {
   const normalize = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
   const active = new Set(existingBills.filter(b => b.active).map(b => normalize(b.name)));
   const groups = new Map<string, LedgerTransaction[]>();
-  for (const tx of transactions) { const key = normalize(tx.payee); if (!key || active.has(key) || tx.deletedAt !== null || tx.source !== 'manual' || !['purchase', 'debit_spending'].includes(tx.category)) continue; groups.set(key, [...(groups.get(key) ?? []), tx]); }
+  for (const tx of transactions) { const key = normalize(tx.payee); if (!key || GENERIC_PAYEES.has(key) || active.has(key) || tx.deletedAt !== null || tx.source !== 'manual' || !['purchase', 'debit_spending'].includes(tx.category)) continue; groups.set(key, [...(groups.get(key) ?? []), tx]); }
   const result: { payee: string; amount: Money; transactionIds: string[] }[] = [];
   for (const group of groups.values()) { group.sort((a, b) => a.date.localeCompare(b.date)); for (let i = 1; i < group.length; i++) { const a = group[i - 1], b = group[i]; const days = calendarDaysBetween(a.date, b.date); if (days >= 25 && days <= 35 && a.amount.currency === b.amount.currency && Math.abs(a.amount.minorUnits - b.amount.minorUnits) <= Math.max(a.amount.minorUnits, b.amount.minorUnits) * 0.1) { result.push({ payee: b.payee, amount: b.amount, transactionIds: [a.id, b.id] }); break; } } }
   return result;
