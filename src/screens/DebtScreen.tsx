@@ -605,7 +605,7 @@ export const DebtScreen = memo(function DebtScreen({
   const [showDetailDuePicker, setShowDetailDuePicker] = useState(false);
   const [showDetailRenewalPicker, setShowDetailRenewalPicker] = useState(false);
   const [deleteConfirmDebt, setDeleteConfirmDebt] = useState<DebtItem | null>(null);
-  const { opacity: detailFabOpacity, scrollHandlers: detailScrollHandlers } = useScrollFadeOpacity();
+  const { opacity: detailFabOpacity, scale: detailFabScale, translateX: detailFabTranslateX, translateY: detailFabTranslateY, scrollHandlers: detailScrollHandlers } = useScrollFadeOpacity();
   const [showAccountTxModal, setShowAccountTxModal] = useState(false);
   const detailSavedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1184,7 +1184,10 @@ export const DebtScreen = memo(function DebtScreen({
         </SwipeProtectedHorizontalArea>
       </View>
       {!!error && !editor && !editorOpen && !selected && <Text accessibilityRole="alert" style={ui.text}>{error}</Text>}
-      {visible.length === 0 && <View style={{ paddingVertical: 24, paddingHorizontal: 16 }}><Text style={ui.heading}>{query ? 'No matching accounts' : 'No accounts in this category'}</Text></View>}
+      {visible.length === 0 && <View style={{ paddingVertical: 24, paddingHorizontal: 16, gap: 4 }}>
+        <Text style={ui.heading}>{query ? 'No matching accounts' : debts.length === 0 ? 'No debt accounts yet' : 'No accounts in this category'}</Text>
+        <Text style={ui.small}>{query ? 'Try a different search.' : debts.length === 0 ? 'Tap + to add a debt account and start tracking your payoff progress.' : 'Try another category or tap + to add an account.'}</Text>
+      </View>}
       {visibleGroups.filter(group => group.items.length > 0).map((group, groupIndex) => {
         const groupItems = group.items;
         return <View key={group.label} style={{ marginTop: 6, gap: 10 }}>
@@ -1951,11 +1954,12 @@ export const DebtScreen = memo(function DebtScreen({
             <Pressable accessibilityRole="button" accessibilityLabel="Close account details" onPress={backToAccounts} style={ui.button}><AppIcon name="close" size={20} color={palette.muted} /></Pressable>
           </View>
           <ScrollView
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
             contentContainerStyle={[
               ui.screen,
               {
                 paddingTop: 8,
-                paddingBottom: Math.max(insets.bottom, 20) + (section === 'Transactions' && canEdit && onAddTransaction ? 88 : 16),
+                paddingBottom: Math.max(insets.bottom, 20) + (section === 'Transactions' && canEdit && onAddTransaction ? 104 : 16),
               },
             ]}
             keyboardShouldPersistTaps="handled"
@@ -2789,6 +2793,9 @@ export const DebtScreen = memo(function DebtScreen({
               onPress={openAccountTxModal}
               label={`Add transaction for ${selected.name}`}
               opacity={detailFabOpacity}
+              scale={detailFabScale}
+              translateX={detailFabTranslateX}
+              translateY={detailFabTranslateY}
             />
           ) : null}
         </View>}
@@ -3559,7 +3566,7 @@ function ExtraAmountRow({
               <AppIcon name="close" size={13} color={palette.muted} />
             </Pressable>
           ) : null}
-          <Text style={[ui.small, { color: palette.muted, fontWeight: '600', flexShrink: 0 }]}>{unitLabel}</Text>
+          <Text numberOfLines={1} style={[ui.small, { color: palette.muted, fontWeight: '600', flexShrink: 0 }]}>{unitLabel}</Text>
         </View>
         <View style={[ui.row, { gap: 8, alignItems: 'center', flexShrink: 0 }]}>
           <Pressable

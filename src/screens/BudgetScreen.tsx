@@ -1175,7 +1175,7 @@ function BudgetScreenInner({
                                 ? (matchingUnifiedLoans.length > 0
                                     ? `${item.count} active ${item.count === 1 ? 'item' : 'items'}`
                                     : `${item.count} active bill${item.count > 1 ? 's' : ''}`)
-                                : 'No bills added'}
+                                : 'No bills added yet · tap + to add one'}
                         </Text>
                       </View>
                     </View>

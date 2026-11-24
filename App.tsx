@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,6 +17,7 @@ import { Montserrat_700Bold } from '@expo-google-fonts/montserrat/700Bold';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets, initialWindowMetrics } from 'react-native-safe-area-context';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as SecureStore from 'expo-secure-store';
+import { captureExceptionSafely } from './src/telemetry';
 import { createInvitationIntentStore, invitationForUser, joinHouseholdWithRecovery, withStartupDeadline, type InvitationIntent } from './src/invitation-intent';
 import type { Session } from '@supabase/supabase-js';
 import {
@@ -27,6 +28,8 @@ import {
   createSessionVerification,
   signInWithApple,
   signInWithGoogle,
+  signInWithEmail,
+  signUpWithEmail,
   signOut,
   verifiedSession,
   getSupabaseClient,
@@ -110,6 +113,8 @@ function LocalAcceptanceEntry() {
     }}
     onGoogleSignIn={async () => null}
     onAppleSignIn={async () => null}
+    onEmailSignIn={async () => false}
+    onEmailSignUp={async () => false}
     onSignOut={async () => {}}
     onDeleteAccount={async () => {}}
     accountDeletionEnabled={false}
@@ -710,6 +715,18 @@ function RootApp() {
     }
   };
 
+  const handleEmailSignIn = async (email: string, password: string) => Boolean(await login(() => signInWithEmail(email, password)));
+  const handleEmailSignUp = async (email: string, password: string) => {
+    let needsConfirmation = false;
+    const session = await login(async () => {
+      const result = await signUpWithEmail(email, password);
+      needsConfirmation = result.needsEmailConfirmation;
+      return result.session;
+    });
+    if (needsConfirmation && mounted.current) setNotice('Check your email for a confirmation link, then sign in.');
+    return Boolean(session) || needsConfirmation;
+  };
+
   const logout = async () => {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -1052,6 +1069,8 @@ function RootApp() {
         }}
         onGoogleSignIn={() => login(signInWithGoogle)}
         onAppleSignIn={() => login(signInWithApple)}
+        onEmailSignIn={handleEmailSignIn}
+        onEmailSignUp={handleEmailSignUp}
         onSignOut={logout}
         onDeleteAccount={deleteAccount}
         accountDeletionEnabled={process.env.EXPO_PUBLIC_ACCOUNT_DELETION_ENABLED === 'true'}
@@ -1084,15 +1103,60 @@ function RootApp() {
   );
 }
 
+class RootErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    captureExceptionSafely(error, 'root_error_boundary');
+    if (__DEV__) {
+      console.error('RootErrorBoundary caught error:', error, info.componentStack);
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaView style={[styles.root, styles.unavailableWrap]} edges={['top', 'bottom', 'left', 'right']}>
+          <Text style={styles.unavailableTitle}>Something went wrong</Text>
+          <Text style={styles.unavailableError}>
+            BitLess hit an unexpected display error. Reload to continue — your saved data is safe.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Reload app"
+            onPress={() => this.setState({ hasError: false })}
+            style={{ backgroundColor: '#49CC68', paddingHorizontal: 22, paddingVertical: 12, borderRadius: 12, marginTop: 6 }}
+          >
+            <Text style={{ color: '#090D14', fontSize: 15, fontWeight: '700' }}>Reload app</Text>
+          </Pressable>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [fontsLoaded, fontError] = useFonts({ Montserrat_400Regular, Montserrat_500Medium, Montserrat_700Bold });
   if (!fontsLoaded && !fontError) return null;
   if (isLocalAcceptanceEnabled()) {
-    return <SafeAreaProvider initialMetrics={initialWindowMetrics}><LocalAcceptanceEntry /></SafeAreaProvider>;
+    return (
+      <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+        <RootErrorBoundary>
+          <LocalAcceptanceEntry />
+        </RootErrorBoundary>
+      </SafeAreaProvider>
+    );
   }
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-      <RootApp />
+      <RootErrorBoundary>
+        <RootApp />
+      </RootErrorBoundary>
     </SafeAreaProvider>
   );
 }

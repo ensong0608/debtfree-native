@@ -1900,7 +1900,7 @@ export function HomeScreen({
                 </Pressable>
               </View>
               {recentTxs.length === 0 ? (
-                <Text style={ui.text}>No recorded activity yet.</Text>
+                <Text style={ui.text}>No recorded activity yet. Tap + in Transactions to record a payment or purchase.</Text>
               ) : (
                 recentTxs.map((tx, idx) => {
                     const dir = classifyCategoryDirection(tx.category);

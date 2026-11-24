@@ -58,9 +58,12 @@ test('invite URL building and parsing round-trips links and raw tokens cleanly',
   const webUrl = buildHouseholdInviteWebUrl(VALID_TOKEN);
   assert.equal(
     webUrl,
-    `https://bitless-household-invite.ensong608.chatgpt.site/#token=${VALID_TOKEN}`
+    `https://ensong0608.github.io/debtfree-native/invite/#token=${VALID_TOKEN}`
   );
+  assert.equal(buildHouseholdInviteWebUrl(VALID_TOKEN, 'https://example.com/custom/'), `https://example.com/custom/invite/#token=${VALID_TOKEN}`);
   assert.equal(parseHouseholdInviteInput(webUrl), VALID_TOKEN);
+  assert.equal(parseHouseholdInviteInput(`https://ensong0608.github.io/debtfree-native/invite/#token=${VALID_TOKEN}`), VALID_TOKEN);
+  assert.equal(parseHouseholdInviteInput(`https://bitless-household-invite.ensong608.chatgpt.site/#token=${VALID_TOKEN}`), VALID_TOKEN);
   assert.equal(
     parseHouseholdInviteInput(`https://bitepxsdujceoszbldhd.supabase.co/functions/v1/send-household-invitation?code=${VALID_TOKEN}`),
     VALID_TOKEN
@@ -162,6 +165,100 @@ test('createHouseholdInvitation returns shareable link even when email delivery 
   assert.equal(result.deliveryState, 'prepared');
   assert.equal(result.delivery.status, 'unconfigured');
   assert.equal(result.inviteUrl, `${HOUSEHOLD_INVITE_SCHEME}://invite?token=${VALID_TOKEN}`);
+});
+
+test('createHouseholdInvitation supports email-optional invites and skips email delivery', async () => {
+  const rpcCalls = [];
+  let functionInvoked = false;
+
+  __configureHouseholdCollaborationForTests({
+    randomToken: async () => VALID_TOKEN,
+    sha256Hex: async raw => `sha256:${raw}`,
+    getClient: () => ({
+      rpc: async (fn, args) => {
+        rpcCalls.push({ fn, args });
+        if (fn === 'debtfree_create_household_invitation') {
+          return {
+            data: {
+              status: 'created',
+              invitationId: 'inv-open-1',
+              householdId: 'hh-1',
+              role: 'admin',
+              expiresAt: '2026-12-01T00:00:00Z',
+              hasEmail: false,
+              membershipVersion: 6,
+            },
+            error: null,
+          };
+        }
+        if (fn === 'debtfree_list_household_invitations') {
+          return {
+            data: {
+              status: 'ok',
+              householdId: 'hh-1',
+              membershipVersion: 6,
+              invitations: [
+                {
+                  invitationId: 'inv-open-1',
+                  emailHint: null,
+                  role: 'admin',
+                  expiresAt: '2026-12-01T00:00:00Z',
+                  expired: false,
+                  deliveryState: 'prepared',
+                },
+              ],
+            },
+            error: null,
+          };
+        }
+        if (fn === 'debtfree_rotate_household_invitation') {
+          return {
+            data: {
+              status: 'rotated',
+              invitationId: args.p_invitation_id,
+              householdId: 'hh-1',
+              role: 'admin',
+              expiresAt: '2026-12-02T00:00:00Z',
+              hasEmail: false,
+              membershipVersion: 7,
+            },
+            error: null,
+          };
+        }
+        return { data: null, error: { message: 'unexpected rpc' } };
+      },
+      functions: {
+        invoke: async () => {
+          functionInvoked = true;
+          return { data: { success: true }, error: null };
+        },
+      },
+    }),
+  });
+
+  const created = await createHouseholdInvitation(OWNER_SESSION, OWNER_CONTEXT, {
+    inviteeEmail: '   ',
+    role: 'member',
+  });
+  assert.equal(rpcCalls[0].args.p_invitee_email, null);
+  assert.equal(functionInvoked, false);
+  assert.equal(created.deliveryState, 'prepared');
+  assert.equal(created.delivery.status, 'skipped');
+  assert.equal(created.rawToken, VALID_TOKEN);
+  assert.equal(created.inviteWebUrl, buildHouseholdInviteWebUrl(VALID_TOKEN));
+
+  const listed = await listHouseholdInvitations(OWNER_SESSION, OWNER_CONTEXT);
+  assert.equal(listed.invitations[0].emailHint, 'Shareable invite link');
+
+  const rotated = await rotateHouseholdInvitation(OWNER_SESSION, OWNER_CONTEXT, 'inv-open-1');
+  assert.equal(functionInvoked, false);
+  assert.equal(rotated.deliveryState, 'prepared');
+  assert.equal(rotated.delivery.status, 'skipped');
+
+  await assert.rejects(
+    () => createHouseholdInvitation(OWNER_SESSION, OWNER_CONTEXT, { inviteeEmail: 'not-an-email', role: 'viewer' }),
+    /valid email address/,
+  );
 });
 
 test('non-owners cannot create, list, rotate, or cancel invitations', async () => {

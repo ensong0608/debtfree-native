@@ -227,7 +227,6 @@ export const ProgressScreen = memo(function ProgressScreen({
     }
     return moneyToMajor(makeMoney(currencyCode, totalMinor));
   }, [overviewTransactions, overviewDebtById, selectedPeriod, today, currencyCode]);
-  const signedAmount = (value: number) => `${value > 0 ? '+' : value < 0 ? '-' : ''}${formatCurrency(Math.abs(value), currencySymbol)}`;
   const accountActivities = useMemo(
     () => calculateAccountActivities({
       transactions: overviewTransactions,
@@ -447,7 +446,7 @@ export const ProgressScreen = memo(function ProgressScreen({
               <Text style={ui.small}>{movementTotal < 0 ? 'Net debt reduction' : movementTotal > 0 ? 'Net debt increase' : 'No net change'}</Text>
             </View>
              <AmountText style={[ui.heading, { fontSize: 23, fontWeight: '800', color: movementTotal < 0 ? palette.posInk : movementTotal > 0 ? palette.neg : palette.text }]}
-              value={`${movementTotal < 0 ? '↓ ' : movementTotal > 0 ? '↑ ' : ''}${signedAmount(movementTotal)}`} />
+              value={`${movementTotal < 0 ? '↓ ' : movementTotal > 0 ? '↑ ' : ''}${formatCurrency(Math.abs(movementTotal), currencySymbol)}`} />
           </Card>
           <View style={{ gap: 8 }}>
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'baseline', paddingHorizontal: 2 }]}>
@@ -500,14 +499,14 @@ export const ProgressScreen = memo(function ProgressScreen({
                                   : palette.text,
                             },
                           ]}
-                          value={(netChange > 0 ? '↑ +' : netChange < 0 ? '↓ −' : '') + formatCurrency(Math.abs(netChange), currencySymbol)}
+                          value={(netChange > 0 ? '↑ ' : netChange < 0 ? '↓ ' : '') + formatCurrency(Math.abs(netChange), currencySymbol)}
                         />
                       </View>
                     );
                   })}
                 </View>
               ) : (
-                <Text style={[ui.text, { paddingVertical: 10 }]}>No accounts tracked.</Text>
+                <Text style={[ui.text, { paddingVertical: 10 }]}>No accounts tracked. Add a debt account in Accounts to see balance activity.</Text>
               )}
             </Card>
           </View>

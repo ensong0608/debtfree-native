@@ -47,7 +47,7 @@ export function SheetModal({ visible, onClose, children, footer, height = '92%',
         <Pressable accessibilityRole="button" accessibilityLabel={closeLabel} onPress={onClose} style={{ flex: 1 }} />
         <View accessibilityViewIsModal style={{ ...(contentSized ? { maxHeight: '90%' as const } : { height }), backgroundColor: palette.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22, overflow: 'hidden' }}>
           <View accessible={false} style={{ alignSelf: 'center', width: 32, height: 4, borderRadius: 2, backgroundColor: palette.border, marginTop: 8 }} />
-          <ScrollView style={contentSized ? (footer ? { flexGrow: 0, flexShrink: 1, minHeight: 0 } : { flexGrow: 0 }) : footer ? { flex: 1, minHeight: 0 } : undefined} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ padding: 16, paddingBottom: footer ? 16 : bottomInsetPadding(insets.bottom, 24) }}>
+          <ScrollView automaticallyAdjustKeyboardInsets style={contentSized ? (footer ? { flexGrow: 0, flexShrink: 1, minHeight: 0 } : { flexGrow: 0 }) : footer ? { flex: 1, minHeight: 0 } : undefined} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" contentContainerStyle={{ padding: 16, paddingBottom: footer ? 16 : bottomInsetPadding(insets.bottom, 24) }}>
             {children}
           </ScrollView>
           {footer ? <View style={{ paddingBottom: bottomInsetPadding(insets.bottom, 4) }}>{footer}</View> : null}

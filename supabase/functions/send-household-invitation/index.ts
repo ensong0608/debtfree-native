@@ -50,12 +50,13 @@ function escapeHtml(text: string): string {
 Deno.serve(async request => {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: jsonHeaders });
 
-  // Legacy links redirect to a fixed landing page; GET never accepts an invite.
+  // Legacy links redirect to the configured landing page; GET never accepts an invite.
   if (request.method === 'GET') {
     const url = new URL(request.url);
     const token = (url.searchParams.get('token') ?? url.searchParams.get('code') ?? '').trim();
     const valid = token.length >= 32 && token.length <= 128 && !/\s/.test(token);
-    const target = 'https://bitless-household-invite.ensong608.chatgpt.site/' + (valid ? '#token=' + encodeURIComponent(token) : '');
+    const officialDomain = (Deno.env.get('DFN_OFFICIAL_DOMAIN')?.trim() || 'https://ensong0608.github.io/debtfree-native').replace(/\/+$/, '');
+    const target = officialDomain + '/invite/' + (valid ? '#token=' + encodeURIComponent(token) : '');
     return new Response(null, { status: 302, headers: { Location: target, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
   }
 
@@ -126,7 +127,8 @@ Deno.serve(async request => {
     return json(409, { error: 'This invitation link is no longer active or was rotated. Create or rotate a fresh invite.' });
   }
 
-  const webLink = 'https://bitless-household-invite.ensong608.chatgpt.site/#token=' + encodeURIComponent(body.rawToken);
+  const officialDomain = (Deno.env.get('DFN_OFFICIAL_DOMAIN')?.trim() || 'https://ensong0608.github.io/debtfree-native').replace(/\/+$/, '');
+  const webLink = officialDomain + '/invite/#token=' + encodeURIComponent(body.rawToken);
   const deepLink = `com.debtfree.native.test://invite?token=${encodeURIComponent(body.rawToken)}`;
   const roleLabel = deliveryData.role === 'viewer' ? 'Viewer (read-only)' : 'Member (can edit shared finances)';
   const safeHouse = escapeHtml(householdName);

@@ -43,5 +43,5 @@ All agents (Gemini, Codex, Claude, and delegated subagents) operating in this re
 | **Medium Worker** | `codex` | `gpt-6.1-terra` | `reasoningEffort: "medium"` or `"high"` |
 | **Hard Worker** | `antigravity` | `gemini-4-hydrogen` | `thinking_level: "high"` (or `"xhigh"` if needed) |
 
-- **Manager Responsibilities:** Keep [TRACKER.md](./TRACKER.md) concise (no micro-task churn; design coupled client/SQL contracts together); before delegating, log Task ID (`T-XXX`), target files, acceptance criteria, and explicit "What NOT to do" boundaries; review & close out when Workers finish.
+- **Manager Responsibilities:** Keep [TRACKER.md](./TRACKER.md) **under 100 lines** (archive completed milestones to `C:\Development\AI-Infrastructure\memory\debtfree-native\`; design coupled client/SQL contracts together); before delegating, log Task ID (`T-XXX`), target files, acceptance criteria, and explicit "What NOT to do" boundaries; review & close out when Workers finish.
 - **Worker Responsibilities:** Follow your assigned Task ID in `TRACKER.md` and Manager prompt strictly; do not spawn subagents unless instructed; update `TRACKER.md` (`DONE` + summary + modified files, or `BLOCKED` + exact reason) and stop immediately.

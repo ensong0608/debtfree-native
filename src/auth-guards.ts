@@ -82,7 +82,17 @@ export function callbackCode(value: string): string | null {
   return result.kind === 'code' ? result.code : null;
 }
 
-export type AuthFailure = 'network' | 'invalid' | 'unknown';
+export function isEmailPasswordAuthEnabled(appEnv = process.env.EXPO_PUBLIC_APP_ENV, flag = process.env.EXPO_PUBLIC_EMAIL_AUTH_ENABLED): boolean {
+  return appEnv === 'production' ? flag === 'true' : flag !== 'false';
+}
+
+export function validateEmailPasswordInput(email: string, password: string): string | null {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return 'Enter a valid email address.';
+  if (password.length < 6) return 'Password must be at least 6 characters.';
+  return null;
+}
+
+export type AuthFailure = 'network' | 'invalid' | 'unknown' | 'invalid_credentials' | 'email_not_confirmed' | 'user_already_registered' | 'weak_password' | 'rate_limit';
 
 /**
  * Classifies an auth error without depending on the SDK: network/retryable failures must not delete a stored
@@ -91,6 +101,11 @@ export type AuthFailure = 'network' | 'invalid' | 'unknown';
 export function classifyAuthError(error: unknown): AuthFailure {
   if (!error || typeof error !== 'object') return 'unknown';
   const { name, status, code } = error as { name?: string; status?: number; code?: string };
+  if (code === 'invalid_credentials') return 'invalid_credentials';
+  if (code === 'email_not_confirmed') return 'email_not_confirmed';
+  if (code === 'user_already_exists' || code === 'email_exists' || code === 'user_already_registered') return 'user_already_registered';
+  if (code === 'weak_password') return 'weak_password';
+  if (code === 'over_request_rate_limit' || code === 'over_email_send_rate_limit') return 'rate_limit';
   if (name === 'AuthRetryableFetchError' || name === 'TypeError' || status === 0 || status === 429 ||
       (typeof status === 'number' && status >= 500)) return 'network';
   if (name === 'AuthSessionMissingError' || name === 'AuthInvalidJwtError' || name === 'AuthInvalidTokenResponseError' ||

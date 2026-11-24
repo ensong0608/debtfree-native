@@ -1415,9 +1415,19 @@ export const TransactionsScreen = memo(function TransactionsScreen({
 
           {sorted.length === 0 ? (
             <Card>
-              <Text style={ui.heading}>No recorded transactions</Text>
+              <Text style={ui.heading}>
+                {transactions.length === 0
+                  ? 'No transactions yet'
+                  : searchInput.trim() || activeFilterChips.length > 0
+                    ? 'No matching transactions'
+                    : 'No transactions in this period'}
+              </Text>
               <Text style={ui.text}>
-                No transactions match your search and filters.
+                {transactions.length === 0
+                  ? 'Tap + to record your first payment or purchase. BitLess does not connect to banks.'
+                  : searchInput.trim() || activeFilterChips.length > 0
+                    ? 'No transactions match your search and filters. Clear them to see more activity.'
+                    : 'No transactions in this period. Tap + to record one.'}
               </Text>
             </Card>
           ) : (

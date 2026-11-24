@@ -773,7 +773,10 @@ export function SettingsScreen({
     setLatestInvite(result);
     setInviteEmail('');
     setCollabNotice(result.delivery.message);
-    await syncHouseholdAfterCollabMutation();
+    await refreshCollaborationState(onboardingData);
+    if (result.delivery.status !== 'sent') {
+      await handleShareInvite(result);
+    }
   });
 
   const handleRotateInvite = (invitationId: string) => void runCollabAction(async () => {
@@ -782,7 +785,10 @@ export function SettingsScreen({
     const result = await rotateHouseholdInvitation(session!, current.householdContext, invitationId);
     setLatestInvite(result);
     setCollabNotice(result.delivery.message);
-    await syncHouseholdAfterCollabMutation();
+    await refreshCollaborationState(onboardingData);
+    if (result.delivery.status !== 'sent') {
+      await handleShareInvite(result);
+    }
   });
 
   const handleRevokeInvite = (invitationId: string, emailHint: string) => {
@@ -798,7 +804,7 @@ export function SettingsScreen({
           const current = owner();
           await cancelHouseholdInvitation(session!, current.householdContext, invitationId);
           setCollabNotice(`Invitation for ${emailHint} revoked.`);
-          await syncHouseholdAfterCollabMutation();
+          await refreshCollaborationState(onboardingData);
         });
       },
     });
@@ -1194,6 +1200,7 @@ export function SettingsScreen({
       </View>
 
       <ScrollView
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
         style={{ flex: 1, overflow: 'hidden' }}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 24) + 16 }]}
         keyboardShouldPersistTaps="handled"
@@ -1560,11 +1567,12 @@ export function SettingsScreen({
             <View style={ui.divider}>
               <Text style={styles.subLabel}>Invite Member (up to 3 total)</Text>
               <Text style={[ui.small, { marginBottom: 8 }]}>
-                Invite a partner as a Member (can edit) or an advisor as a Viewer (read-only).
+                Choose their access level and tap Create & Share Invite to send a link via text or any app. Add an email only if you also want to lock the invite to one account.
               </Text>
+              <Text style={[ui.small, { fontWeight: '600', marginBottom: 4 }]}>Invitee email (Optional)</Text>
               <TextInput
-                accessibilityLabel="Invitee email address"
-                placeholder="partner@example.com"
+                accessibilityLabel="Invitee email address (optional)"
+                placeholder="Optional: partner@example.com"
                 placeholderTextColor={palette.muted}
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -1599,11 +1607,11 @@ export function SettingsScreen({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Create household invitation"
-                disabled={collabBusy || !inviteEmail.trim()}
+                disabled={collabBusy}
                 onPress={handleCreateInvite}
-                style={[styles.primaryInlineBtn, { backgroundColor: ctaBg, marginTop: 10 }, (collabBusy || !inviteEmail.trim()) && styles.disabled]}
+                style={[styles.primaryInlineBtn, { backgroundColor: ctaBg, marginTop: 10 }, collabBusy && styles.disabled]}
               >
-                <Text style={[styles.primaryInlineBtnText, { color: ctaFg }]}>{collabBusy ? 'Sending…' : 'Send Invite'}</Text>
+                <Text style={[styles.primaryInlineBtnText, { color: ctaFg }]}>{collabBusy ? 'Creating…' : 'Create & Share Invite'}</Text>
               </Pressable>
 
               {latestInvite ? (
@@ -1665,19 +1673,33 @@ export function SettingsScreen({
             <View style={ui.divider}>
               <Text style={styles.subLabel}>Join a Household</Text>
               <Text style={[ui.small, { marginBottom: 8 }]}>
-                Paste an invite link or code sent to your account email. Joining switches your active view; your existing household data stays separate and is never merged.
+                Paste an invite link or code shared with you. Joining switches your active view; your existing household data stays separate and is never merged.
               </Text>
-              <TextInput
-                accessibilityLabel="Invite link or invite code"
-                placeholder="Paste invite link or code"
-                placeholderTextColor={palette.muted}
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!collabBusy}
-                value={joinInput}
-                onChangeText={setJoinInput}
-                style={[styles.modalTextInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border, fontSize: 13, fontWeight: '500', letterSpacing: 0 }]}
-              />
+              <View style={[ui.row, { gap: 8, alignItems: 'center' }]}>
+                <TextInput
+                  accessibilityLabel="Invite link or invite code"
+                  placeholder="Paste invite link or code"
+                  placeholderTextColor={palette.muted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  clearButtonMode="while-editing"
+                  editable={!collabBusy}
+                  value={joinInput}
+                  onChangeText={setJoinInput}
+                  style={[styles.modalTextInput, styles.flex1, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border, fontSize: 13, fontWeight: '500', letterSpacing: 0 }]}
+                />
+                {joinInput.length > 0 ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear invite input"
+                    disabled={collabBusy}
+                    onPress={() => setJoinInput('')}
+                    style={[ui.button, collabBusy && styles.disabled]}
+                  >
+                    <Text style={[ui.buttonText, { color: palette.muted }]}>Clear</Text>
+                  </Pressable>
+                ) : null}
+              </View>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Join household"
@@ -1867,7 +1889,7 @@ export function SettingsScreen({
             />
             <SettingSwitchRow
               title="Past-due alerts"
-              subtitle="Get notified immediately when an obligation becomes overdue"
+              subtitle="Receive a local reminder for past-due obligations"
               checked={onboardingData.notifications.overdueAlerts}
               disabled={savingPrefs || !canEdit}
               onToggle={() => void handleToggleNotification('overdueAlerts')}
@@ -1880,7 +1902,7 @@ export function SettingsScreen({
               onToggle={() => void handleToggleNotification('milestonesAndProgress')}
             />
             <Text style={[ui.small, { marginTop: 8, fontStyle: 'italic', color: palette.muted }]}>
-              Note: Notification switches record your saved preferences. Background scheduled push notifications are deferred pending platform scheduler integration.
+              Upcoming and past-due reminders are scheduled on this device when permission is granted. Milestone notifications and remote push are not yet available.
             </Text>
           </View>
         </Card>

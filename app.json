@@ -2,7 +2,7 @@
   "expo": {
     "name": "DebtFree Native Test",
     "slug": "debtfree-native-test",
-    "version": "0.1.0",
+    "version": "0.1.49",
     "orientation": "default",
     "scheme": "com.debtfree.native.test",
     "userInterfaceStyle": "automatic",

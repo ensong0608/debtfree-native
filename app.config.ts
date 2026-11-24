@@ -1,6 +1,7 @@
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 const WEB_PRODUCTION_PROJECT_REF = 'acpderotiyoecmwwyfsu';
+const SANDBOX_PROJECT_REF = 'bitepxsdujceoszbldhd';
 
 const required = (name: string): string => {
   const value = process.env[name]?.trim();
@@ -33,6 +34,7 @@ function requireAsset(name: string): string {
 function productionSupabaseProblem(projectUrl: string, projectRef: string, publishableKey: string): string | null {
   if (!/^[a-z0-9-]+$/.test(projectRef)) return 'EXPO_PUBLIC_MOBILE_PRODUCTION_PROJECT_REF is not a valid project reference.';
   if (projectRef === WEB_PRODUCTION_PROJECT_REF) return 'The web production project is not allowed in the mobile app.';
+  if (projectRef === SANDBOX_PROJECT_REF || projectRef === process.env.EXPO_PUBLIC_SANDBOX_PROJECT_REF?.trim()) return 'The sandbox project is not allowed in production.';
   let parsedUrl: URL;
   try { parsedUrl = new URL(projectUrl); } catch { return 'EXPO_PUBLIC_MOBILE_PRODUCTION_SUPABASE_URL is not a valid URL.'; }
   if (parsedUrl.protocol !== 'https:' || parsedUrl.hostname !== `${projectRef}.supabase.co` || parsedUrl.port !== '' ||
@@ -53,14 +55,14 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   if (appEnvironment === 'sandbox') {
     return {
       ...config,
-      plugins: [...(config.plugins ?? []), 'expo-splash-screen'],
+      plugins: [...(config.plugins ?? []), 'expo-splash-screen', 'expo-notifications', '@sentry/react-native'],
     } as ExpoConfig;
   }
 
   const appName = required('DFN_APP_NAME');
   const appSlug = required('DFN_APP_SLUG');
   const appScheme = required('EXPO_PUBLIC_APP_SCHEME');
-  const iosBundleIdentifier = process.env.DFN_IOS_BUNDLE_ID?.trim() || undefined;
+  const iosBundleIdentifier = required('DFN_IOS_BUNDLE_ID');
   const androidPackage = required('DFN_ANDROID_PACKAGE');
   if (!/^[A-Za-z][A-Za-z0-9+.-]*$/.test(appScheme) || appScheme === 'com.debtfree.native.test') {
     throw new Error('EXPO_PUBLIC_APP_SCHEME must be a valid production-only scheme.');
@@ -69,9 +71,14 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   if (!/^[A-Za-z0-9]+(?:\.[A-Za-z0-9_]+)+$/.test(androidPackage) || androidPackage === 'com.debtfree.nativetest') {
     throw new Error('DFN_ANDROID_PACKAGE must be a valid production reverse-DNS identifier.');
   }
-  if (iosBundleIdentifier && (!/^[A-Za-z0-9]+(?:\.[A-Za-z0-9_]+)+$/.test(iosBundleIdentifier) ||
-      iosBundleIdentifier === 'com.debtfree.nativetest')) {
-    throw new Error('DFN_IOS_BUNDLE_ID must be a valid production reverse-DNS identifier when supplied.');
+  if (!/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(iosBundleIdentifier) ||
+      iosBundleIdentifier === 'com.debtfree.nativetest') {
+    throw new Error('DFN_IOS_BUNDLE_ID must be a valid production reverse-DNS identifier.');
+  }
+
+  // Google sign-in is currently always offered by the app.
+  if (process.env.EXPO_PUBLIC_APPLE_SIGN_IN_ENABLED !== 'true') {
+    throw new Error('Production builds with Google sign-in require EXPO_PUBLIC_APPLE_SIGN_IN_ENABLED=true.');
   }
 
   const productionConfigError = productionSupabaseProblem(
@@ -94,9 +101,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const appIcon = requireAsset('DFN_APP_ICON_PATH');
   const adaptiveIcon = requireAsset('DFN_ANDROID_ADAPTIVE_ICON_PATH');
   const splashImage = requireAsset('DFN_SPLASH_IMAGE_PATH');
-  const iosConfig = { ...config.ios };
-  if (iosBundleIdentifier) iosConfig.bundleIdentifier = iosBundleIdentifier;
-  else delete iosConfig.bundleIdentifier;
+  const iosConfig = { ...config.ios, bundleIdentifier: iosBundleIdentifier,
+    infoPlist: { ...config.ios?.infoPlist, ITSAppUsesNonExemptEncryption: false } };
 
   return {
     ...config,
@@ -118,6 +124,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     plugins: [
       ...(config.plugins ?? []),
       ['expo-splash-screen', { image: splashImage, resizeMode: 'contain', backgroundColor: '#141318' }],
+      'expo-notifications',
+      '@sentry/react-native',
     ],
   } as ExpoConfig;
 };

@@ -43,7 +43,7 @@ This inventory reflects the native app source. Availability can depend on the pl
 
 ## Sign-in, household access, and settings
 
-- Sign in with Google and complete guided household setup, including income and debts. The app also has an iOS Apple sign-in flow, with physical-device verification still pending.
+- Create an account or sign in with email and password where enabled; email confirmation may be required. Sign in with Google and complete guided household setup, including income and debts. The app also has an iOS Apple sign-in flow, with physical-device verification still pending.
 - Use household-scoped financial data. Where collaboration is enabled, users can join by invitation link or code and switch households. Owners can manage invitations and roles. Members can edit finances and Viewers have read-only access.
 - Choose **Fresh** or **Inspire**, follow system brightness or select **Light** or **Dark**, and choose among ten colors in either style. Appearance is saved per signed-in user on the device. Settings also offers haptics and applicable household preferences such as currency and time zone. Account recovery can help eligible users fix missing or invalid debt categories without restarting setup.
 - In **Settings → Data & security**, export a validated native JSON backup, review a pasted backup, and inspect financial changes that are awaiting confirmation or need review. In-app account deletion depends on build configuration.
@@ -54,7 +54,7 @@ This inventory reflects the native app source. Availability can depend on the pl
 | --- | --- |
 | Bank connections and payment execution | Manual data entry and ledger recording. Live bank aggregation, automatic transaction imports through bank sync, and bank or lender payment initiation are unavailable. |
 | Budget method | Monthly cash flow and category commitments, with a separate Expense summary for recorded payments and charges. Per-category spending targets are unavailable. |
-| Reminders | In-app due dates, calendar, and obligation status. Notification preferences can be saved. Background scheduled alerts and remote push delivery are unavailable in the sandbox. |
+| Reminders | In-app due dates, calendar, and obligation status. Local device reminders can be scheduled for upcoming and past-due obligations when notification permission is granted. Remote push and milestone notifications remain unavailable. |
 | Household collaboration | Invite-link and code flows are implemented in source. Availability depends on backend and build configuration. Automated invitation email delivery is unconfigured. |
 | Data portability | Native JSON export and backup review. Full backup restore is unavailable in the current app. |
 | Billing | Sandbox plan selection only. Live subscription purchases are disabled. |
