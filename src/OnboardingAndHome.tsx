@@ -12,6 +12,7 @@ import { View, Text, TextInput, Pressable, ScrollView, NativeAppearanceProvider,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Crypto from 'expo-crypto';
+import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import type { Session } from '@supabase/supabase-js';
 import {
@@ -85,7 +86,8 @@ import {
 } from './finance/obligation-editor';
 import { obligationScheduleKey } from './finance/obligation-schedule';
 import { getScheduledObligationRows } from './finance/payment-matching';
-import { cancelAllLocalNotifications, syncLocalObligationNotifications } from './notifications';
+import { cancelAllLocalNotifications, syncLocalObligationNotifications, syncMilestoneNotifications } from './notifications';
+import { calculateMilestones } from './finance/progress';
 import type { ObligationSchedule, ObligationScheduleKey } from './finance/obligation-schedule';
 import {
   loadFinanceRecords,
@@ -352,6 +354,7 @@ function DebtFreeFlowContent({
   const financeRecordsVerified = verifiedFinanceScope === `${session?.user?.id ?? 'offline'}:${onboardingData?.userId ?? 'none'}:${onboardingData?.householdId ?? 'none'}:${currencyCode}`;
 
   const [notificationRefresh, setNotificationRefresh] = useState<number>(0);
+  const milestoneSyncRef = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'active') setNotificationRefresh(value => value + 1);
@@ -377,6 +380,25 @@ function DebtFreeFlowContent({
     });
     void syncLocalObligationNotifications(rows, onboardingData.notifications);
   }, [onboardingData, stage, session, financeRecordsVerified, recurringBills, transactions, currencyCode, notificationRefresh]);
+
+  useEffect(() => {
+    if (!onboardingData || stage !== 'home' || !financeRecordsVerified || (session && session.user.id !== onboardingData.userId)) return;
+    let cancelled = false;
+    const data = onboardingData;
+    milestoneSyncRef.current = milestoneSyncRef.current.catch(() => {}).then(async () => {
+      if (cancelled) return;
+      const safeKey = `${data.userId}:${data.householdId}`.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storageKey = `debtfree-notified-milestones.${safeKey}`;
+      const stored = await SecureStore.getItemAsync(storageKey);
+      const parsed: unknown = stored ? JSON.parse(stored) : [];
+      const alreadyNotifiedIds = Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+      if (cancelled) return;
+      const milestones = calculateMilestones({ debts: data.debts, transactions, currencyCode, archivedPaidOffDebtIds: data.archivedPaidOffDebtIds });
+      const updatedIds = await syncMilestoneNotifications(milestones, alreadyNotifiedIds, data.notifications.milestonesAndProgress);
+      if (updatedIds.length > alreadyNotifiedIds.length) await SecureStore.setItemAsync(storageKey, JSON.stringify(updatedIds));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [onboardingData, stage, session, financeRecordsVerified, transactions, currencyCode, notificationRefresh]);
 
   const financeScopeResetKey = `${session?.user?.id ?? 'offline'}:${onboardingData?.userId ?? 'none'}:${onboardingData?.householdId ?? 'none'}:${currencyCode}:${isPrototypeHousehold}`;
   const [prevFinanceScopeResetKey, setPrevFinanceScopeResetKey] = useState(financeScopeResetKey);
@@ -691,6 +713,16 @@ function DebtFreeFlowContent({
             onUpdateOnboardingData(cleanupData);
           } catch (error) {
             cleanupFailures.push(`Custom category cleanup: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        const irregularBillScheduleByBillId = { ...(cleanupData.irregularBillScheduleByBillId ?? {}) };
+        if (Object.prototype.hasOwnProperty.call(irregularBillScheduleByBillId, billId)) {
+          delete irregularBillScheduleByBillId[billId];
+          try {
+            cleanupData = await saveUserOnboardingSettingsPatch(cleanupData, { irregularBillScheduleByBillId }, session!);
+            onUpdateOnboardingData(cleanupData);
+          } catch (error) {
+            cleanupFailures.push(`Irregular schedule cleanup: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
         if (cleanupFailures.length) {
@@ -2690,7 +2722,7 @@ function DebtFreeFlowContent({
   }
 
   // ============================================================================
-  // SCREEN 10: ONBOARDING COMPLETE (background notifications are not available)
+  // SCREEN 10: ONBOARDING COMPLETE
   // ============================================================================
   if (stage === 'onboard_5') {
     const completeOnboarding = () => {
@@ -2777,7 +2809,7 @@ function DebtFreeFlowContent({
 
           <View style={[styles.calloutTeal, { marginTop: 14 }]}>
             <Text style={styles.calloutTealText}>
-              Upcoming bills and account status are available in the app. Background notifications are not available yet.
+              Upcoming, past-due, and milestone alerts run locally on this device.
             </Text>
           </View>
           {!!localError ? <Text style={styles.errorText} accessibilityRole="alert">{localError}</Text> : null}

@@ -33,6 +33,7 @@ import { getObligationCycle, type ObligationSchedules } from '../finance/obligat
 import { AnnualFeeSchedule, getAnnualFeeRows } from '../components/AnnualFeeSchedule';
 import { clampDate, firstEligibleSplitTerm, getPlannedDebtInstallments, resolveDebtSplitPlanState, type DebtPaymentSplitPlansByDebtId, type BillPaymentSplitPlansByBillId } from '../finance/debt-payment-split';
 import { getCurrency } from '../finance/currencies';
+import { detectRecurringCandidates, parseBankCsv, buildSplitTransactionPayloads } from '../finance/csv';
 import { bottomInsetPadding } from '../components/bottom-inset';
 import { DEFAULT_TAB_UI_PREFERENCES, useSetTabUiPreferences, useTransactionsUiPreferences, type HistorySortOption, type HistoryTransactionTypeFilter, type TabUiPreferences, type TransactionsDateFilter } from '../components/TabShellContext';
 
@@ -109,6 +110,7 @@ const CATEGORY_CHOICES: { label: string; category: TransactionCategory; isDebt: 
   { label: 'Interest', category: 'interest', isDebt: true },
   { label: 'Fee', category: 'fee', isDebt: true },
   { label: 'Refund', category: 'refund', isDebt: true },
+  { label: 'Cash / Debit', category: 'debit_spending', isDebt: false },
 ];
 
 const EMPTY_TRANSACTIONS: LedgerTransaction[] = [];
@@ -715,6 +717,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
   initialTransactionId,
   initialSection = 'History',
   onEditDismiss,
+  onCreateBillFromCandidate,
 }: {
   initialTransactionId?: string | null;
   initialSection?: string;
@@ -726,6 +729,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
   currencyCode?: string;
   onSettings: () => void;
   onAddTransaction?: (tx: LedgerTransaction) => unknown;
+  onCreateBillFromCandidate?: (candidate: { payee: string; amountMajor: number }) => void;
   onUpdateTransaction?: (tx: LedgerTransaction) => unknown;
   onUpdateTransactions?: (txs: LedgerTransaction[]) => unknown;
   onDeleteTransaction?: (txId: string) => unknown;
@@ -747,6 +751,9 @@ export const TransactionsScreen = memo(function TransactionsScreen({
   onConfirmAnnualFee?: (debtId: string, renewalDate: DateOnly) => Promise<{ outcome: 'confirmed' | 'pending' } | void> | { outcome: 'confirmed' | 'pending' } | void;
 }) {
   const { isLight, isInspire, palette, ctaBg, ctaFg } = useNativeAppearance();
+  const [dismissedCandidates, setDismissedCandidates] = useState<string[]>([]);
+  const recurringCandidates = useMemo(() => detectRecurringCandidates(transactions, recurringBills), [transactions, recurringBills]);
+  const recurringCandidate = recurringCandidates.find(candidate => !dismissedCandidates.includes(candidate.payee.trim().toLowerCase()));
   const transactionsUi = useTransactionsUiPreferences();
   const shellSetUiPreferences = useSetTabUiPreferences();
   const [localUiPreferences, setLocalUiPreferences] = useState<TabUiPreferences>(() => ({
@@ -827,6 +834,21 @@ export const TransactionsScreen = memo(function TransactionsScreen({
   const [showSortSheet, setShowSortSheet] = useState(false);
   const [showHistoryDatePicker, setShowHistoryDatePicker] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showCsvImport, setShowCsvImport] = useState(false);
+  const [csvText, setCsvText] = useState('');
+  const [csvAccount, setCsvAccount] = useState('');
+  const [chargesPositive, setChargesPositive] = useState(false);
+  const [csvRemaining, setCsvRemaining] = useState<LedgerTransaction[] | null>(null);
+  const [csvError, setCsvError] = useState('');
+  const [csvSaving, setCsvSaving] = useState(false);
+  const csvSavingRef = useRef(false);
+  const csvPreview = useMemo(() => {
+    try {
+      const parsed = csvText.trim() ? parseBankCsv(csvText, transactions, currencyCode) : [];
+      const ready = parsed.filter(row => !row.likelyDuplicate && (csvAccount ? row.amount.minorUnits !== 0 : row.amount.minorUnits < 0));
+      return { ready, skipped: parsed.length - ready.length, error: '' };
+    } catch (error) { return { ready: [], skipped: 0, error: (error as Error).message }; }
+  }, [csvText, transactions, currencyCode, csvAccount]);
   const [billError, setBillError] = useState('');
   const [payTarget, setPayTarget] = useState<PayNowTarget | null>(null);
   const [splitPlanState, setSplitPlanState] = useState<{
@@ -1105,6 +1127,20 @@ export const TransactionsScreen = memo(function TransactionsScreen({
     [historyFilterKey, sorted.length],
   );
 
+  const saveTransactionBatch = useCallback(async (rows: LedgerTransaction[], updateRemaining: (rows: LedgerTransaction[]) => void) => {
+    if (!canEdit || !onAddTransaction) throw new Error('Transaction saving is unavailable');
+    let pendingCount = 0;
+    try {
+      for (let index = 0; index < rows.length; index++) {
+        const result = await onAddTransaction(rows[index]);
+        if (result && (result as { outcome?: string }).outcome === 'pending') pendingCount++;
+        updateRemaining(rows.slice(index + 1));
+      }
+    } finally {
+      if (pendingCount) Alert.alert('Saved locally', `${pendingCount} transaction(s) pending confirmation.`);
+    }
+  }, [canEdit, onAddTransaction]);
+
   const handleAddTxRecord = useCallback(async (tx: LedgerTransaction) => {
     if (!canEdit) return;
     if (onAddTransaction) {
@@ -1207,6 +1243,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
       categoryDropdownOptions={categoryDropdownOptions}
       debtAccountDropdownOptions={debtAccountDropdownOptions}
       onSave={handleAddTxRecord}
+      onSaveBatch={async (rows, update) => { await saveTransactionBatch(rows, update); setShowAddForm(false); }}
       onClose={closeAddForm}
     />
   ) : null;
@@ -1385,6 +1422,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
             >
               <AppIcon name="sort" size={18} color={sort !== 'newest' ? palette.brand : palette.accentInk} />
             </Pressable>
+            {canEdit ? <Pressable accessibilityRole="button" onPress={() => setShowCsvImport(true)} style={{ paddingHorizontal: 6, justifyContent: 'center' }}><Text style={{ color: palette.brand, fontSize: 12 }}>Import CSV</Text></Pressable> : null}
           </View>
           {searchOpen ? (
             <View style={[ui.inputWrap, { marginVertical: 2, paddingHorizontal: 12 }]}>
@@ -1413,6 +1451,13 @@ export const TransactionsScreen = memo(function TransactionsScreen({
             <Pressable accessibilityRole="button" accessibilityLabel="Clear all filters" onPress={clearHistoryFilters} style={{ minHeight: 30, paddingHorizontal: 7, alignItems: 'center', justifyContent: 'center' }}><Text style={[ui.small, { color: palette.muted, fontWeight: '600' }]}>Clear all</Text></Pressable>
           </View> : null}
 
+          {canEdit && recurringCandidate ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, padding: 8, borderRadius: 12, backgroundColor: palette.tint }}>
+              <Text numberOfLines={1} style={[ui.small, { flex: 1, color: palette.text }]}>{recurringCandidate.payee} · {formatCurrency(moneyToMajor(recurringCandidate.amount), currencySymbol)}</Text>
+              <Pressable accessibilityRole="button" onPress={() => onCreateBillFromCandidate ? onCreateBillFromCandidate({ payee: recurringCandidate.payee, amountMajor: moneyToMajor(recurringCandidate.amount) }) : Alert.alert('Repeat?', 'Add this bill in Scheduled.')}><Text style={{ color: palette.brand }}>Repeat?</Text></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Dismiss recurring suggestion" onPress={() => setDismissedCandidates(current => [...current, recurringCandidate.payee.trim().toLowerCase()])}><Text style={{ color: palette.muted }}>×</Text></Pressable>
+            </View>
+          ) : null}
           {sorted.length === 0 ? (
             <Card>
               <Text style={ui.heading}>
@@ -1494,6 +1539,23 @@ export const TransactionsScreen = memo(function TransactionsScreen({
       ))}
     >
       {addTransactionModal}
+      {showCsvImport ? <SheetModal visible onClose={() => { if (!csvSaving) { setShowCsvImport(false); setCsvRemaining(null); setCsvText(''); setCsvError(''); } }} height="85%" closeLabel="Close CSV import">
+        <ScrollView contentContainerStyle={{ padding: 20, gap: 12 }} keyboardShouldPersistTaps="handled">
+          <Text style={ui.heading}>Import CSV</Text>
+          <TextInput accessibilityLabel="Paste CSV" multiline editable={!csvRemaining && !csvSaving} value={csvText} onChangeText={setCsvText} placeholder="Paste CSV with Date, Description and Amount" placeholderTextColor={palette.muted} style={[ui.input, { minHeight: 100, color: palette.text, borderColor: palette.inputBorder }]} />
+          <SelectDropdown label="Target" sheetTitle="Choose target" value={csvAccount} options={[{ label: 'Cash / Debit', value: '' }, ...debtAccountDropdownOptions]} onSelect={setCsvAccount} />
+          {csvAccount ? <View style={{ flexDirection: 'row', gap: 12 }}>{[false, true].map(positive => <Pressable key={String(positive)} onPress={() => setChargesPositive(positive)}><Text style={{ color: chargesPositive === positive ? palette.brand : palette.muted }}>{positive ? 'Charges (+)' : 'Charges (?)'}</Text></Pressable>)}</View> : null}
+          <Text style={ui.small}>{csvRemaining ? csvRemaining.length : csvPreview.ready.length} new ? {csvPreview.skipped} skipped</Text>
+          {(csvRemaining ?? csvPreview.ready).slice(0, 5).map((row, index) => <Text key={index} style={ui.small}>{row.date} ? {row.payee} ? {formatCurrency(Math.abs(moneyToMajor(row.amount)), currencySymbol)}{ 'category' in row ? ` ? ${row.category}` : ` ? ${csvAccount ? ((row.amount.minorUnits > 0) === chargesPositive ? 'purchase' : 'payment') : 'debit_spending'}`}</Text>)}
+          {csvError || csvPreview.error ? <Text style={{ color: palette.text }}>{csvError || csvPreview.error}</Text> : null}
+          <Pressable accessibilityRole="button" disabled={csvSaving || (!csvRemaining && !csvPreview.ready.length)} onPress={async () => {
+            if (csvSavingRef.current) return;
+            const rows: LedgerTransaction[] = csvRemaining ?? csvPreview.ready.map(row => ({ id: `tx:${Crypto.randomUUID()}`, accountId: csvAccount || null, date: parseDateOnly(row.date), appliesToDate: null, amount: makeMoney(currencyCode, Math.abs(row.amount.minorUnits)), category: csvAccount ? ((row.amount.minorUnits > 0) === chargesPositive ? 'purchase' : 'payment') : 'debit_spending', payee: row.payee || 'Imported transaction', source: 'manual', reconciled: false, createdAt: new Date().toISOString(), deletedAt: null }));
+            csvSavingRef.current = true; setCsvSaving(true); setCsvRemaining(rows); setCsvError('');
+            try { await saveTransactionBatch(rows, setCsvRemaining); setShowCsvImport(false); setCsvRemaining(null); setCsvText(''); } catch (error) { setCsvError((error as Error).message || 'Unable to save transactions'); } finally { csvSavingRef.current = false; setCsvSaving(false); }
+          }}><Text style={{ color: palette.brand, fontWeight: '700' }}>{csvSaving ? 'Saving?' : 'Import transactions'}</Text></Pressable>
+        </ScrollView>
+      </SheetModal> : null}
 
       {showFilters ? (
         <SheetModal visible onClose={() => { setShowFilters(false); setShowSpecificAccountPicker(false); }} height={showSpecificAccountPicker ? '88%' : '72%'} closeLabel="Close filters" footer={(
@@ -1860,6 +1922,7 @@ const AddTransactionModal = memo(function AddTransactionModal({
   categoryDropdownOptions,
   debtAccountDropdownOptions,
   onSave,
+  onSaveBatch,
   onClose,
 }: {
   debts: DebtItem[];
@@ -1877,6 +1940,7 @@ const AddTransactionModal = memo(function AddTransactionModal({
   categoryDropdownOptions: readonly DropdownOption<number>[];
   debtAccountDropdownOptions: readonly DropdownOption<string>[];
   onSave: (tx: LedgerTransaction) => Promise<void>;
+  onSaveBatch: (rows: LedgerTransaction[], update: (rows: LedgerTransaction[]) => void) => Promise<void>;
   onClose: () => void;
 }) {
   const { isLight, palette, ctaBg, ctaFg } = useNativeAppearance();
@@ -1895,6 +1959,9 @@ const AddTransactionModal = memo(function AddTransactionModal({
   const [savingTx, setSavingTx] = useState(false);
   const savingTxRef = useRef(false);
   const [showMoreDetails, setShowMoreDetails] = useState(false);
+  const [splitEnabled, setSplitEnabled] = useState(false);
+  const [splitParts, setSplitParts] = useState<{ amount: string; category: TransactionCategory; note: string }[]>([{ amount: '', category: 'purchase', note: '' }, { amount: '', category: 'purchase', note: '' }]);
+  const [splitRemaining, setSplitRemaining] = useState<LedgerTransaction[] | null>(null);
   const [addPicker, setAddPicker] = useState<'category' | 'debt' | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [datePickerMonth, setDatePickerMonth] = useState(() => currentHouseholdMonth(householdTimeZone));
@@ -1928,6 +1995,13 @@ const AddTransactionModal = memo(function AddTransactionModal({
   const handleSaveTransaction = async () => {
     if (savingTx || savingTxRef.current) return;
     setFormError('');
+    if (splitRemaining) {
+      savingTxRef.current = true; setSavingTx(true);
+      try { await onSaveBatch(splitRemaining, setSplitRemaining); }
+      catch (error) { setFormError((error as Error).message || 'Unable to save transactions'); }
+      finally { savingTxRef.current = false; setSavingTx(false); }
+      return;
+    }
     const parsedNewAmount = parseMoneyInput(newAmount, currencyCode, false);
     if (!newAmount || parsedNewAmount === null || !Number.isFinite(parsedNewAmount) || parsedNewAmount <= 0) {
       setFormError('Please enter a valid amount');
@@ -1976,7 +2050,11 @@ const AddTransactionModal = memo(function AddTransactionModal({
         feeAmount,
       };
 
-      await onSave(tx);
+      if (splitEnabled && (catOption.category === 'purchase' || catOption.category === 'debit_spending')) {
+        const rows = splitRemaining ?? buildSplitTransactionPayloads(moneyAmount, splitParts.map(part => ({ ...tx, id: `tx:${Crypto.randomUUID()}`, category: catOption.isDebt ? part.category : 'debit_spending' as TransactionCategory, amount: parseMoney(part.amount, currencyCode), memo: part.note.trim() || tx.memo })));
+        setSplitRemaining(rows);
+        await onSaveBatch(rows, setSplitRemaining);
+      } else await onSave(tx);
     } catch (e) {
       const msg = (e as Error).message || 'Unable to save transaction';
       setFormError(msg);
@@ -2141,6 +2219,16 @@ const AddTransactionModal = memo(function AddTransactionModal({
               <TextInput accessibilityLabel="Payee" placeholder="Payee" placeholderTextColor={palette.muted} value={newPayee} onChangeText={setNewPayee} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
               <Text style={ui.small}>Note (optional)</Text>
               <TextInput accessibilityLabel="Note" placeholder="Note" placeholderTextColor={palette.muted} value={newNote} onChangeText={setNewNote} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
+              {['purchase', 'debit_spending'].includes(CATEGORY_CHOICES[newCategoryIdx].category) ? <View style={{ gap: 8 }}>
+                <Pressable disabled={!!splitRemaining} onPress={() => setSplitEnabled(value => !value)}><Text style={{ color: palette.brand }}>{splitEnabled ? 'Remove split' : '+ Split'}</Text></Pressable>
+                {splitEnabled ? splitParts.map((part, index) => <View key={index} style={{ gap: 5 }}>
+                  {CATEGORY_CHOICES[newCategoryIdx].isDebt ? <SelectDropdown label={`Split ${index + 1} category`} sheetTitle="Split category" value={part.category} options={(['purchase', 'subscription', 'utilities', 'fee'] as TransactionCategory[]).map(value => ({ label: value, value }))} onSelect={value => setSplitParts(parts => parts.map((item, i) => i === index ? { ...item, category: value } : item))} /> : null}
+                  <TextInput editable={!splitRemaining} accessibilityLabel={`Split ${index + 1} amount`} placeholder="Amount" placeholderTextColor={palette.muted} keyboardType="decimal-pad" value={part.amount} onChangeText={value => setSplitParts(parts => parts.map((item, i) => i === index ? { ...item, amount: value } : item))} style={ui.input} />
+                  <TextInput editable={!splitRemaining} accessibilityLabel={`Split ${index + 1} note`} placeholder="Note (optional)" placeholderTextColor={palette.muted} value={part.note} onChangeText={value => setSplitParts(parts => parts.map((item, i) => i === index ? { ...item, note: value } : item))} style={ui.input} />
+                </View>) : null}
+                {splitEnabled && !splitRemaining && splitParts.length < 4 ? <Pressable onPress={() => setSplitParts(parts => [...parts, { amount: '', category: 'purchase', note: '' }])}><Text style={{ color: palette.brand }}>Add split</Text></Pressable> : null}
+                {splitEnabled && !splitRemaining && splitParts.length > 2 ? <Pressable onPress={() => setSplitParts(parts => parts.slice(0, -1))}><Text style={{ color: palette.brand }}>Remove last split</Text></Pressable> : null}
+              </View> : null}
               {CATEGORY_CHOICES[newCategoryIdx].category === 'payment' ? <>
                 <SelectDropdown
                   label="Applies to payment cycle (optional)"

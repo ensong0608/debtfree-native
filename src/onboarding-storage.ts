@@ -1027,6 +1027,12 @@ function settingsAfterDebtDeletion(data: UserOnboardingData, debtId: string, bil
       if (relation?.billId === billId) delete loanBillPairingByDebtId[key];
     }
   }
+  const promoTermsByDebtId = { ...(data.promoTermsByDebtId ?? {}) };
+  const minimumModeByDebtId = { ...(data.minimumModeByDebtId ?? {}) };
+  const irregularBillScheduleByBillId = { ...(data.irregularBillScheduleByBillId ?? {}) };
+  delete promoTermsByDebtId[debtId];
+  delete minimumModeByDebtId[debtId];
+  if (billId) delete irregularBillScheduleByBillId[billId];
   const mortgageEscrowByDebtId = { ...(data.mortgageEscrowByDebtId ?? {}) };
   const mortgageExtraPaymentByDebtId = { ...(data.mortgageExtraPaymentByDebtId ?? {}) };
   const debtPaymentSplitPlansByDebtId = { ...(data.debtPaymentSplitPlansByDebtId ?? {}) };
@@ -1046,6 +1052,8 @@ function settingsAfterDebtDeletion(data: UserOnboardingData, debtId: string, bil
     ...data,
     archivedPaidOffDebtIds: (data.archivedPaidOffDebtIds ?? []).filter(id => id !== debtId),
     loanBillPairingByDebtId,
+    promoTermsByDebtId, minimumModeByDebtId, irregularBillScheduleByBillId,
+    customPayoffOrder: data.customPayoffOrder?.filter(id => id !== debtId),
     mortgageEscrowByDebtId,
     mortgageExtraPaymentByDebtId,
     debtPaymentSplitPlansByDebtId,

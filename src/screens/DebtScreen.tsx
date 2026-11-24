@@ -1,4 +1,5 @@
 import { transactionHasBillId } from '../finance/bill-identity';
+import { calculateConsolidationComparison } from '../finance/payoff';
 import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentRef, type ReactNode } from 'react';
 import * as Crypto from 'expo-crypto';
 import { Alert, Keyboard, Platform, StyleSheet, TouchableWithoutFeedback } from 'react-native';
@@ -10,7 +11,7 @@ import { Card, FinancialScreen, FloatingAddButton, Segments, SwipeProtectedHoriz
 import { HeroGradient } from '../components/HeroGradient';
 import { InspireCornerArt, InspireQuote, type InspireArtKind } from '../components/InspireArt';
 import { AppIcon, type AppIconName } from '../components/AppIcon';
-import { acceptAprEdit, calculateIndependentMortgageProjections, calculateStrategyScenario, canSuggestLoanPaymentSplit, comparePayoffStrategies, estimateMinimumPayment, findPreviousLoanPaymentDate, formatCurrency, homeDebtFreeEstimateDate, isActiveDebtItem, acceptMoneyEdit, projectedLoanBalanceAfterPrincipal, resolveAutoLoanSplitSuggestion, resolveNextAutoDueDate, resolveOneTimePaymentPeriod, suggestLoanPaymentSplit, validateExtraPaymentInput, formatEditableMoney, parseMoneyInput, parsePercentInput, type DebtCategory, type DebtItem, type LoanBillPairing, type PayoffPlanResult, type PayoffStrategy } from '../onboarding-domain';
+import { acceptAprEdit, calculateIndependentMortgageProjections, calculateStrategyScenario, canSuggestLoanPaymentSplit, comparePayoffStrategies, defaultFirstPaymentDate, estimateMinimumPayment, findPreviousLoanPaymentDate, formatCurrency, homeDebtFreeEstimateDate, isActiveDebtItem, acceptMoneyEdit, projectedLoanBalanceAfterPrincipal, resolveAutoLoanSplitSuggestion, resolveNextAutoDueDate, resolveOneTimePaymentPeriod, suggestLoanPaymentSplit, validateExtraPaymentInput, formatEditableMoney, parseMoneyInput, parsePercentInput, type DebtCategory, type DebtItem, type LoanBillPairing, type PayoffPlanResult, type PayoffStrategy, type PromoRateTerms } from '../onboarding-domain';
 import { currentHouseholdDate, currentHouseholdMonth, getNextMonthString, getPreviousMonthString, parseDateOnly, type DateOnly } from '../finance/calendar';
 import { getObligationCycle, type ObligationSchedules } from '../finance/obligation-schedule';
 import { addMoney, moneyFromMajor, moneyToMajor, parseMoney, type Money } from '../finance/money';
@@ -29,6 +30,8 @@ import { AdaptiveModal } from '../components/ModalOverlay';
 import { SheetFormHeader, SheetModal } from '../components/SheetModal';
 import { bottomInsetPadding } from '../components/bottom-inset';
 import { DEFAULT_TAB_UI_PREFERENCES, useAccountsUiPreferences, useSetTabUiPreferences, type AccountsCategoryFilter, type TabUiPreferences } from '../components/TabShellContext';
+
+type PromoDetailDraft = DebtDetailsDraft & { promoApr: string; promoEndDate: string; postPromoApr: string };
 
 function roundToCurrencyScale(amount: number, currencyCode: string): number {
   const factor = 10 ** getCurrency(currencyCode).scale;
@@ -317,6 +320,8 @@ export const DebtScreen = memo(function DebtScreen({
   canEdit = true,
   onAddTransaction,
   onSelectTransaction,
+  promoTermsByDebtId, onSavePromoTerms, customPayoffOrder, onCustomPayoffOrder,
+  minimumModeByDebtId: persistedMinimumModes, onSaveMinimumMode, initialStrategyBoostAmount,
 }: {
   debts: DebtItem[];
   archivedPaidOffDebtIds?: readonly string[];
@@ -354,6 +359,13 @@ export const DebtScreen = memo(function DebtScreen({
   onRecordBillPayment?: (bill: RecurringBill, dueCycle: DateOnly, amount?: Money) => Promise<unknown> | unknown;
   onSelectTransaction?: (tx: LedgerTransaction) => void;
   onDismiss?: () => void;
+  promoTermsByDebtId?: Readonly<Record<string, PromoRateTerms>>;
+  onSavePromoTerms?: (debtId: string, terms: PromoRateTerms | null) => Promise<void>;
+  customPayoffOrder?: readonly string[];
+  onCustomPayoffOrder?: (orderedIds: string[]) => Promise<void>;
+  minimumModeByDebtId?: Readonly<Record<string, 'manual' | 'auto'>>;
+  onSaveMinimumMode?: (debtId: string, mode: 'manual' | 'auto') => Promise<void>;
+  initialStrategyBoostAmount?: number | null;
 }) {
   const accountsUi = useAccountsUiPreferences();
   const shellSetUiPreferences = useSetTabUiPreferences();
@@ -428,24 +440,35 @@ export const DebtScreen = memo(function DebtScreen({
   const [strategyType, setStrategyType] = useState<'Debt strategy' | 'Mortgage strategy'>('Debt strategy');
   const [comparisonExpanded, setComparisonExpanded] = useState(false);
   const [scenarioComparisonExpanded, setScenarioComparisonExpanded] = useState(false);
+  const [consolidationExpanded, setConsolidationExpanded] = useState(false);
+  const [consolidationIds, setConsolidationIds] = useState<string[] | null>(null);
+  const [offerApr, setOfferApr] = useState('0');
+  const [offerFee, setOfferFee] = useState('0');
+  const [consolidationPayment, setConsolidationPayment] = useState<string | null>(null);
+  const boostSeed = initialStrategyBoostAmount != null && initialStrategyBoostAmount > 0 && Number.isFinite(initialStrategyBoostAmount)
+    ? initialStrategyBoostAmount
+    : 0;
   const [oneTimeDraftState, setOneTimeDraftState] = useState(() => ({
     sourceCurrency: currencyCode,
-    value: formatEditableMoney(0, currencyCode),
+    sourceBoost: initialStrategyBoostAmount ?? null,
+    value: formatEditableMoney(boostSeed, currencyCode),
   }));
-  const oneTimeDraft = oneTimeDraftState.sourceCurrency === currencyCode
-    ? oneTimeDraftState.value
-    : formatEditableMoney(0, currencyCode);
+  const oneTimeSeedValue = formatEditableMoney(boostSeed, currencyCode);
+  const oneTimeMatchesSource = oneTimeDraftState.sourceCurrency === currencyCode
+    && oneTimeDraftState.sourceBoost === (initialStrategyBoostAmount ?? null);
+  const oneTimeDraft = oneTimeMatchesSource ? oneTimeDraftState.value : oneTimeSeedValue;
   const setOneTimeDraft = useCallback((next: string | ((value: string) => string)) => {
     setOneTimeDraftState(current => {
-      const currentValue = current.sourceCurrency === currencyCode
+      const currentValue = current.sourceCurrency === currencyCode && current.sourceBoost === (initialStrategyBoostAmount ?? null)
         ? current.value
-        : formatEditableMoney(0, currencyCode);
+        : oneTimeSeedValue;
       return {
         sourceCurrency: currencyCode,
+        sourceBoost: initialStrategyBoostAmount ?? null,
         value: typeof next === 'function' ? next(currentValue) : next,
       };
     });
-  }, [currencyCode]);
+  }, [currencyCode, initialStrategyBoostAmount, oneTimeSeedValue]);
   const [oneTimeDate, setOneTimeDate] = useState<DateOnly>(() => currentHouseholdDate(householdTimeZone));
   const [showOneTimeDatePicker, setShowOneTimeDatePicker] = useState(false);
   const [oneTimeFocused, setOneTimeFocused] = useState(false);
@@ -595,7 +618,7 @@ export const DebtScreen = memo(function DebtScreen({
   const [reconcileReason, setReconcileReason] = useState<'interest_adjustment' | 'balance_adjustment' | 'credit_adjustment'>('interest_adjustment');
   const [reconcileBusy, setReconcileBusy] = useState(false);
   const [reconcileError, setReconcileError] = useState('');
-  const [detailDraftOverride, setDetailDraftOverride] = useState<{ key: string; draft: DebtDetailsDraft } | null>(null);
+  const [detailDraftOverride, setDetailDraftOverride] = useState<{ key: string; draft: PromoDetailDraft } | null>(null);
   const [minimumModeByDebtId, setMinimumModeByDebtId] = useState<Record<string, 'auto' | 'manual'>>({});
   const [detailFocusedField, setDetailFocusedField] = useState<string | null>(null);
   const [detailSaving, setDetailSaving] = useState(false);
@@ -604,6 +627,7 @@ export const DebtScreen = memo(function DebtScreen({
   const [showDetailCategoryPicker, setShowDetailCategoryPicker] = useState(false);
   const [showDetailDuePicker, setShowDetailDuePicker] = useState(false);
   const [showDetailRenewalPicker, setShowDetailRenewalPicker] = useState(false);
+  const [showPromoPicker, setShowPromoPicker] = useState(false);
   const [deleteConfirmDebt, setDeleteConfirmDebt] = useState<DebtItem | null>(null);
   const { opacity: detailFabOpacity, scale: detailFabScale, translateX: detailFabTranslateX, translateY: detailFabTranslateY, scrollHandlers: detailScrollHandlers } = useScrollFadeOpacity();
   const [showAccountTxModal, setShowAccountTxModal] = useState(false);
@@ -743,6 +767,8 @@ export const DebtScreen = memo(function DebtScreen({
     currencyCode,
     householdTimeZone,
     archivedPaidOffDebtIds,
+    promoTermsByDebtId,
+    customPayoffOrder,
   // Invalidate on household date rollover alongside inputs.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [
@@ -755,8 +781,37 @@ export const DebtScreen = memo(function DebtScreen({
     currencyCode,
     householdTimeZone,
     archivedPaidOffDebtIds,
+    promoTermsByDebtId,
+    customPayoffOrder,
     projectionDay,
   ]);
+  const instantDelta = useMemo(() => (previewMonthlyAmount > 0 || previewOneTimeAmount > 0) && scenarioValid
+    ? calculateStrategyScenario({ debts, strategy, baselineExtraMonthlyPayment: 0, monthlyExtraAmount: previewMonthlyAmount, oneTimeExtraAmount: previewOneTimeAmount, oneTimeDate, baseDate: new Date(), currencyCode, householdTimeZone, archivedPaidOffDebtIds, promoTermsByDebtId, customPayoffOrder })
+    : null,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [debts, strategy, previewMonthlyAmount, previewOneTimeAmount, scenarioValid, oneTimeDate, currencyCode, householdTimeZone, archivedPaidOffDebtIds, promoTermsByDebtId, customPayoffOrder, projectionDay]);
+  const consolidationDebts = useMemo(() => debts.filter(debt => isActiveDebtItem(debt) && debt.balance > 0 && !archivedPaidOffDebtIds.includes(debt.id)), [debts, archivedPaidOffDebtIds]);
+  const defaultConsolidationIds = useMemo(() => consolidationDebts.filter(debt => debt.category === 'Credit card').sort((a, b) => b.apr - a.apr).slice(0, 2).map(debt => debt.id), [consolidationDebts]);
+  const selectedConsolidationIds = consolidationIds ?? (defaultConsolidationIds.length >= 2 ? defaultConsolidationIds : []);
+  const selectedConsolidationDebts = consolidationDebts.filter(debt => selectedConsolidationIds.includes(debt.id));
+  const defaultConsolidationPayment = selectedConsolidationDebts.reduce((sum, debt) => sum + debt.minimumPayment, 0) + previewMonthlyAmount;
+  const consolidationPaymentValue = consolidationPayment ?? formatEditableMoney(defaultConsolidationPayment, currencyCode);
+  const consolidationResult = useMemo(() => {
+    if (!consolidationExpanded) return null;
+    const apr = parsePercentInput(offerApr);
+    const fee = parsePercentInput(offerFee);
+    const payment = parseMoneyDraft(consolidationPaymentValue, currencyCode);
+    if (apr === null || apr < 0 || apr > 100 || fee === null || fee < 0 || !payment.valid) return null;
+    try {
+      return calculateConsolidationComparison({
+        accounts: selectedConsolidationDebts.map(debt => ({ balance: moneyFromMajor(debt.balance, currencyCode), aprThousandths: Math.round(debt.apr * 1000), scheduledMinimum: moneyFromMajor(debt.minimumPayment, currencyCode) })),
+        offerAprThousandths: Math.round(apr * 1000), transferFeeBps: Math.round(fee * 100), monthlyPayment: moneyFromMajor(payment.amount, currencyCode), currency: currencyCode,
+        assumptions: { firstPaymentDate: defaultFirstPaymentDate(new Date(), householdTimeZone), requestedDay: 1, householdTimeZone: householdTimeZone ?? 'UTC' },
+      });
+    } catch { return null; }
+  // selected debt objects follow the source list and selection.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consolidationExpanded, offerApr, offerFee, consolidationPaymentValue, currencyCode, consolidationDebts, consolidationIds, previewMonthlyAmount, householdTimeZone, projectionDay]);
   const extraStepAmount = getCurrency(currencyCode).scale === 0 ? 5000 : 50;
   const stepScenarioAmount = (
     parsed: { valid: boolean; amount: number },
@@ -882,10 +937,11 @@ export const DebtScreen = memo(function DebtScreen({
   };
   const selected = debts.find(item => item.id === selectedId) ?? null;
   const selectedEscrow = selected ? mortgageEscrowByDebtId[selected.id] : undefined;
+  const selectedPromo = selected ? promoTermsByDebtId?.[selected.id] : undefined;
   const expectedDetailKey = selected
-    ? `${selected.id}:${selected.updatedAt}:${selected.serverVersion ?? ''}:${selectedEscrow ?? ''}:${selected.balance}:${selected.apr}:${selected.minimumPayment}:${selected.name}:${selected.category}:${selected.dueDay ?? ''}:${selected.originalBalance ?? ''}:${selected.creditLimit ?? ''}:${selected.annualFeeAmount ?? ''}:${selected.annualFeeNextDueDate ?? ''}:${currencyCode}`
+    ? `${selected.id}:${selected.updatedAt}:${selected.serverVersion ?? ''}:${selectedEscrow ?? ''}:${selected.balance}:${selected.apr}:${selected.minimumPayment}:${selected.name}:${selected.category}:${selected.dueDay ?? ''}:${selected.originalBalance ?? ''}:${selected.creditLimit ?? ''}:${selected.annualFeeAmount ?? ''}:${selected.annualFeeNextDueDate ?? ''}:${currencyCode}:${JSON.stringify(selectedPromo)}`
     : '';
-  const baseDetailDraft: DebtDetailsDraft = selected
+  const baseDetailDraft: PromoDetailDraft = selected
     ? {
         category: selected.category,
         name: selected.name,
@@ -893,12 +949,13 @@ export const DebtScreen = memo(function DebtScreen({
         originalBalance: selected.originalBalance !== null ? formatEditableMoney(selected.originalBalance, currencyCode) : '',
         apr: String(selected.apr),
         minimumPayment: formatEditableMoney(selected.minimumPayment, currencyCode),
-        minimumMode: minimumModeByDebtId[selected.id] ?? 'manual',
+        minimumMode: persistedMinimumModes?.[selected.id] ?? minimumModeByDebtId[selected.id] ?? 'manual',
         mortgageEscrow: selectedEscrow !== undefined ? formatEditableMoney(selectedEscrow, currencyCode) : '',
         dueDay: selected.dueDay !== null ? String(selected.dueDay) : '',
         creditLimit: selected.creditLimit !== null ? formatEditableMoney(selected.creditLimit, currencyCode) : '',
         annualFeeAmount: selected.annualFeeAmount != null ? formatEditableMoney(selected.annualFeeAmount, currencyCode) : '',
         annualFeeNextDate: selected.annualFeeNextDueDate ?? '',
+        promoApr: selectedPromo ? String(selectedPromo.promoApr) : '', promoEndDate: selectedPromo?.promoEndDate ?? '', postPromoApr: selectedPromo ? String(selectedPromo.postPromoApr) : '',
       }
     : {
         category: 'Credit card',
@@ -913,11 +970,12 @@ export const DebtScreen = memo(function DebtScreen({
         creditLimit: '',
         annualFeeAmount: '',
         annualFeeNextDate: '',
+        promoApr: '', promoEndDate: '', postPromoApr: '',
       };
   const detailDraft = detailDraftOverride && detailDraftOverride.key === expectedDetailKey
     ? detailDraftOverride.draft
     : baseDetailDraft;
-  const updateDetailDraft = (updater: (prev: DebtDetailsDraft) => DebtDetailsDraft) => {
+  const updateDetailDraft = (updater: (prev: PromoDetailDraft) => PromoDetailDraft) => {
     if (detailError) setDetailError('');
     if (detailSaved) setDetailSaved(false);
     setDetailDraftOverride(prev => {
@@ -931,6 +989,7 @@ export const DebtScreen = memo(function DebtScreen({
     ? estimateMinimumPayment(detailParsedBalance, detailParsedApr !== null && detailParsedApr >= 0 ? detailParsedApr : 0, currencyCode)
     : 0;
   const detailDirty = selected ? (
+    detailDraft.minimumMode !== (persistedMinimumModes?.[selected.id] ?? minimumModeByDebtId[selected.id] ?? 'manual') ||
     detailDraft.name !== selected.name ||
     detailDraft.category !== selected.category ||
     detailDraft.balance !== formatEditableMoney(selected.balance, currencyCode) ||
@@ -943,7 +1002,8 @@ export const DebtScreen = memo(function DebtScreen({
     detailDraft.dueDay !== (selected.dueDay !== null ? String(selected.dueDay) : '') ||
     detailDraft.creditLimit !== (selected.creditLimit !== null ? formatEditableMoney(selected.creditLimit, currencyCode) : '') ||
     detailDraft.annualFeeAmount !== (selected.annualFeeAmount != null ? formatEditableMoney(selected.annualFeeAmount, currencyCode) : '') ||
-    detailDraft.annualFeeNextDate !== (selected.annualFeeNextDueDate ?? '')
+    detailDraft.annualFeeNextDate !== (selected.annualFeeNextDueDate ?? '') ||
+    detailDraft.promoApr !== (selectedPromo ? String(selectedPromo.promoApr) : '') || detailDraft.promoEndDate !== (selectedPromo?.promoEndDate ?? '') || detailDraft.postPromoApr !== (selectedPromo ? String(selectedPromo.postPromoApr) : '')
   ) : false;
 
   const saveDetailChanges = async () => {
@@ -952,9 +1012,20 @@ export const DebtScreen = memo(function DebtScreen({
     setDetailSaving(true);
     setDetailError('');
     try {
+      let promo: PromoRateTerms | null = null;
+      if (detailDraft.category === 'Credit card' && (detailDraft.promoApr.trim() || detailDraft.promoEndDate.trim() || detailDraft.postPromoApr.trim())) {
+        const apr = parsePercentInput(detailDraft.promoApr);
+        const post = parsePercentInput(detailDraft.postPromoApr.trim() || detailDraft.apr);
+        let end: DateOnly;
+        try { end = parseDateOnly(detailDraft.promoEndDate.trim()); } catch { setDetailError('Enter a valid promotional end date.'); return; }
+        if (apr === null || apr < 0 || apr > 100 || post === null || post < 0 || post > 100) { setDetailError('Enter promotional APRs between 0 and 100.'); return; }
+        promo = { promoApr: apr, promoEndDate: end, postPromoApr: post };
+      }
       const modeToSave = detailDraft.minimumMode;
       const saved = await onSaveDebtDetails(selected.id, detailDraft);
       if (saved) {
+        if (promo || selectedPromo) await onSavePromoTerms?.(selected.id, promo);
+        await onSaveMinimumMode?.(selected.id, modeToSave);
         setMinimumModeByDebtId(prev => ({ ...prev, [selected.id]: modeToSave }));
         setDetailSaved(true);
         if (detailSavedTimerRef.current) clearTimeout(detailSavedTimerRef.current);
@@ -1357,7 +1428,7 @@ export const DebtScreen = memo(function DebtScreen({
         </View>
         {strategyType === 'Debt strategy' ? <>
           <View style={[ui.row, { gap: 10 }]}>
-            {(['snowball', 'avalanche'] as const).map(value => {
+            {(['snowball', 'avalanche', 'custom'] as const).map(value => {
               const selectedMethod = strategy === value;
               return (
                 <Pressable
@@ -1402,11 +1473,11 @@ export const DebtScreen = memo(function DebtScreen({
                   <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
                     <AppIcon name={value === 'snowball' ? 'bolt' : 'progress'} size={16} color={palette.accentInk} />
                     <Text numberOfLines={1} style={[ui.buttonText, { color: palette.text, fontSize: 15, textAlign: 'left', flexShrink: 1 }]}>
-                      {value === 'snowball' ? 'Snowball' : 'Avalanche'}
+                      {value === 'snowball' ? 'Snowball' : value === 'avalanche' ? 'Avalanche' : 'Custom'}
                     </Text>
                   </View>
                   <Text numberOfLines={1} style={[ui.small, { textAlign: 'left' }]}>
-                    {value === 'snowball' ? 'Smallest balance first' : 'Highest APR first'}
+                    {value === 'snowball' ? 'Smallest balance first' : value === 'avalanche' ? 'Highest APR first' : 'Your order'}
                   </Text>
                 </Pressable>
               );
@@ -1432,6 +1503,7 @@ export const DebtScreen = memo(function DebtScreen({
                 />
               </View>
             </View>
+            {instantDelta && ((instantDelta.monthsSaved ?? 0) > 0 || (instantDelta.interestSaved ?? 0) > 0) ? <View style={{ alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: palette.selection }}><Text style={{ color: palette.accentInk, fontSize: 12, fontWeight: '700' }}>{`-${instantDelta.monthsSaved ?? 0} mo · ${formatCurrency(instantDelta.interestSaved ?? 0, currencySymbol)} saved`}</Text></View> : null}
             <View style={{ gap: 12 }}>
               <ExtraAmountRow
                 label="Extra monthly payment"
@@ -1870,6 +1942,7 @@ export const DebtScreen = memo(function DebtScreen({
                     </Pressable>
                     {scenarioComparisonExpanded ? comparisonSummary : null}
                     {rows.length ? rows.map(({ account, item }, idx) => (
+                      <View key={item?.accountId ?? account!.id}>
                       <ScenarioAllocationRow
                         key={item?.accountId ?? account!.id}
                         account={account}
@@ -1879,12 +1952,30 @@ export const DebtScreen = memo(function DebtScreen({
                         currencySymbol={currencySymbol}
                         onBeforeToggle={() => { extraInputRef.current?.blur(); oneTimeInputRef.current?.blur(); Keyboard.dismiss(); }}
                       />
+                      {(() => { const id = item?.accountId ?? account?.id; const debt = debts.find(d => d.id === id); const promo = id ? promoTermsByDebtId?.[id] : undefined; return debt?.category === 'Credit card' && promo ? <Text style={{ alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: isLight ? '#FEF3C7' : 'rgba(251,191,36,0.16)', color: isLight ? '#92400E' : '#FBBF24', fontSize: 11, fontWeight: '700' }}>{`${promo.promoApr}% → ${promo.postPromoApr}% ${formatShortDate(promo.promoEndDate)}`}</Text> : null; })()}
+                      {strategy === 'custom' && onCustomPayoffOrder ? <View style={[ui.row, { paddingLeft: 42 }]}>{([-1, 1] as const).map(direction => <Pressable key={direction} accessibilityRole="button" accessibilityLabel={direction < 0 ? 'Move up' : 'Move down'} disabled={!canEdit || idx + direction < 0 || idx + direction >= rows.length} style={{ minWidth: 36, minHeight: 36, alignItems: 'center', justifyContent: 'center' }} onPress={() => { const ids = rows.map(row => row.item?.accountId ?? row.account!.id); const other = idx + direction; [ids[idx], ids[other]] = [ids[other], ids[idx]]; void onCustomPayoffOrder(ids).catch(err => setStrategyError(err instanceof Error ? err.message : 'Unable to save payoff order.')); }}><Text style={{ color: palette.brand, fontSize: 20 }}>{direction < 0 ? '↑' : '↓'}</Text></Pressable>)}</View> : null}
+                      </View>
                     )) : <Text style={[ui.small, { color: palette.muted }]}>Projection unavailable.</Text>}
                     {firstPayment ? <Text style={[ui.small, { color: palette.muted, paddingTop: 8 }]}>{`First payment: ${formatCurrency(firstPayment.totalPaid, currencySymbol)}${firstPayment.unusedBudget > 0 ? ` · ${formatCurrency(firstPayment.unusedBudget, currencySymbol)} unapplied` : ''}${nextPayment ? ` · Month 2: ${formatCurrency(nextPayment.totalPaid, currencySymbol)}` : ''}${oneTimeSummarySuffix}`}</Text> : null}
                   </Card>
                 </View>
               );
             })() : <Card><Text style={ui.small}>Enter a valid amount to view the payoff order.</Text></Card>}
+          <Card style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 8, borderRadius: 16 }}>
+            <Pressable accessibilityRole="button" accessibilityState={{ expanded: consolidationExpanded }} onPress={() => setConsolidationExpanded(open => !open)} style={[ui.row, { minHeight: 44, justifyContent: 'space-between', alignItems: 'center' }]}>
+              <Text style={[ui.small, { color: palette.text, fontWeight: '700', flex: 1 }]}>Compare 0% transfer / consolidation</Text>
+              <AppIcon name={consolidationExpanded ? 'chevronDown' : 'chevronRight'} size={16} color={palette.muted} />
+            </Pressable>
+            {consolidationExpanded ? <View style={{ gap: 10 }}>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {consolidationDebts.map(debt => { const selected = selectedConsolidationIds.includes(debt.id); return <Pressable key={debt.id} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} onPress={() => { setConsolidationIds(selected ? selectedConsolidationIds.filter(id => id !== debt.id) : [...selectedConsolidationIds, debt.id]); }} style={{ borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: selected ? palette.brand : palette.border, backgroundColor: selected ? palette.selection : palette.raised }}><Text style={[ui.small, { color: selected ? palette.accentInk : palette.text }]}>{debt.name}</Text></Pressable>; })}
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {([{ label: 'Offer APR %', value: offerApr, onChange: setOfferApr }, { label: 'Fee %', value: offerFee, onChange: setOfferFee }, { label: 'Monthly $', value: consolidationPaymentValue, onChange: setConsolidationPayment }] as const).map(input => <View key={input.label} style={{ flex: 1, gap: 4 }}><Text style={[ui.small, { color: palette.muted }]}>{input.label}</Text><TextInput accessibilityLabel={input.label} keyboardType="decimal-pad" value={input.value} onChangeText={input.onChange} style={{ minHeight: 40, borderWidth: 1, borderColor: palette.border, borderRadius: 8, paddingHorizontal: 8, color: palette.text }} /></View>)}
+              </View>
+              {consolidationResult ? <View style={{ alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5, backgroundColor: consolidationResult.worthIt ? (isLight ? '#DCFCE7' : 'rgba(74,222,128,0.16)') : (isLight ? '#FFE4DE' : 'rgba(240,139,120,0.16)') }}><Text style={{ fontSize: 12, fontWeight: '700', color: consolidationResult.worthIt ? (isLight ? '#166534' : '#86EFAC') : (isLight ? '#9A3412' : '#F0A090') }}>{consolidationResult.worthIt ? `Saves ${formatCurrency(moneyToMajor(consolidationResult.netSavings), currencySymbol)} net · Break-even ${consolidationResult.breakEvenMonths ?? '—'} mo` : `Costs ${formatCurrency(Math.abs(moneyToMajor(consolidationResult.netSavings)), currencySymbol)} more after fee`}</Text></View> : null}
+            </View> : null}
+          </Card>
         </> : <>
           {mortgageDebts.filter(item => item.balance > 0).map(item => {
             const escrow = mortgageEscrowByDebtId[item.id];
@@ -2623,6 +2714,17 @@ export const DebtScreen = memo(function DebtScreen({
                     {canEdit ? <AppIcon name="calendar" size={16} color={palette.brand} /> : null}
                   </View>
                 </Pressable>
+                <View style={[detailRowStyle, detailRowBorderStyle]}>
+                  <Text style={[ui.text, { color: palette.muted, fontWeight: '700' }]}>Promotional APR</Text>
+                  {canEdit && (detailDraft.promoApr || detailDraft.promoEndDate || detailDraft.postPromoApr) ? <Pressable accessibilityRole="button" onPress={() => updateDetailDraft(prev => ({ ...prev, promoApr: '', promoEndDate: '', postPromoApr: '' }))}><Text style={{ color: palette.brand }}>Clear</Text></Pressable> : null}
+                </View>
+                {(['promoApr', 'postPromoApr'] as const).map(field => <View key={field} style={[detailRowStyle, detailRowBorderStyle]}>
+                  <Text style={[ui.text, { color: palette.muted }]}>{field === 'promoApr' ? 'Promo APR %' : 'After promo APR %'}</Text>
+                  <TextInput editable={canEdit} accessibilityLabel={field === 'promoApr' ? 'Promo APR %' : 'After promo APR %'} style={detailMoneyInputStyle} keyboardType="decimal-pad" value={detailDraft[field]} onChangeText={value => updateDetailDraft(prev => ({ ...prev, [field]: acceptAprEdit(prev[field], value) }))} placeholder="Optional" placeholderTextColor={palette.muted} />
+                </View>)}
+                <Pressable accessibilityRole="button" accessibilityLabel="Promo ends" disabled={!canEdit} onPress={() => setShowPromoPicker(true)} style={detailRowStyle}>
+                  <Text style={[ui.text, { color: palette.muted }]}>Promo ends</Text><Text style={{ color: palette.brand }}>{detailDraft.promoEndDate ? formatShortDate(detailDraft.promoEndDate) : 'Choose date'}</Text>
+                </Pressable>
               </>
             ) : null}
 
@@ -2873,6 +2975,9 @@ export const DebtScreen = memo(function DebtScreen({
         onClose={() => setShowDetailDuePicker(false)}
       />
 
+      <CalendarDatePickerModal
+        visible={showPromoPicker} value={detailDraft.promoEndDate} timeZone={householdTimeZone} title="Promo ends" allowClear onSelect={date => updateDetailDraft(prev => ({ ...prev, promoEndDate: date }))} onClose={() => setShowPromoPicker(false)}
+      />
       <CalendarDatePickerModal
         visible={showDetailRenewalPicker}
         value={detailDraft.annualFeeNextDate}

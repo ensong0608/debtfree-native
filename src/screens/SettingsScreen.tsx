@@ -45,6 +45,7 @@ import {
 } from '../debt-storage-domain';
 import { getPendingFinanceSummary, getPendingFinanceOperations, recoverPendingFinanceWrites, loadFinanceRecords, canRetryPendingFinanceOperation } from '../finance-storage';
 import { createNativeBackup, parseNativeBackup, createRestorePlan, createBackupCheckpointRepository, nativeBackupLifecycleWarnings, type RestoreCheckpoint } from '../finance/backup';
+import { buildTransactionsCsv } from '../finance/csv';
 import { createChunkedStorage } from '../secure-chunks';
 import type { LedgerTransaction, ReconciliationAnchor } from '../finance/ledger';
 import type { RecurringBill } from '../finance/recurring-bills';
@@ -420,6 +421,10 @@ export function SettingsScreen({
     const backup = await currentBackup();
     await Share.share({ title: 'DebtFree native backup JSON', message: JSON.stringify(backup, null, 2) });
     setBackupMessage(`Share sheet opened for the validated backup. ${nativeBackupLifecycleWarnings(backup).join(' ')} Restoration is currently unavailable.`);
+  });
+  const exportTransactionsCsv = () => void runBackupAction(async () => {
+    const csv = buildTransactionsCsv(transactions, onboardingData.debts, recurringBills, currencyCode);
+    await Share.share({ title: 'BitLess transactions CSV', message: csv });
   });
   const preflightBackup = () => void runBackupAction(async () => {
     const current = await currentBackup();
@@ -1902,7 +1907,7 @@ export function SettingsScreen({
               onToggle={() => void handleToggleNotification('milestonesAndProgress')}
             />
             <Text style={[ui.small, { marginTop: 8, fontStyle: 'italic', color: palette.muted }]}>
-              Upcoming and past-due reminders are scheduled on this device when permission is granted. Milestone notifications and remote push are not yet available.
+              Upcoming, past-due, and milestone notifications are scheduled locally on this device when permission is granted. Remote push is not yet available.
             </Text>
           </View>
         </Card>
@@ -1986,6 +1991,7 @@ export function SettingsScreen({
           })}
           <Pressable accessibilityRole="button" disabled={backupBusy} onPress={refreshConfirmation} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Refresh confirmation</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={backupBusy} onPress={exportBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export backup JSON</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={backupBusy || transactions.filter(t => t.deletedAt === null).length === 0} onPress={exportTransactionsCsv} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export transactions CSV</Text></Pressable>
           <TextInput accessibilityLabel="Native backup JSON" multiline value={backupText} onChangeText={value => { setBackupText(value); setBackupMessage(''); }} placeholder="Paste backup JSON to review" placeholderTextColor={palette.muted} style={styles.devJsonInput} />
           <Pressable accessibilityRole="button" disabled={backupBusy || !backupText.trim()} onPress={preflightBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Validate and review</Text></Pressable>
           <Text style={ui.small}>{checkpoint ? `Checkpoint: ${checkpoint.status}; ${checkpoint.cursor} of ${checkpoint.plan.operations.length} operations. ${checkpoint.plan.conflicts} conflicts.` : 'No checkpoint found.'}</Text>

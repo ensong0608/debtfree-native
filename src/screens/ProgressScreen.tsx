@@ -12,7 +12,7 @@ import { Pressable, Text, View, appearanceColor, useNativeAppearance } from '../
 import { currentHouseholdDate, getPreviousMonthString } from '../finance/calendar';
 import { calculateTransactionBalanceDelta, isPaidOffAccountArchived, type LedgerTransaction } from '../finance/ledger';
 import { makeMoney, moneyToMajor } from '../finance/money';
-import { calculateAccountActivities, calculateActivitySummary, calculateCreditUtilization, calculateMilestones, filterTransactionsByPeriod, type ProgressPeriod } from '../finance/progress';
+import { calculateAccountActivities, calculateActivitySummary, calculateCreditUtilization, calculateMilestones, calculateUtilizationAdvisor, filterTransactionsByPeriod, type ProgressPeriod } from '../finance/progress';
 import { formatCurrency, type DebtItem, type PayoffStrategy } from '../onboarding-domain';
 import { DEFAULT_TAB_UI_PREFERENCES, useProgressUiPreferences, useSetTabUiPreferences, type TabUiPreferences } from '../components/TabShellContext';
 
@@ -149,6 +149,8 @@ export const ProgressScreen = memo(function ProgressScreen({
   householdTimeZone,
   onSettings,
   onSelectDebt,
+  onOpenStrategy,
+  onSimulateExtra,
 }: {
   debts: DebtItem[];
   transactions?: LedgerTransaction[];
@@ -161,6 +163,7 @@ export const ProgressScreen = memo(function ProgressScreen({
   onSettings: () => void;
   onSelectDebt?: (debtId: string) => void;
   onOpenStrategy?: () => void;
+  onSimulateExtra?: (amount: number) => void;
 }) {
   const progressUi = useProgressUiPreferences();
   const shellSetUiPreferences = useSetTabUiPreferences();
@@ -341,6 +344,7 @@ export const ProgressScreen = memo(function ProgressScreen({
     item.id === 'first_1000' ? 'First ' + formatCurrency(item.targetValue, currencySymbol) + ' paydown' : item.title;
 
   const creditCards = activeProgressDebts.filter(debt => debt.category === 'Credit card');
+  const advisor = calculateUtilizationAdvisor(creditCards, currencyCode);
   const utilTargetCap = utilization.totalLimit * 0.3;
   const toReach30 = Math.max(0, utilization.totalUsed - utilTargetCap);
   const overallUtilStatus =
@@ -610,6 +614,18 @@ export const ProgressScreen = memo(function ProgressScreen({
             </Card>
           </View>
 
+          {advisor ? (
+            <Card style={{ padding: 16, borderRadius: 18, gap: 8 }}>
+              <Text style={[ui.small, { fontSize: 11, fontWeight: '700' }]}>FASTEST UTILIZATION LIFT</Text>
+              <Text style={[ui.heading, { fontSize: 17 }]}>30% Target Advisor</Text>
+              <Text style={ui.heading}>{`${advisor.cardName} · ${Math.round(advisor.currentPercent)}% → 30%`}</Text>
+              <Text style={ui.small}>{`Pay ${formatCurrency(advisor.paydownTo30, currencySymbol)} · Overall → ${Math.round(advisor.projectedOverallPercent)}%`}</Text>
+              <Pressable accessibilityRole="button" onPress={() => onSimulateExtra ? onSimulateExtra(advisor.paydownTo30) : onOpenStrategy?.()} style={{ alignSelf: 'flex-start', backgroundColor: palette.brand, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10 }}>
+                <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>Simulate</Text>
+              </Pressable>
+            </Card>
+          ) : null}
+
           {creditCards.length ? (
             <View style={{ gap: 12 }}>
               {creditCards.map(debt => {
@@ -710,14 +726,11 @@ export const ProgressScreen = memo(function ProgressScreen({
                               left: '30%',
                               top: -4,
                               height: 20,
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
+                              width: 2,
+                              backgroundColor: palette.text,
+                              borderRadius: 1,
                             }}
-                          >
-                            <View style={{ width: 2, height: 5, backgroundColor: palette.text, borderRadius: 1 }} />
-                            <View style={{ width: 2, height: 5, backgroundColor: palette.text, borderRadius: 1 }} />
-                            <View style={{ width: 2, height: 5, backgroundColor: palette.text, borderRadius: 1 }} />
-                          </View>
+                          />
                         </View>
                         <Text style={[ui.small, { fontSize: 13, textAlign: 'center' }]}>30% target</Text>
                       </View>

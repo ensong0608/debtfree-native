@@ -29,7 +29,7 @@ export const HomePaneVisibilityContext = createContext(false);
 type FiveTabShellProps = {
   home: (navigate: Navigate) => ReactNode;
   debt: ReactNode | ((selectedDebtId: string | null, clearTarget: () => void, section: string, resetKey: number, navigate: Navigate) => ReactNode);
-  transactions: ReactNode | ((selectedTransactionId: string | null, clearTarget: () => void, section: string) => ReactNode);
+  transactions: ReactNode | ((selectedTransactionId: string | null, clearTarget: () => void, section: string, navigate: Navigate) => ReactNode);
   budget: (navigate: Navigate) => ReactNode;
   progress: ReactNode | ((navigate: Navigate) => ReactNode);
   settings?: ReactNode | ((onClose: () => void) => ReactNode);
@@ -166,8 +166,8 @@ function FiveTabShellContent({
     ? typeof debt === 'function' ? debt(targetDebtId, clearDebtTarget, debtSection, debtResetKey, navigate) : debt
     : null, [visitedTabs.debt, debt, targetDebtId, clearDebtTarget, debtSection, debtResetKey, navigate]);
   const transactionsContent = useMemo(() => visitedTabs.transactions
-    ? typeof transactions === 'function' ? transactions(targetTransactionId, clearTransactionTarget, transactionSection) : transactions
-    : null, [visitedTabs.transactions, transactions, targetTransactionId, clearTransactionTarget, transactionSection]);
+    ? typeof transactions === 'function' ? transactions(targetTransactionId, clearTransactionTarget, transactionSection, navigate) : transactions
+    : null, [visitedTabs.transactions, transactions, targetTransactionId, clearTransactionTarget, transactionSection, navigate]);
   const budgetContent = useMemo(() => visitedTabs.budget ? budget(navigate) : null, [visitedTabs.budget, budget, navigate]);
   const progressContent = useMemo(() => visitedTabs.progress
     ? typeof progress === 'function' ? progress(navigate) : progress

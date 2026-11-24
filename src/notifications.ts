@@ -73,3 +73,31 @@ export function syncLocalObligationNotifications(items: readonly Item[], prefs: 
     }
   });
 }
+
+type MilestoneInput = { id: string; title: string; status: string };
+export function buildMilestoneNotificationPayloads(milestones: readonly MilestoneInput[], alreadyNotifiedIds: readonly string[], enabled: boolean): { id: string; title: string; body: string }[] {
+  if (!enabled) return [];
+  const seen = new Set(alreadyNotifiedIds);
+  return milestones.flatMap(milestone => {
+    if (milestone.status !== 'completed' || seen.has(milestone.id)) return [];
+    seen.add(milestone.id);
+    return [{ id: milestone.id, title: 'Milestone reached', body: milestone.title }];
+  });
+}
+
+const notifiedMilestoneSessionIds = new Set<string>();
+
+/** Returns the IDs successfully scheduled so the caller can persist them. */
+export function syncMilestoneNotifications(milestones: readonly MilestoneInput[], alreadyNotifiedIds: readonly string[], enabled: boolean): Promise<string[]> {
+  let result = [...alreadyNotifiedIds];
+  return enqueue(async () => {
+    const api = await nativeNotifications();
+    if (!api || !enabled || (await getLocalNotificationPermissionStatus()) !== 'granted') return;
+    const seen = [...new Set([...result, ...notifiedMilestoneSessionIds])];
+    for (const payload of buildMilestoneNotificationPayloads(milestones, seen, true)) {
+      notifiedMilestoneSessionIds.add(payload.id);
+      await api.scheduleNotificationAsync({ content: { title: payload.title, body: payload.body }, trigger: null });
+      result = [...result, payload.id];
+    }
+  }).then(() => result);
+}

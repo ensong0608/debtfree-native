@@ -47,6 +47,7 @@ import {
   activeDebts,
   calculateBalanceSnapshot,
   calculatePayoffPlan,
+  calculateTotalMonthlyIncome,
   estimateMinimumPayment,
   formatCurrency,
   formatEditableMoney,
@@ -58,6 +59,7 @@ import {
   type FlowStage,
   type PayoffPlanResult,
   type PayoffStrategy,
+  type PromoRateTerms,
   type UserOnboardingData,
 } from '../onboarding-domain';
 import {
@@ -70,8 +72,11 @@ import {
 import { type LedgerTransaction, type ReconciliationAnchor, classifyCategoryDirection, isPaidOffAccountArchived } from '../finance/ledger';
 import { transactionHasBillId } from '../finance/bill-identity';
 import { type RecurringBill } from '../finance/recurring-bills';
+import { calculateBillMonthlyReserve, calculateMonthlyCashflow, calculateSafeExtraToday, summarizeMonthlyExpenses, summarizeSinglePurchases } from '../finance/budget';
 import {
   unifiedLoanRuntime,
+  selectUnifiedBudgetLoans,
+  unifiedExcludedBillIds,
   uniqueHistoricalBillIdByDebtId,
   canEditDebtCategoryWithPairings,
   validateDivergentLinkResolution,
@@ -281,6 +286,7 @@ export function HomeScreen({
   const greetingName = [session?.user.user_metadata?.full_name, session?.user.user_metadata?.name, session?.user.user_metadata?.user_name, session?.user.email?.split('@')[0]]
     .find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim().split(/\s+/)[0] || 'there';
   const [saving, setSaving] = useState(false);
+  const [strategyBoostAmount, setStrategyBoostAmount] = useState<number | null>(null);
   const [localError, setLocalError] = useState('');
   const [settingsUncertain, setSettingsUncertain] = useState(false);
   const [checkingSettings, setCheckingSettings] = useState(false);
@@ -344,10 +350,11 @@ export function HomeScreen({
         currencyCode,
         householdTimeZone,
         archivedPaidOffIds,
+        0, 0, 1, onboardingData.promoTermsByDebtId, onboardingData.customPayoffOrder,
       ),
     // Invalidate on household date rollover alongside inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [onboardingData.debts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffIds, todayKey],
+    [onboardingData.debts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffIds, todayKey, onboardingData.promoTermsByDebtId, onboardingData.customPayoffOrder],
   );
 
   const progressDebts = useMemo(
@@ -368,10 +375,11 @@ export function HomeScreen({
         currencyCode,
         householdTimeZone,
         archivedPaidOffIds,
+        0, 0, 1, onboardingData.promoTermsByDebtId, onboardingData.customPayoffOrder,
       ),
     // Invalidate on household date rollover alongside inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [progressDebts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffIds, todayKey],
+    [progressDebts, onboardingData.strategy, onboardingData.extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffIds, todayKey, onboardingData.promoTermsByDebtId, onboardingData.customPayoffOrder],
   );
 
   const loanRuntime = useMemo(() => unifiedLoanRuntime({ debts: onboardingData.debts, bills: recurringBills, pairings: onboardingData.loanBillPairingByDebtId, archived: onboardingData.archivedPaidOffDebtIds, currency: currencyCode }), [onboardingData.debts, recurringBills, onboardingData.loanBillPairingByDebtId, onboardingData.archivedPaidOffDebtIds, currencyCode]);
@@ -399,6 +407,7 @@ export function HomeScreen({
   );
   const archivedLinkedBillIds = loanRuntime.excludedBillIds;
   const windowEndKey = addCalendarDays(todayKey, 10);
+  const safeExtraWindowEndKey = addCalendarDays(todayKey, 14);
   const criticalEndKey = addCalendarDays(todayKey, 3);
 
   const currencyScale = getCurrency(currencyCode).scale;
@@ -449,7 +458,7 @@ export function HomeScreen({
     [scheduledRows, effectiveDebtSplitPlans, onboardingData.billPaymentSplitPlansByBillId, historicalLoanBillIds, transactions, todayKey],
   );
 
-  const { futureUpcomingItems, sortedUpcomingItems } = useMemo(() => {
+  const { futureUpcomingItems, sortedUpcomingItems, safeExtraUpcomingItems } = useMemo(() => {
     const installmentsByRowId = new Map<string, typeof plannedInstallments>();
     for (const event of plannedInstallments) {
       const existing = installmentsByRowId.get(event.obligationId);
@@ -477,7 +486,7 @@ export function HomeScreen({
         const confirmedPaidMinor = Math.max(0, row.requiredAmount.minorUnits - match.remainingAmount.minorUnits);
         for (const event of rowEvents) {
           if (event.status === 'covered') continue;
-          if (event.date > windowEndKey) continue;
+          if (event.date > safeExtraWindowEndKey) continue;
           const neededForTargetMinor = Math.max(0, event.cumulativeTargetMinor - confirmedPaidMinor);
           const installmentRemainingMinor = Math.min(event.amountMinor, match.remainingAmount.minorUnits, neededForTargetMinor);
           if (installmentRemainingMinor <= 0 && event.status !== 'pending') continue;
@@ -516,7 +525,7 @@ export function HomeScreen({
         continue;
       }
 
-      if (row.dueDate > windowEndKey) continue;
+      if (row.dueDate > safeExtraWindowEndKey) continue;
       const isPastDue = row.dueDate < todayKey;
       const isCritical = isPastDue || row.dueDate <= criticalEndKey;
       allUpcomingCandidates.push({
@@ -544,10 +553,35 @@ export function HomeScreen({
       });
     }
 
-    const future = allUpcomingCandidates.filter(item => !item.isPastDue);
-    const sorted = [...allUpcomingCandidates].sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
-    return { futureUpcomingItems: future, sortedUpcomingItems: sorted };
-  }, [scheduledRows, plannedInstallments, linkedDebtByBillId, windowEndKey, todayKey, criticalEndKey, currencyScale]);
+    const visible = allUpcomingCandidates.filter(item => item.dueDate <= windowEndKey);
+    const future = visible.filter(item => !item.isPastDue);
+    const sorted = visible.sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
+    return { futureUpcomingItems: future, sortedUpcomingItems: sorted, safeExtraUpcomingItems: allUpcomingCandidates };
+  }, [scheduledRows, plannedInstallments, linkedDebtByBillId, windowEndKey, safeExtraWindowEndKey, todayKey, criticalEndKey, currencyScale]);
+  const safeExtra = useMemo(() => {
+    if (!financeRecordsVerified || pairingAudit.divergentLinks.length || pairingAudit.invalidLinks.length) return null;
+    const excludedBills = new Set(unifiedExcludedBillIds(onboardingData.loanBillPairingByDebtId, recurringBills, onboardingData.debts, archivedPaidOffIds));
+    const reserveBills = recurringBills.filter(bill => !excludedBills.has(bill.id)).map(bill => ({
+      ...bill, amount: calculateBillMonthlyReserve(bill.amount, onboardingData.irregularBillScheduleByBillId?.[bill.id]?.frequency ?? 'monthly'),
+    }));
+    const unifiedLoans = selectUnifiedBudgetLoans(onboardingData.debts, archivedPaidOffIds);
+    const month = todayKey.slice(0, 7);
+    const expenses = summarizeMonthlyExpenses({ month, currencyCode, transactions, debts: onboardingData.debts, recurringBills, loanBillPairingByDebtId: onboardingData.loanBillPairingByDebtId, customCategoryLabelsByBillId: onboardingData.recurringBillCategoryLabelByBillId, archivedPaidOffDebtIds: archivedPaidOffIds, historicalBillIdsByDebtId: historicalLoanBillIds });
+    const variableCapOverage = expenses.categories.reduce((sum, category) => {
+      const cap = onboardingData.variableCategoryCaps?.[category.categoryKey];
+      return sum + (cap != null && cap > 0 ? Math.max(0, category.amount - cap) : 0);
+    }, 0);
+    const cashflow = calculateMonthlyCashflow({
+      monthlyIncome: calculateTotalMonthlyIncome(onboardingData.primaryIncomeAmount, onboardingData.primaryPayFrequency, onboardingData.additionalIncomes, currencyCode),
+      recurringBills: reserveBills,
+      monthlyDebtPlanPayment: plan.monthlyTotalPayment,
+      unifiedLoans,
+      pairedDebtMinimums: unifiedLoans.filter(loan => loan.category === 'Auto loan').reduce((sum, loan) => sum + loan.minimumPayment, 0),
+      singlePurchasesTotal: summarizeSinglePurchases(transactions, month, currencyCode).total,
+      currencyCode,
+    });
+    return calculateSafeExtraToday({ remainingMonthlyCashflow: cashflow.remainingFreeCashflow, unsettled14dObligations: safeExtraUpcomingItems.reduce((sum, item) => sum + item.amount, 0), variableCapOverage, currencyCode });
+  }, [financeRecordsVerified, pairingAudit, onboardingData, recurringBills, archivedPaidOffIds, todayKey, currencyCode, transactions, historicalLoanBillIds, plan.monthlyTotalPayment, safeExtraUpcomingItems]);
   const upcomingItems = useMemo(
     () => (showAllUpcoming ? sortedUpcomingItems : sortedUpcomingItems.slice(0, 4)),
     [showAllUpcoming, sortedUpcomingItems],
@@ -866,11 +900,6 @@ export function HomeScreen({
     }
   }, [clearErrors, saveDebtRecord]);
 
-  const handleSaveDebtDetails = useCallback(async (debtId: string, draft: DebtDetailsDraft): Promise<boolean> => {
-    clearErrors();
-    return saveDebtRecord(debtId, draft, { isDraftFlow: false });
-  }, [clearErrors, saveDebtRecord]);
-
   const handleDeleteDebt = useCallback(async (debtId: string) => {
     if (savingRef.current) return;
     savingRef.current = true;
@@ -1039,6 +1068,32 @@ export function HomeScreen({
       throw error;
     } finally { savingRef.current = false; setSaving(false); }
   }, [requireConfirmedSettings, session, onUpdateOnboardingData, markSettingsUncertain]);
+
+  const handleSavePromoTerms = useCallback(async (debtId: string, terms: PromoRateTerms | null) => {
+    const promoTermsByDebtId = { ...latestOnboardingRef.current.promoTermsByDebtId };
+    if (terms) promoTermsByDebtId[debtId] = terms; else delete promoTermsByDebtId[debtId];
+    await saveBudgetSettings({ promoTermsByDebtId });
+  }, [saveBudgetSettings]);
+  const handleSaveDebtDetails = useCallback(async (debtId: string, draft: DebtDetailsDraft): Promise<boolean> => {
+    clearErrors();
+    const saved = await saveDebtRecord(debtId, draft, { isDraftFlow: false });
+    if (saved && draft.category !== 'Credit card' && latestOnboardingRef.current.promoTermsByDebtId?.[debtId]) {
+      await handleSavePromoTerms(debtId, null);
+    }
+    return saved;
+  }, [clearErrors, saveDebtRecord, handleSavePromoTerms]);
+  const handleSaveCustomPayoffOrder = useCallback(async (customPayoffOrder: string[]) => {
+    await saveBudgetSettings({ customPayoffOrder });
+  }, [saveBudgetSettings]);
+  const handleSaveMinimumMode = useCallback(async (debtId: string, mode: 'manual' | 'auto') => {
+    await saveBudgetSettings({ minimumModeByDebtId: { ...latestOnboardingRef.current.minimumModeByDebtId, [debtId]: mode } });
+  }, [saveBudgetSettings]);
+  const handleSaveVariableCategoryCaps = useCallback(async (variableCategoryCaps: NonNullable<UserOnboardingData['variableCategoryCaps']>) => {
+    await saveBudgetSettings({ variableCategoryCaps });
+  }, [saveBudgetSettings]);
+  const handleSaveIrregularBillSchedules = useCallback(async (irregularBillScheduleByBillId: NonNullable<UserOnboardingData['irregularBillScheduleByBillId']>) => {
+    await saveBudgetSettings({ irregularBillScheduleByBillId });
+  }, [saveBudgetSettings]);
 
   const handleMarkDebtPaid = useCallback(async (debtId: string) => {
     if (!canEdit) throw new Error('You need household edit access to archive an account.');
@@ -1242,6 +1297,13 @@ export function HomeScreen({
       initialSection={section}
       onDismiss={() => { clearTarget(); closeDebtEditor(); }}
       plan={plan}
+      promoTermsByDebtId={onboardingData.promoTermsByDebtId}
+      onSavePromoTerms={handleSavePromoTerms}
+      customPayoffOrder={onboardingData.customPayoffOrder}
+      onCustomPayoffOrder={handleSaveCustomPayoffOrder}
+      minimumModeByDebtId={onboardingData.minimumModeByDebtId}
+      onSaveMinimumMode={handleSaveMinimumMode}
+      initialStrategyBoostAmount={strategyBoostAmount}
       currencySymbol={currencySymbol}
       currencyCode={currencyCode}
       transactions={transactions}
@@ -1279,6 +1341,8 @@ export function HomeScreen({
     archivedPaidOffIds,
     closeDebtEditor,
     plan,
+    onboardingData.promoTermsByDebtId, onboardingData.customPayoffOrder, onboardingData.minimumModeByDebtId,
+    handleSavePromoTerms, handleSaveCustomPayoffOrder, handleSaveMinimumMode, strategyBoostAmount,
     currencySymbol,
     currencyCode,
     transactions,
@@ -1313,6 +1377,7 @@ export function HomeScreen({
     targetTransactionId: string | null,
     clearTarget: () => void,
     section: string,
+    navigate: (tab: NavigationTabIconName, section?: string) => void,
   ) => (
     <TransactionsScreen
       initialTransactionId={targetTransactionId}
@@ -1343,6 +1408,7 @@ export function HomeScreen({
       onUpdateTransaction={onUpdateTransaction}
       onUpdateTransactions={onUpdateTransactions}
       onDeleteTransaction={onDeleteTransaction}
+      onCreateBillFromCandidate={() => navigate('budget')}
       onSettings={openSettings}
     />
   ), [
@@ -1394,6 +1460,8 @@ export function HomeScreen({
       onEditLoan={openEditDebtEditor}
       onOpenPurchase={transactionId => navigate('transactions', transactionId)}
       onSaveIncome={handleSaveBudgetIncome}
+      onSaveVariableCategoryCaps={handleSaveVariableCategoryCaps}
+      onSaveIrregularBillSchedules={handleSaveIrregularBillSchedules}
       onSaveLoanBillPairings={handleSaveLoanBillPairings}
       onSaveRecurringBillCategoryLabels={handleSaveRecurringBillCategoryLabels}
       onSettings={openSettings}
@@ -1415,6 +1483,7 @@ export function HomeScreen({
     openNewDebtEditor,
     openEditDebtEditor,
     handleSaveBudgetIncome,
+    handleSaveVariableCategoryCaps, handleSaveIrregularBillSchedules,
     handleSaveLoanBillPairings,
     handleSaveRecurringBillCategoryLabels,
     openSettings,
@@ -1434,6 +1503,7 @@ export function HomeScreen({
       onSettings={openSettings}
       onSelectDebt={debtId => navigate('debt', debtId)}
       onOpenStrategy={() => navigate('debt', 'Strategy')}
+      onSimulateExtra={amount => { setStrategyBoostAmount(amount); navigate('debt', 'Strategy'); }}
     />
   ), [
     onboardingData.debts,
@@ -1604,6 +1674,16 @@ export function HomeScreen({
                 </View>
               </View>
 
+              {safeExtra?.status === 'surplus' && safeExtra.safeExtraAmount > 0 && plan.firstTarget ? (
+                <View style={[ui.row, { gap: 8, flexWrap: 'wrap', alignItems: 'center' }]}>
+                  <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#D5F5DC' }}>
+                    <Text style={{ color: '#185A2B', fontSize: 12, fontWeight: '700' }}>{`Safe Extra: ${formatCurrency(safeExtra.safeExtraAmount, currencySymbol)}`}</Text>
+                  </View>
+                  <Pressable accessibilityRole="button" onPress={() => { setStrategyBoostAmount(safeExtra.safeExtraAmount); navigate('debt', 'Strategy'); }} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: palette.homePillBg, borderWidth: 1, borderColor: palette.homeBorder }}>
+                    <Text style={{ color: palette.homeInk, fontSize: 12, fontWeight: '700' }}>Boost #1</Text>
+                  </Pressable>
+                </View>
+              ) : null}
               <View style={{ flexDirection: 'row', gap: 6 }}>
                 {[0, 1, 2, 3, 4, 5, 6].map(segmentIdx => {
                   const segFill = Math.max(0, Math.min(1, (freedomPercent / 100) * 7 - segmentIdx));
@@ -1635,7 +1715,7 @@ export function HomeScreen({
                 ) : <Text style={[ui.small, { flex: 1, color: palette.homeSecondary, fontSize: 11.5 }]}>Keep building your freedom.</Text>}
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={`Change payoff strategy. Currently ${onboardingData.strategy === 'avalanche' ? 'Avalanche' : 'Snowball'}`}
+                  accessibilityLabel={`Change payoff strategy. Currently ${onboardingData.strategy === 'avalanche' ? 'Avalanche' : onboardingData.strategy === 'custom' ? 'Custom' : 'Snowball'}`}
                   style={[
                     ui.row,
                     isInspire
@@ -1645,7 +1725,7 @@ export function HomeScreen({
                   onPress={() => navigate('debt', 'Strategy')}
                 >
                   <Text style={{ color: isInspire ? palette.homeCta : palette.homeInk, fontSize: 13, fontWeight: '700' }}>
-                    {onboardingData.strategy === 'avalanche' ? 'Avalanche' : 'Snowball'}
+                    {onboardingData.strategy === 'avalanche' ? 'Avalanche' : onboardingData.strategy === 'custom' ? 'Custom' : 'Snowball'}
                   </Text>
                   <AppIcon name="chevronRight" size={14} color={isInspire ? palette.homeCta : palette.homeInk} />
                 </Pressable>
@@ -1655,7 +1735,7 @@ export function HomeScreen({
               <View onLayout={event => { pairingReviewY.current = event.nativeEvent.layout.y; }}>
                 <Card>
                   <Text style={ui.heading}>Legacy loan links to review</Text>
-                  <Text style={ui.text}>Mortgage and Auto loans now live in both Accounts and Budget as one obligation. Review mismatched or stale legacy links below so neither record is overwritten automatically.</Text>
+                  <Text style={ui.text}>Review mismatched or stale loan links.</Text>
                   {!canEdit ? (
                     <Text style={ui.small}>Only household members or owners can resolve legacy loan links.</Text>
                   ) : (
@@ -1996,6 +2076,8 @@ export function HomeScreen({
     hasAutoDebt,
     displayEstimateDate,
     plan.monthsToPayoff,
+    plan.firstTarget,
+    safeExtra,
     plan.payoffOrder,
     freedomPercent,
     onboardingData.strategy,
