@@ -940,7 +940,19 @@ function DebtFreeFlowContent({
         ? parsedExtra
         : onboardingData.extraMonthlyPayment;
     const tz = onboardingData.householdTimeZone ?? 'UTC';
-    const comparison = comparePayoffStrategies(onboardingData.debts, onboardingData.strategy, effectiveExtra, new Date(), currencyCode, tz, onboardingData.archivedPaidOffDebtIds);
+    const comparison = comparePayoffStrategies(
+      onboardingData.debts,
+      onboardingData.strategy,
+      effectiveExtra,
+      new Date(),
+      currencyCode,
+      tz,
+      onboardingData.archivedPaidOffDebtIds,
+      0,
+      1,
+      onboardingData.promoTermsByDebtId,
+      onboardingData.customPayoffOrder,
+    );
     return { payoffPlan: comparison.activePlan, strategyComparison: comparison };
   }, [onboardingData, extraPaymentInput, stage, currencyCode]);
 

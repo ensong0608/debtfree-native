@@ -551,9 +551,9 @@ export function sortDebtsByStrategy(debts: DebtItem[], strategy: PayoffStrategy,
   const scale = 10 ** getCurrency(currencyCode).scale;
   return activeDebts(debts).filter(d => d.balance > 0).sort((a, b) => {
     const balance = Math.round(a.balance * scale) - Math.round(b.balance * scale);
-    const effectiveApr = (d: DebtItem) => { const promo = d.category === 'Credit card' ? promoTermsByDebtId?.[d.id] : undefined; return promo && today <= promo.promoEndDate ? promo.promoApr : d.apr; };
+    const effectiveApr = (d: DebtItem) => { const promo = d.category === 'Credit card' ? promoTermsByDebtId?.[d.id] : undefined; return promo ? (today <= promo.promoEndDate ? promo.promoApr : promo.postPromoApr) : d.apr; };
     const apr = Math.round(effectiveApr(b) * 1000) - Math.round(effectiveApr(a) * 1000);
-    if (strategy === 'custom') { const rank = (id: string) => { const i = customPayoffOrder?.indexOf(id) ?? -1; return i < 0 ? Number.MAX_SAFE_INTEGER : i; }; return rank(a.id) - rank(b.id) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }
+    if (strategy === 'custom') { const rank = (id: string) => { const i = customPayoffOrder?.indexOf(id) ?? -1; return i < 0 ? Number.MAX_SAFE_INTEGER : i; }; return rank(a.id) - rank(b.id) || apr || balance || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }
     return (strategy === 'snowball' ? balance || apr : apr || balance) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   });
 }
@@ -978,8 +978,16 @@ function runScenarioComparison(params: {
       if (aInc !== bInc) return aInc === 'accelerated' ? -1 : 1;
       const aDebt = debtById.get(a.accountId)!;
       const bDebt = debtById.get(b.accountId)!;
+      const effectiveApr = (d: DebtItem) => {
+        const promo = d.category === 'Credit card' ? promoTermsByDebtId?.[d.id] : undefined;
+        return promo ? (period.paymentDate <= promo.promoEndDate ? promo.promoApr : promo.postPromoApr) : d.apr;
+      };
       const balDiff = a.openingObligation.minorUnits - b.openingObligation.minorUnits;
-      const aprDiff = Math.round(bDebt.apr * 1000) - Math.round(aDebt.apr * 1000);
+      const aprDiff = Math.round(effectiveApr(bDebt) * 1000) - Math.round(effectiveApr(aDebt) * 1000);
+      if (strategy === 'custom') {
+        const rank = (id: string) => { const idx = customPayoffOrder?.indexOf(id) ?? -1; return idx < 0 ? Number.MAX_SAFE_INTEGER : idx; };
+        return rank(a.accountId) - rank(b.accountId) || aprDiff || balDiff || (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0);
+      }
       return (strategy === 'snowball' ? (balDiff || aprDiff) : (aprDiff || balDiff)) || (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0);
     });
 
@@ -1233,6 +1241,8 @@ export function comparePayoffStrategies(
   archivedPaidOffDebtIds: readonly string[] = [],
   extraOneTimePayment = 0,
   extraOneTimePeriod = 1,
+  promoTermsByDebtId?: Record<string, PromoRateTerms>,
+  customPayoffOrder?: readonly string[],
 ): StrategyComparisonSummary {
   const factor = 10 ** getCurrency(currencyCode).scale;
   const roundToCurrency = (value: number) => Math.round((value + Number.EPSILON) * factor) / factor;
@@ -1244,6 +1254,11 @@ export function comparePayoffStrategies(
     currencyCode,
     householdTimeZone,
     archivedPaidOffDebtIds,
+    0,
+    0,
+    1,
+    promoTermsByDebtId,
+    customPayoffOrder,
   );
   const snowballPlan = calculatePayoffPlan(
     debts,
@@ -1256,6 +1271,7 @@ export function comparePayoffStrategies(
     0,
     extraOneTimePayment,
     extraOneTimePeriod,
+    promoTermsByDebtId,
   );
   const avalanchePlan = calculatePayoffPlan(
     debts,
@@ -1268,8 +1284,26 @@ export function comparePayoffStrategies(
     0,
     extraOneTimePayment,
     extraOneTimePeriod,
+    promoTermsByDebtId,
   );
-  const activePlan = strategy === 'snowball' ? snowballPlan : avalanchePlan;
+  const activePlan = strategy === 'snowball'
+    ? snowballPlan
+    : strategy === 'custom'
+      ? calculatePayoffPlan(
+          debts,
+          'custom',
+          extraMonthlyPayment,
+          baseDate,
+          currencyCode,
+          householdTimeZone,
+          archivedPaidOffDebtIds,
+          0,
+          extraOneTimePayment,
+          extraOneTimePeriod,
+          promoTermsByDebtId,
+          customPayoffOrder,
+        )
+      : avalanchePlan;
   const bothActiveAndMinPaidOff =
     minimumsPlan.status === 'paidOff' &&
     activePlan.status === 'paidOff' &&

@@ -33,13 +33,21 @@ export function parseBankCsv(csvText: string, existingTransactions: readonly Led
   const columns = header.map(x => x.trim().toLowerCase().replace(/^\ufeff/, ''));
   const date = columns.indexOf('date'), payee = columns.findIndex(x => ['description', 'payee', 'merchant'].includes(x)), amount = columns.indexOf('amount'), debit = columns.indexOf('debit'), credit = columns.indexOf('credit');
   if (date < 0 || payee < 0 || (amount < 0 && debit < 0 && credit < 0)) throw new TypeError('Required bank CSV columns missing');
+  const normalizePayee = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
   return rows.filter(row => row.some(x => x.trim())).map(row => {
     const raw = (row[date] ?? '').trim(), match = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(raw);
     const day = match ? `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}` : raw; parseDateOnly(day);
     const number = (s: string | undefined) => { const v = (s ?? '').trim().replace(/[$,\s]/g, '').replace(/^\((.*)\)$/, '-$1'); if (!v) return 0; const n = Number(v); if (!Number.isFinite(n)) throw new TypeError('Invalid amount'); return n; };
     const value = amount >= 0 ? number(row[amount]) : number(row[credit]) - number(row[debit]);
     const money = moneyFromMajor(value, defaultCurrency);
-    return { date: day, payee: (row[payee] ?? '').trim(), amount: money, likelyDuplicate: existingTransactions.some(tx => tx.deletedAt === null && tx.date === day && tx.amount.currency === defaultCurrency && tx.amount.minorUnits === Math.abs(money.minorUnits)) };
+    const rawPayee = (row[payee] ?? '').trim();
+    const rowPayee = normalizePayee(rawPayee);
+    const likelyDuplicate = existingTransactions.some(tx => {
+      if (tx.deletedAt !== null || tx.date !== day || tx.amount.currency !== defaultCurrency || tx.amount.minorUnits !== Math.abs(money.minorUnits)) return false;
+      const existingPayee = normalizePayee(tx.payee ?? '');
+      return !rowPayee || !existingPayee || existingPayee === rowPayee || existingPayee.includes(rowPayee) || rowPayee.includes(existingPayee);
+    });
+    return { date: day, payee: rawPayee, amount: money, likelyDuplicate };
   });
 }
 export function buildSplitTransactionPayloads<T extends { amount: Money }>(total: Money, parts: readonly T[]): T[] {

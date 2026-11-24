@@ -1068,7 +1068,7 @@ export function SettingsScreen({
     if (onboardingData.strategy === strategy) return;
     void persistOnboardingPatch(
       { strategy },
-      `Payoff strategy set to ${strategy === 'snowball' ? 'Snowball' : 'Avalanche'}.`,
+      `Payoff strategy set to ${strategy === 'snowball' ? 'Snowball' : strategy === 'custom' ? 'Custom' : 'Avalanche'}.`,
     );
   };
 
@@ -1784,10 +1784,12 @@ export function SettingsScreen({
             <Text style={styles.rowSub}>
               {onboardingData.strategy === 'snowball'
                 ? 'Snowball — Lowest balance first for quick wins'
-                : 'Avalanche — Highest APR first to minimize total interest'}
+                : onboardingData.strategy === 'custom'
+                  ? 'Custom — Your chosen payoff order in Accounts → Strategy'
+                  : 'Avalanche — Highest APR first to minimize total interest'}
             </Text>
             <View style={[ui.row, { marginTop: 10 }]}>
-              {(['snowball', 'avalanche'] as const).map(strategy => {
+              {(['snowball', 'avalanche', 'custom'] as const).map(strategy => {
                 const selected = onboardingData.strategy === strategy;
                 return (
                   <Pressable
@@ -1797,7 +1799,9 @@ export function SettingsScreen({
                     accessibilityLabel={
                       strategy === 'snowball'
                         ? 'Snowball: Lowest balance first'
-                        : 'Avalanche: Highest APR first'
+                        : strategy === 'custom'
+                          ? 'Custom: Your payoff order'
+                          : 'Avalanche: Highest APR first'
                     }
                     disabled={!canEdit}
                     onPress={() => handleSelectStrategy(strategy)}
@@ -1808,21 +1812,22 @@ export function SettingsScreen({
                     ]}
                   >
                     <AppIcon
-                      name={strategy}
+                      name={strategy === 'custom' ? 'layers' : strategy}
                       size={16}
                       color={selected ? palette.brand : palette.muted}
                     />
                     <View style={styles.flex1}>
                       <Text
+                        numberOfLines={1}
                         style={[
                           styles.strategyTitle,
                           selected && [styles.strategyTitleSelected, { color: palette.brand }],
                         ]}
                       >
-                        {strategy === 'snowball' ? 'Snowball' : 'Avalanche'}
+                        {strategy === 'snowball' ? 'Snowball' : strategy === 'custom' ? 'Custom' : 'Avalanche'}
                       </Text>
-                      <Text style={styles.strategySub}>
-                        {strategy === 'snowball' ? 'Lowest balance' : 'Highest APR'}
+                      <Text numberOfLines={1} style={styles.strategySub}>
+                        {strategy === 'snowball' ? 'Lowest balance' : strategy === 'custom' ? 'Your order' : 'Highest APR'}
                       </Text>
                     </View>
                   </Pressable>

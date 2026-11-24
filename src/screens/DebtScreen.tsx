@@ -613,6 +613,7 @@ export const DebtScreen = memo(function DebtScreen({
   const [section, setSection] = useState<string>(detailSections[0]);
   const [txPeriod, setTxPeriod] = useState<string>(txPeriods[0]);
   const [timelineExpanded, setTimelineExpanded] = useState(false);
+  const [detailAdvancedOpen, setDetailAdvancedOpen] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [reconcileInput, setReconcileInput] = useState('');
   const [reconcileReason, setReconcileReason] = useState<'interest_adjustment' | 'balance_adjustment' | 'credit_adjustment'>('interest_adjustment');
@@ -639,6 +640,7 @@ export const DebtScreen = memo(function DebtScreen({
 
   const resetDetailUiState = () => {
     setTimelineExpanded(false);
+    setDetailAdvancedOpen(false);
     setDetailDraftOverride(null);
     setDetailFocusedField(null);
     setDetailError('');
@@ -720,10 +722,14 @@ export const DebtScreen = memo(function DebtScreen({
       currencyCode,
       householdTimeZone,
       archivedPaidOffDebtIds,
+      0,
+      1,
+      promoTermsByDebtId,
+      customPayoffOrder,
     ),
     // Invalidate on household date rollover alongside inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [debts, strategy, extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffDebtIds, projectionDay],
+    [debts, strategy, extraMonthlyPayment, currencyCode, householdTimeZone, archivedPaidOffDebtIds, promoTermsByDebtId, customPayoffOrder, projectionDay],
   );
   const monthlyParsed = useMemo(() => parseMoneyDraft(extraDraft, currencyCode), [extraDraft, currencyCode]);
   const oneTimeParsed = useMemo(() => parseMoneyDraft(oneTimeDraft, currencyCode), [oneTimeDraft, currencyCode]);
@@ -741,6 +747,8 @@ export const DebtScreen = memo(function DebtScreen({
       archivedPaidOffDebtIds,
       previewOneTimeAmount,
       oneTimeCycleInfo.period,
+      promoTermsByDebtId,
+      customPayoffOrder,
     ),
     // Invalidate on household date rollover alongside inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -753,6 +761,8 @@ export const DebtScreen = memo(function DebtScreen({
       archivedPaidOffDebtIds,
       previewOneTimeAmount,
       oneTimeCycleInfo.period,
+      promoTermsByDebtId,
+      customPayoffOrder,
       projectionDay,
     ],
   );
@@ -1347,7 +1357,7 @@ export const DebtScreen = memo(function DebtScreen({
                 borderWidth: isInspire ? 1.5 : 1,
                 borderColor: isInspire ? palette.brand : 'rgba(255,255,255,0.28)',
               }}>
-                <Text style={{ color: isInspire ? palette.accentInk : palette.onHero, fontSize: 12, fontWeight: '700' }}>{strategy === 'snowball' ? 'Snowball' : 'Avalanche'}</Text>
+                <Text style={{ color: isInspire ? palette.accentInk : palette.onHero, fontSize: 12, fontWeight: '700' }}>{strategy === 'snowball' ? 'Snowball' : strategy === 'custom' ? 'Custom' : 'Avalanche'}</Text>
               </View>
             </View>
           </View>
@@ -1483,6 +1493,12 @@ export const DebtScreen = memo(function DebtScreen({
               );
             })}
           </View>
+          {strategy === 'custom' ? (
+            <View style={{ paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, borderWidth: 1, borderColor: palette.brand, backgroundColor: palette.selection, gap: 2 }}>
+              <Text style={[ui.small, { color: palette.accentInk, fontWeight: '700' }]}>Custom payoff order active</Text>
+              <Text style={[ui.small, { color: palette.text }]}>Scroll to Payoff order below and tap ↑ or ↓ on any account to set your priority order.</Text>
+            </View>
+          ) : null}
           <Card style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 12, borderRadius: 16, overflow: 'hidden' }}>
             {isInspire ? <InspireCornerArt kind="corner-leaf" borderRadius={16} /> : null}
             <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
@@ -1932,7 +1948,7 @@ export const DebtScreen = memo(function DebtScreen({
                 <View style={{ gap: 8 }}>
                     <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8, paddingHorizontal: 2 }]}>
                       <Text style={ui.heading}>Payoff order</Text>
-                      <View style={{ backgroundColor: palette.selection, borderWidth: isInspire ? 1.5 : 1, borderColor: palette.brand, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3 }}><Text style={[ui.small, { color: palette.accentInk, fontWeight: '700' }]}>Estimated</Text></View>
+                      <View style={{ backgroundColor: palette.selection, borderWidth: isInspire ? 1.5 : 1, borderColor: palette.brand, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 3 }}><Text style={[ui.small, { color: palette.accentInk, fontWeight: '700' }]}>{strategy === 'custom' ? 'Tap ↑ ↓ to reorder' : 'Estimated'}</Text></View>
                     </View>
                   <Card style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 4, borderRadius: 16, overflow: 'hidden' }}>
                     {isInspire ? <InspireCornerArt kind="corner-ridge" borderRadius={16} /> : null}
@@ -1953,7 +1969,7 @@ export const DebtScreen = memo(function DebtScreen({
                         onBeforeToggle={() => { extraInputRef.current?.blur(); oneTimeInputRef.current?.blur(); Keyboard.dismiss(); }}
                       />
                       {(() => { const id = item?.accountId ?? account?.id; const debt = debts.find(d => d.id === id); const promo = id ? promoTermsByDebtId?.[id] : undefined; return debt?.category === 'Credit card' && promo ? <Text style={{ alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: isLight ? '#FEF3C7' : 'rgba(251,191,36,0.16)', color: isLight ? '#92400E' : '#FBBF24', fontSize: 11, fontWeight: '700' }}>{`${promo.promoApr}% → ${promo.postPromoApr}% ${formatShortDate(promo.promoEndDate)}`}</Text> : null; })()}
-                      {strategy === 'custom' && onCustomPayoffOrder ? <View style={[ui.row, { paddingLeft: 42 }]}>{([-1, 1] as const).map(direction => <Pressable key={direction} accessibilityRole="button" accessibilityLabel={direction < 0 ? 'Move up' : 'Move down'} disabled={!canEdit || idx + direction < 0 || idx + direction >= rows.length} style={{ minWidth: 36, minHeight: 36, alignItems: 'center', justifyContent: 'center' }} onPress={() => { const ids = rows.map(row => row.item?.accountId ?? row.account!.id); const other = idx + direction; [ids[idx], ids[other]] = [ids[other], ids[idx]]; void onCustomPayoffOrder(ids).catch(err => setStrategyError(err instanceof Error ? err.message : 'Unable to save payoff order.')); }}><Text style={{ color: palette.brand, fontSize: 20 }}>{direction < 0 ? '↑' : '↓'}</Text></Pressable>)}</View> : null}
+                      {strategy === 'custom' && onCustomPayoffOrder ? <View style={[ui.row, { paddingLeft: 38, paddingBottom: 6, gap: 8 }]}>{([-1, 1] as const).map(direction => { const edgeDisabled = !canEdit || strategyBusy || idx + direction < 0 || idx + direction >= rows.length; return <Pressable key={direction} accessibilityRole="button" accessibilityLabel={direction < 0 ? 'Move up' : 'Move down'} disabled={edgeDisabled} style={{ minWidth: 64, minHeight: 32, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.raised, alignItems: 'center', justifyContent: 'center', opacity: edgeDisabled ? 0.35 : 1 }} onPress={() => { if (!canEdit || strategyBusy) return; const ids = rows.map(row => row.item?.accountId ?? row.account!.id); const other = idx + direction; [ids[idx], ids[other]] = [ids[other], ids[idx]]; setStrategyBusy(true); setStrategyError(''); void onCustomPayoffOrder(ids).catch(err => setStrategyError(err instanceof Error ? err.message : 'Unable to save payoff order.')).finally(() => setStrategyBusy(false)); }}><Text style={{ color: palette.brand, fontSize: 12.5, fontWeight: '700' }}>{direction < 0 ? '↑ Up' : '↓ Down'}</Text></Pressable>; })}</View> : null}
                       </View>
                     )) : <Text style={[ui.small, { color: palette.muted }]}>Projection unavailable.</Text>}
                     {firstPayment ? <Text style={[ui.small, { color: palette.muted, paddingTop: 8 }]}>{`First payment: ${formatCurrency(firstPayment.totalPaid, currencySymbol)}${firstPayment.unusedBudget > 0 ? ` · ${formatCurrency(firstPayment.unusedBudget, currencySymbol)} unapplied` : ''}${nextPayment ? ` · Month 2: ${formatCurrency(nextPayment.totalPaid, currencySymbol)}` : ''}${oneTimeSummarySuffix}`}</Text> : null}
@@ -2439,6 +2455,14 @@ export const DebtScreen = memo(function DebtScreen({
           const detailMoneyInputStyle = [detailInlineInputStyle, { width: 96, minWidth: 0, flexGrow: 0, flexShrink: 1 }];
           const parsedDetailDueDay = detailDraft.dueDay.trim() ? Number(detailDraft.dueDay.trim()) : null;
           const showCreditCardFields = detailDraft.category === 'Credit card';
+          const advancedOptionalCount = [
+            detailDraft.originalBalance.trim(),
+            detailDraft.category === 'Mortgage' ? detailDraft.mortgageEscrow.trim() : '',
+            showCreditCardFields ? detailDraft.creditLimit.trim() : '',
+            showCreditCardFields ? detailDraft.annualFeeAmount.trim() : '',
+            showCreditCardFields ? detailDraft.annualFeeNextDate.trim() : '',
+            showCreditCardFields && (detailDraft.promoApr.trim() || detailDraft.postPromoApr.trim() || detailDraft.promoEndDate.trim()) ? 'promo' : '',
+          ].filter(Boolean).length;
 
           return <>
           {!canEdit ? (
@@ -2505,25 +2529,6 @@ export const DebtScreen = memo(function DebtScreen({
                   onBlur={() => setDetailFocusedField(current => current === 'balance' ? null : current)}
                   onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, balance: acceptMoneyEdit(prev.balance, value, currencyCode, true) })); }}
                   placeholder={formatEditableMoney(0, currencyCode)}
-                  placeholderTextColor={palette.muted}
-                />
-              </View>
-            </View>
-
-            <View style={[detailRowStyle, detailRowBorderStyle]}>
-              <Text style={[ui.text, { color: palette.muted }]}>Original balance</Text>
-              <View style={detailPillStyle}>
-                <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                <TextInput
-                  editable={canEdit}
-                  accessibilityLabel="Original balance"
-                  style={detailMoneyInputStyle}
-                  keyboardType="decimal-pad"
-                  value={formatDetailMoneyDisplay(detailDraft.originalBalance, currencyCode, detailFocusedField === 'originalBalance')}
-                  onFocus={() => setDetailFocusedField('originalBalance')}
-                  onBlur={() => setDetailFocusedField(current => current === 'originalBalance' ? null : current)}
-                  onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, originalBalance: acceptMoneyEdit(prev.originalBalance, value, currencyCode) })); }}
-                  placeholder="Optional"
                   placeholderTextColor={palette.muted}
                 />
               </View>
@@ -2616,27 +2621,6 @@ export const DebtScreen = memo(function DebtScreen({
               )}
             </View>
 
-            {detailDraft.category === 'Mortgage' ? (
-              <View style={[detailRowStyle, detailRowBorderStyle]}>
-                <Text style={[ui.text, { color: palette.muted }]}>Monthly escrow</Text>
-                <View style={detailPillStyle}>
-                  <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                  <TextInput
-                    editable={canEdit}
-                    accessibilityLabel="Monthly escrow"
-                    style={detailMoneyInputStyle}
-                    keyboardType="decimal-pad"
-                    value={formatDetailMoneyDisplay(detailDraft.mortgageEscrow, currencyCode, detailFocusedField === 'mortgageEscrow')}
-                    onFocus={() => setDetailFocusedField('mortgageEscrow')}
-                    onBlur={() => setDetailFocusedField(current => current === 'mortgageEscrow' ? null : current)}
-                    onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, mortgageEscrow: acceptMoneyEdit(prev.mortgageEscrow, value, currencyCode) })); }}
-                    placeholder="Optional"
-                    placeholderTextColor={palette.muted}
-                  />
-                </View>
-              </View>
-            ) : null}
-
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={parsedDetailDueDay ? `Due day: Day ${parsedDetailDueDay}` : 'Due day: Choose day'}
@@ -2646,7 +2630,7 @@ export const DebtScreen = memo(function DebtScreen({
                 Keyboard.dismiss();
                 setShowDetailDuePicker(true);
               }}
-              style={[detailRowStyle, showCreditCardFields ? detailRowBorderStyle : undefined]}
+              style={[detailRowStyle, detailRowBorderStyle]}
             >
               <Text style={[ui.text, { color: palette.muted }]}>Due day</Text>
               <View style={[detailPillStyle, { minWidth: 116 }]}>
@@ -2657,83 +2641,146 @@ export const DebtScreen = memo(function DebtScreen({
               </View>
             </Pressable>
 
-            {showCreditCardFields ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Advanced account options"
+              accessibilityState={{ expanded: detailAdvancedOpen }}
+              onPress={() => {
+                Keyboard.dismiss();
+                setDetailAdvancedOpen(open => !open);
+              }}
+              style={[detailRowStyle, detailAdvancedOpen ? detailRowBorderStyle : undefined]}
+            >
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={[ui.text, { color: palette.text, fontWeight: '600' }]}>Advanced</Text>
+                <Text style={[ui.small, { color: palette.muted }]}>
+                  {advancedOptionalCount > 0 ? `${advancedOptionalCount} optional set` : 'Optional terms & promo APR'}
+                </Text>
+              </View>
+              <AppIcon name={detailAdvancedOpen ? 'chevronDown' : 'chevronRight'} size={16} color={palette.brand} />
+            </Pressable>
+
+            {detailAdvancedOpen ? (
               <>
-                <View style={[detailRowStyle, detailRowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Credit limit</Text>
+                <View style={[detailRowStyle, (detailDraft.category === 'Mortgage' || showCreditCardFields) ? detailRowBorderStyle : undefined]}>
+                  <Text style={[ui.text, { color: palette.muted }]}>Original balance</Text>
                   <View style={detailPillStyle}>
                     <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
                     <TextInput
                       editable={canEdit}
-                      accessibilityLabel="Credit limit"
+                      accessibilityLabel="Original balance"
                       style={detailMoneyInputStyle}
                       keyboardType="decimal-pad"
-                      value={formatDetailMoneyDisplay(detailDraft.creditLimit, currencyCode, detailFocusedField === 'creditLimit')}
-                      onFocus={() => setDetailFocusedField('creditLimit')}
-                      onBlur={() => setDetailFocusedField(current => current === 'creditLimit' ? null : current)}
-                      onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, creditLimit: acceptMoneyEdit(prev.creditLimit, value, currencyCode) })); }}
+                      value={formatDetailMoneyDisplay(detailDraft.originalBalance, currencyCode, detailFocusedField === 'originalBalance')}
+                      onFocus={() => setDetailFocusedField('originalBalance')}
+                      onBlur={() => setDetailFocusedField(current => current === 'originalBalance' ? null : current)}
+                      onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, originalBalance: acceptMoneyEdit(prev.originalBalance, value, currencyCode) })); }}
                       placeholder="Optional"
                       placeholderTextColor={palette.muted}
                     />
                   </View>
                 </View>
-                <View style={[detailRowStyle, detailRowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Annual fee</Text>
-                  <View style={detailPillStyle}>
-                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
-                    <TextInput
-                      editable={canEdit}
-                      accessibilityLabel="Annual fee"
-                      style={detailMoneyInputStyle}
-                      keyboardType="decimal-pad"
-                      value={formatDetailMoneyDisplay(detailDraft.annualFeeAmount, currencyCode, detailFocusedField === 'annualFeeAmount')}
-                      onFocus={() => setDetailFocusedField('annualFeeAmount')}
-                      onBlur={() => setDetailFocusedField(current => current === 'annualFeeAmount' ? null : current)}
-                      onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, annualFeeAmount: acceptMoneyEdit(prev.annualFeeAmount, value, currencyCode) })); }}
-                      placeholder="Optional"
-                      placeholderTextColor={palette.muted}
-                    />
+
+                {detailDraft.category === 'Mortgage' ? (
+                  <View style={detailRowStyle}>
+                    <Text style={[ui.text, { color: palette.muted }]}>Monthly escrow</Text>
+                    <View style={detailPillStyle}>
+                      <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                      <TextInput
+                        editable={canEdit}
+                        accessibilityLabel="Monthly escrow"
+                        style={detailMoneyInputStyle}
+                        keyboardType="decimal-pad"
+                        value={formatDetailMoneyDisplay(detailDraft.mortgageEscrow, currencyCode, detailFocusedField === 'mortgageEscrow')}
+                        onFocus={() => setDetailFocusedField('mortgageEscrow')}
+                        onBlur={() => setDetailFocusedField(current => current === 'mortgageEscrow' ? null : current)}
+                        onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, mortgageEscrow: acceptMoneyEdit(prev.mortgageEscrow, value, currencyCode) })); }}
+                        placeholder="Optional"
+                        placeholderTextColor={palette.muted}
+                      />
+                    </View>
                   </View>
-                </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={detailDraft.annualFeeNextDate ? `Next renewal: ${formatShortDate(detailDraft.annualFeeNextDate)}` : 'Next renewal: Choose date'}
-                  disabled={!canEdit}
-                  onPress={() => {
-                    if (!canEdit) return;
-                    Keyboard.dismiss();
-                    setShowDetailRenewalPicker(true);
-                  }}
-                  style={detailRowStyle}
-                >
-                  <Text style={[ui.text, { color: palette.muted }]}>Next renewal</Text>
-                  <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
-                    <Text style={[ui.text, { color: detailDraft.annualFeeNextDate ? palette.text : palette.brand, fontWeight: '600' }]}>
-                      {detailDraft.annualFeeNextDate ? formatShortDate(detailDraft.annualFeeNextDate) : canEdit ? 'Choose date' : 'Not set'}
-                    </Text>
-                    {canEdit ? <AppIcon name="calendar" size={16} color={palette.brand} /> : null}
-                  </View>
-                </Pressable>
-                <View style={[detailRowStyle, detailRowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted, fontWeight: '700' }]}>Promotional APR</Text>
-                  {canEdit && (detailDraft.promoApr || detailDraft.promoEndDate || detailDraft.postPromoApr) ? <Pressable accessibilityRole="button" onPress={() => updateDetailDraft(prev => ({ ...prev, promoApr: '', promoEndDate: '', postPromoApr: '' }))}><Text style={{ color: palette.brand, fontWeight: '600' }}>Clear</Text></Pressable> : null}
-                </View>
-                {(['promoApr', 'postPromoApr'] as const).map(field => <View key={field} style={[detailRowStyle, detailRowBorderStyle]}>
-                  <Text style={[ui.text, { color: palette.muted }]}>{field === 'promoApr' ? 'Promo APR' : 'After promo APR'}</Text>
-                  <View style={detailPillStyle}>
-                    <TextInput editable={canEdit} accessibilityLabel={field === 'promoApr' ? 'Promo APR %' : 'After promo APR %'} style={detailMoneyInputStyle} keyboardType="decimal-pad" value={detailDraft[field]} onChangeText={value => updateDetailDraft(prev => ({ ...prev, [field]: acceptAprEdit(prev[field], value) }))} placeholder="Optional" placeholderTextColor={palette.muted} />
-                    <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>%</Text>
-                  </View>
-                </View>)}
-                <Pressable accessibilityRole="button" accessibilityLabel="Promo ends" disabled={!canEdit} onPress={() => setShowPromoPicker(true)} style={detailRowStyle}>
-                  <Text style={[ui.text, { color: palette.muted }]}>Promo ends</Text>
-                  <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
-                    <Text style={[ui.text, { color: detailDraft.promoEndDate ? palette.text : palette.brand, fontWeight: '600' }]}>
-                      {detailDraft.promoEndDate ? formatShortDate(detailDraft.promoEndDate) : canEdit ? 'Choose date' : 'Not set'}
-                    </Text>
-                    {canEdit ? <AppIcon name="calendar" size={16} color={palette.brand} /> : null}
-                  </View>
-                </Pressable>
+                ) : null}
+
+                {showCreditCardFields ? (
+                  <>
+                    <View style={[detailRowStyle, detailRowBorderStyle]}>
+                      <Text style={[ui.text, { color: palette.muted }]}>Credit limit</Text>
+                      <View style={detailPillStyle}>
+                        <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                        <TextInput
+                          editable={canEdit}
+                          accessibilityLabel="Credit limit"
+                          style={detailMoneyInputStyle}
+                          keyboardType="decimal-pad"
+                          value={formatDetailMoneyDisplay(detailDraft.creditLimit, currencyCode, detailFocusedField === 'creditLimit')}
+                          onFocus={() => setDetailFocusedField('creditLimit')}
+                          onBlur={() => setDetailFocusedField(current => current === 'creditLimit' ? null : current)}
+                          onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, creditLimit: acceptMoneyEdit(prev.creditLimit, value, currencyCode) })); }}
+                          placeholder="Optional"
+                          placeholderTextColor={palette.muted}
+                        />
+                      </View>
+                    </View>
+                    <View style={[detailRowStyle, detailRowBorderStyle]}>
+                      <Text style={[ui.text, { color: palette.muted }]}>Annual fee</Text>
+                      <View style={detailPillStyle}>
+                        <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
+                        <TextInput
+                          editable={canEdit}
+                          accessibilityLabel="Annual fee"
+                          style={detailMoneyInputStyle}
+                          keyboardType="decimal-pad"
+                          value={formatDetailMoneyDisplay(detailDraft.annualFeeAmount, currencyCode, detailFocusedField === 'annualFeeAmount')}
+                          onFocus={() => setDetailFocusedField('annualFeeAmount')}
+                          onBlur={() => setDetailFocusedField(current => current === 'annualFeeAmount' ? null : current)}
+                          onChangeText={value => { if (canEdit) updateDetailDraft(prev => ({ ...prev, annualFeeAmount: acceptMoneyEdit(prev.annualFeeAmount, value, currencyCode) })); }}
+                          placeholder="Optional"
+                          placeholderTextColor={palette.muted}
+                        />
+                      </View>
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={detailDraft.annualFeeNextDate ? `Next renewal: ${formatShortDate(detailDraft.annualFeeNextDate)}` : 'Next renewal: Choose date'}
+                      disabled={!canEdit}
+                      onPress={() => {
+                        if (!canEdit) return;
+                        Keyboard.dismiss();
+                        setShowDetailRenewalPicker(true);
+                      }}
+                      style={[detailRowStyle, detailRowBorderStyle]}
+                    >
+                      <Text style={[ui.text, { color: palette.muted }]}>Next renewal</Text>
+                      <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+                        <Text style={[ui.text, { color: detailDraft.annualFeeNextDate ? palette.text : palette.brand, fontWeight: '600' }]}>
+                          {detailDraft.annualFeeNextDate ? formatShortDate(detailDraft.annualFeeNextDate) : canEdit ? 'Choose date' : 'Not set'}
+                        </Text>
+                        {canEdit ? <AppIcon name="calendar" size={16} color={palette.brand} /> : null}
+                      </View>
+                    </Pressable>
+                    <View style={[detailRowStyle, detailRowBorderStyle]}>
+                      <Text style={[ui.text, { color: palette.muted, fontWeight: '700' }]}>Promotional APR</Text>
+                      {canEdit && (detailDraft.promoApr || detailDraft.promoEndDate || detailDraft.postPromoApr) ? <Pressable accessibilityRole="button" onPress={() => updateDetailDraft(prev => ({ ...prev, promoApr: '', promoEndDate: '', postPromoApr: '' }))}><Text style={{ color: palette.brand, fontWeight: '600' }}>Clear</Text></Pressable> : null}
+                    </View>
+                    {(['promoApr', 'postPromoApr'] as const).map(field => <View key={field} style={[detailRowStyle, detailRowBorderStyle]}>
+                      <Text style={[ui.text, { color: palette.muted }]}>{field === 'promoApr' ? 'Promo APR' : 'After promo APR'}</Text>
+                      <View style={detailPillStyle}>
+                        <TextInput editable={canEdit} accessibilityLabel={field === 'promoApr' ? 'Promo APR %' : 'After promo APR %'} style={detailMoneyInputStyle} keyboardType="decimal-pad" value={detailDraft[field]} onChangeText={value => updateDetailDraft(prev => ({ ...prev, [field]: acceptAprEdit(prev[field], value) }))} placeholder="Optional" placeholderTextColor={palette.muted} />
+                        <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>%</Text>
+                      </View>
+                    </View>)}
+                    <Pressable accessibilityRole="button" accessibilityLabel="Promo ends" disabled={!canEdit} onPress={() => setShowPromoPicker(true)} style={detailRowStyle}>
+                      <Text style={[ui.text, { color: palette.muted }]}>Promo ends</Text>
+                      <View style={[ui.row, { gap: 6, alignItems: 'center' }]}>
+                        <Text style={[ui.text, { color: detailDraft.promoEndDate ? palette.text : palette.brand, fontWeight: '600' }]}>
+                          {detailDraft.promoEndDate ? formatShortDate(detailDraft.promoEndDate) : canEdit ? 'Choose date' : 'Not set'}
+                        </Text>
+                        {canEdit ? <AppIcon name="calendar" size={16} color={palette.brand} /> : null}
+                      </View>
+                    </Pressable>
+                  </>
+                ) : null}
               </>
             ) : null}
 

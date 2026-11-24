@@ -1196,14 +1196,16 @@ function BudgetScreenInner({
                       <View style={[ui.iconCircle, { width: 34, height: 34, borderRadius: 17, borderWidth: 0, backgroundColor: catColor + '18' }]}>
                         <AppIcon name={icon} size={18} color={catColor} />
                       </View>
-                      <View style={{ flex: 1 }}>
-                        <View style={[ui.row, { gap: 6, alignItems: 'baseline' }]}>
-                          <Text style={[ui.heading, { fontSize: 16, flexShrink: 1 }]}>{item.label}</Text>
-                          <Text style={[ui.small, { color: catColor, fontWeight: '700', fontSize: 13 }]}>{budgetUnresolved ? 'N/A' : item.percentOfIncome + '%'}</Text>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <View style={[ui.row, { gap: 6, alignItems: 'center', flexWrap: 'nowrap' }]}>
+                          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85} ellipsizeMode="tail" style={[ui.heading, { fontSize: 16, flexShrink: 1 }]}>{item.label}</Text>
+                          <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999, backgroundColor: catColor + '18', flexShrink: 0 }}>
+                            <Text numberOfLines={1} style={[ui.small, { color: catColor, fontWeight: '700', fontSize: 12 }]}>{budgetUnresolved ? 'N/A' : `${item.percentOfIncome}%`}</Text>
+                          </View>
                         </View>
-                        <Text style={ui.small}>
+                        <Text numberOfLines={1} style={ui.small}>
                             {isDebt
-                              ? 'Card minimums + extra'
+                              ? 'Minimum + extra'
                               : item.count > 0
                                 ? (matchingUnifiedLoans.length > 0
                                     ? `${item.count} active ${item.count === 1 ? 'item' : 'items'}`
@@ -1212,7 +1214,7 @@ function BudgetScreenInner({
                         </Text>
                       </View>
                     </View>
-                    <View style={{ alignItems: 'flex-end', maxWidth: '45%', minWidth: 0, flexShrink: 1 }}>
+                    <View style={{ alignItems: 'flex-end', flexShrink: 0 }}>
                       <AmountText style={[ui.value, { color: catColor, textAlign: 'right' }]} value={budgetUnresolved ? 'Review needed' : formatCurrency(item.amount, currencySymbol)} />
                     </View>
                     <AppIcon name={expandedCategory === item.categoryKey ? 'chevronDown' : 'chevronRight'} size={15} color="#AAB3AD" />

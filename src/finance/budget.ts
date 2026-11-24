@@ -239,7 +239,7 @@ export function calculateCategoryBreakdown(params: {
   const income = roundedAmount(monthlyIncome, currency);
   const debt = roundedAmount(Math.max(0, monthlyDebtPlanPayment - (params.pairedDebtMinimums ?? 0)), currency);
   return [
-    { categoryKey: 'debt', label: 'Debt payments', amount: debt, percentOfIncome: percentage(debt, income), count: params.debtAccountCount ?? 1 },
+    { categoryKey: 'debt', label: 'Payoff Budget', amount: debt, percentOfIncome: percentage(debt, income), count: params.debtAccountCount ?? 1 },
     ...Object.entries(categoryTotals).map(([key, data]) => {
       const amount = moneyToMajor(data.total);
       return { categoryKey: key, label: data.label, amount, percentOfIncome: percentage(amount, income), count: data.count };

@@ -1324,6 +1324,36 @@ export const TransactionsScreen = memo(function TransactionsScreen({
             </Card>
           </View>
 
+          {canEdit ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Import CSV"
+              onPress={() => setShowCsvImport(true)}
+              style={[
+                ui.button,
+                {
+                  minHeight: 42,
+                  borderRadius: 13,
+                  paddingHorizontal: 14,
+                  marginVertical: 2,
+                  backgroundColor: palette.surface,
+                  borderWidth: isInspire ? 1.5 : 1,
+                  borderColor: palette.cardBorder,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                },
+              ]}
+            >
+              <View style={[ui.row, { gap: 8, alignItems: 'center', flex: 1, minWidth: 0 }]}>
+                <AppIcon name="plus" size={16} color={palette.brand} />
+                <Text numberOfLines={1} style={[ui.buttonText, { color: palette.text, fontSize: 13.5, fontWeight: '700' }]}>Import CSV</Text>
+                <Text numberOfLines={1} style={[ui.small, { color: palette.muted, flexShrink: 1 }]}>Bank or card CSV</Text>
+              </View>
+              <AppIcon name="chevronRight" size={15} color={palette.muted} />
+            </Pressable>
+          ) : null}
+
           <View style={[ui.row, { gap: 6, marginVertical: 2 }]}>
             <Pressable
               accessibilityRole="button"
@@ -1422,29 +1452,6 @@ export const TransactionsScreen = memo(function TransactionsScreen({
             >
               <AppIcon name="sort" size={18} color={sort !== 'newest' ? palette.brand : palette.accentInk} />
             </Pressable>
-            {canEdit ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Import CSV"
-                onPress={() => setShowCsvImport(true)}
-                style={[
-                  ui.button,
-                  {
-                    height: 42,
-                    minHeight: 42,
-                    borderRadius: 21,
-                    paddingHorizontal: 10,
-                    backgroundColor: palette.surface,
-                    borderWidth: isInspire ? 1.5 : 1,
-                    borderColor: palette.cardBorder,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  },
-                ]}
-              >
-                <Text style={{ color: palette.brand, fontSize: 12, fontWeight: '700' }}>CSV</Text>
-              </Pressable>
-            ) : null}
           </View>
           {searchOpen ? (
             <View style={[ui.inputWrap, { marginVertical: 2, paddingHorizontal: 12 }]}>

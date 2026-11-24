@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { makeMoney } from '../src/finance/money.ts';
 import { calculatePayoff, calculateSnowflakeImpact, calculateConsolidationComparison } from '../src/finance/payoff.ts';
-import { calculatePayoffPlan, createDefaultOnboardingData } from '../src/onboarding-domain.ts';
+import { calculatePayoffPlan, calculateStrategyScenario, comparePayoffStrategies, createDefaultOnboardingData } from '../src/onboarding-domain.ts';
 import { validateNativeBackup } from '../src/finance/backup.ts';
-import { calculateBillMonthlyReserve, calculateSafeExtraToday } from '../src/finance/budget.ts';
+import { calculateBillMonthlyReserve, calculateCategoryBreakdown, calculateSafeExtraToday } from '../src/finance/budget.ts';
 import { calculateUtilizationAdvisor } from '../src/finance/progress.ts';
 import { buildMilestoneNotificationPayloads } from '../src/notifications.ts';
 import { buildTransactionsCsv, parseBankCsv, buildSplitTransactionPayloads, detectRecurringCandidates } from '../src/finance/csv.ts';
@@ -87,11 +88,11 @@ test('transaction CSV uses RFC-4180 quote escaping', () => {
   assert.equal(csv, 'Date,Type,AccountOrBill,Category,Payee,Amount,Memo\r\n2026-01-01,manual,Card,purchase,"Cafe, ""North""",12.34,"first line\nsecond"');
 });
 
-test('bank CSV parses both date formats and flags likely duplicates', () => {
-  const existing = [{ id: 'old', date: '2026-01-02', amount: money(12.5), deletedAt: null }];
-  const rows = parseBankCsv('Date,Description,Amount\n01/02/2026,Market,12.50\n2026-01-03,Bookshop,8.00', existing, 'USD');
-  assert.deepEqual(rows.map(row => row.date), ['2026-01-02', '2026-01-03']);
-  assert.deepEqual(rows.map(row => row.likelyDuplicate), [true, false]);
+test('bank CSV parses both date formats, flags matching duplicates, and keeps distinct same-day payees', () => {
+  const existing = [{ id: 'old', date: '2026-01-02', payee: 'Coffee Corner', amount: money(12.5), deletedAt: null }];
+  const rows = parseBankCsv('Date,Description,Amount\n01/02/2026,Coffee Corner,12.50\n01/02/2026,Market,12.50\n2026-01-03,Bookshop,8.00', existing, 'USD');
+  assert.deepEqual(rows.map(row => row.date), ['2026-01-02', '2026-01-02', '2026-01-03']);
+  assert.deepEqual(rows.map(row => row.likelyDuplicate), [true, false, false]);
 });
 
 test('split transaction payloads require exact sum and recurring purchases match monthly', () => {
@@ -101,4 +102,33 @@ test('split transaction payloads require exact sum and recurring purchases match
   const tx = (id, date) => ({ id, date, payee: 'Gym Membership', source: 'manual', category: 'purchase', amount: money(49.99), deletedAt: null });
   const candidates = detectRecurringCandidates([tx('jan', '2026-01-05'), tx('feb', '2026-02-04')], []);
   assert.equal(candidates.length, 1); assert.deepEqual(candidates[0].transactionIds, ['jan', 'feb']);
+});
+
+test('custom strategy comparison, budget Payoff Budget label, UI contracts, and SQL settings allowlist align', () => {
+  const debt = (id, apr) => ({ id, name: id, category: 'Credit card', balance: 1000, originalBalance: null, apr, minimumPayment: 100, dueDay: null, creditLimit: null });
+  const comparison = comparePayoffStrategies([debt('high-apr', 30), debt('custom-first', 10)], 'custom', 100, new Date('2026-01-01T12:00:00Z'), 'USD', 'UTC', [], 0, 1, undefined, ['custom-first', 'high-apr']);
+  assert.equal(comparison.activePlan.payoffOrder[0].id, 'custom-first');
+  const scenario = calculateStrategyScenario({ debts: [debt('high-apr', 30), debt('custom-first', 10)], strategy: 'custom', baselineExtraMonthlyPayment: 100, monthlyExtraAmount: 100, baseDate: new Date('2026-01-01T12:00:00Z'), currencyCode: 'USD', householdTimeZone: 'UTC', customPayoffOrder: ['custom-first', 'high-apr'] });
+  assert.equal(scenario.firstPayment.allocations[0].accountId, 'custom-first');
+  assert.equal(scenario.firstPayment.allocations[0].scenarioExtraPaid, 100);
+
+  const rows = calculateCategoryBreakdown({ recurringBills: [], monthlyIncome: 1000, monthlyDebtPlanPayment: 250, currencyCode: 'USD' });
+  assert.equal(rows[0].label, 'Payoff Budget');
+
+  const debtSrc = readFileSync(new URL('../src/screens/DebtScreen.tsx', import.meta.url), 'utf8');
+  assert.match(debtSrc, /accessibilityLabel="Advanced account options"/);
+  assert.match(debtSrc, /Custom payoff order active/);
+  assert.match(debtSrc, /Tap ↑ ↓ to reorder/);
+
+  const txSrc = readFileSync(new URL('../src/screens/TransactionsScreen.tsx', import.meta.url), 'utf8');
+  assert.match(txSrc, /accessibilityLabel="Import CSV"/);
+
+  const budgetSrc = readFileSync(new URL('../src/screens/BudgetScreen.tsx', import.meta.url), 'utf8');
+  assert.match(budgetSrc, /'Minimum \+ extra'/);
+
+  const sql = readFileSync(new URL('../supabase/migrations/20261124100000_quiet_complexity_household_settings.sql', import.meta.url), 'utf8');
+  for (const field of ['promoTermsByDebtId', 'customPayoffOrder', 'minimumModeByDebtId', 'variableCategoryCaps', 'irregularBillScheduleByBillId']) {
+    assert.match(sql, new RegExp(`'${field}'`));
+  }
+  assert.match(sql, /'custom'/);
 });
