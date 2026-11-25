@@ -28,7 +28,7 @@ import {
 import { makeMoney, moneyFromMajor, moneyToMajor, parseMoney, addMoney, type Money } from '../finance/money';
 import { currentHouseholdDate, currentHouseholdMonth, getNextMonthString, getPreviousMonthString, parseDateOnly, type DateOnly } from '../finance/calendar';
 import { resolveRecurringBillDate, type RecurringBill } from '../finance/recurring-bills';
-import { findUnassignedPaymentsForObligation, getScheduledObligationRows, resolveEffectiveDebtSchedule, type ScheduledObligationRow } from '../finance/payment-matching';
+import { autoTagTransactionForBills, findUnassignedPaymentsForObligation, getScheduledObligationRows, resolveEffectiveDebtSchedule, type ScheduledObligationRow } from '../finance/payment-matching';
 import { getObligationCycle, type ObligationSchedules } from '../finance/obligation-schedule';
 import { AnnualFeeSchedule, getAnnualFeeRows } from '../components/AnnualFeeSchedule';
 import { clampDate, firstEligibleSplitTerm, getPlannedDebtInstallments, resolveDebtSplitPlanState, type DebtPaymentSplitPlansByDebtId, type BillPaymentSplitPlansByBillId } from '../finance/debt-payment-split';
@@ -1144,7 +1144,8 @@ export const TransactionsScreen = memo(function TransactionsScreen({
   const handleAddTxRecord = useCallback(async (tx: LedgerTransaction) => {
     if (!canEdit) return;
     if (onAddTransaction) {
-      const res = await onAddTransaction(tx);
+      const taggedTx = autoTagTransactionForBills(tx, recurringBills, obligationSchedules);
+      const res = await onAddTransaction(taggedTx);
       if (res && (res as { outcome?: string }).outcome === 'pending') {
         Alert.alert(
           'Saved Locally (Pending Confirmation)',
@@ -1153,7 +1154,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
       }
     }
     setShowAddForm(false);
-  }, [canEdit, onAddTransaction]);
+  }, [canEdit, obligationSchedules, onAddTransaction, recurringBills]);
 
   const closeAddForm = useCallback(() => {
     setShowAddForm(false);
@@ -1182,7 +1183,8 @@ export const TransactionsScreen = memo(function TransactionsScreen({
   const handleUpdateTxRecord = useCallback(async (updatedTx: LedgerTransaction) => {
     if (!canEdit) return;
     if (onUpdateTransaction) {
-      const res = await onUpdateTransaction(updatedTx);
+      const taggedTx = autoTagTransactionForBills(updatedTx, recurringBills, obligationSchedules);
+      const res = await onUpdateTransaction(taggedTx);
       if (res && (res as { outcome?: string }).outcome === 'pending') {
         Alert.alert(
           'Updated Locally (Pending Confirmation)',
@@ -1192,7 +1194,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
     }
     setEditingTx(null);
     onEditDismiss?.();
-  }, [canEdit, onEditDismiss, onUpdateTransaction]);
+  }, [canEdit, obligationSchedules, onEditDismiss, onUpdateTransaction, recurringBills]);
 
   const handleDeleteTx = async () => {
     const target = confirmDeleteTx ?? editingTx;
