@@ -2,7 +2,7 @@
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { getCurrency } from './currencies.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
-import { addMoney, makeMoney, moneyFromMajor, moneyToMajor } from './money.ts';
+import { addMoney, makeMoney, moneyFromMajor, moneyToMajor, multiplyMoneyRatio, type Money } from './money.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { type RecurringBill } from './recurring-bills.ts';
 // @ts-ignore TS5097
@@ -239,7 +239,7 @@ export function calculateCategoryBreakdown(params: {
   const income = roundedAmount(monthlyIncome, currency);
   const debt = roundedAmount(Math.max(0, monthlyDebtPlanPayment - (params.pairedDebtMinimums ?? 0)), currency);
   return [
-    { categoryKey: 'debt', label: 'Debt payments', amount: debt, percentOfIncome: percentage(debt, income), count: params.debtAccountCount ?? 1 },
+    { categoryKey: 'debt', label: 'Payoff Budget', amount: debt, percentOfIncome: percentage(debt, income), count: params.debtAccountCount ?? 1 },
     ...Object.entries(categoryTotals).map(([key, data]) => {
       const amount = moneyToMajor(data.total);
       return { categoryKey: key, label: data.label, amount, percentOfIncome: percentage(amount, income), count: data.count };
@@ -676,4 +676,25 @@ export function summarizeAnnualCardFeesMonthly(
     monthlySinkingReserve: cardCount > 0 ? roundToCurrency(roundedAnnual / 12) : 0,
     cardCount,
   };
+}
+
+export type BillFrequency = 'monthly' | 'quarterly' | 'semiannual' | 'annual';
+
+export function irregularMonthlyFactor(frequency: BillFrequency): number {
+  const periods: Record<BillFrequency, number> = { monthly: 1, quarterly: 3, semiannual: 6, annual: 12 };
+  if (!(frequency in periods)) throw new RangeError('Invalid bill frequency');
+  return 1 / periods[frequency];
+}
+
+export function calculateBillMonthlyReserve(amount: Money, frequency: BillFrequency): Money {
+  const periods: Record<BillFrequency, bigint> = { monthly: 1n, quarterly: 3n, semiannual: 6n, annual: 12n };
+  if (!(frequency in periods)) throw new RangeError('Invalid bill frequency');
+  return multiplyMoneyRatio(amount, 1n, periods[frequency]);
+}
+
+export function calculateSafeExtraToday(params: { remainingMonthlyCashflow: number; unsettled14dObligations: number; variableCapOverage?: number; currencyCode: string }): { safeExtraAmount: number; status: 'surplus' | 'tight' | 'deficit' } {
+  const values = [params.remainingMonthlyCashflow, params.unsettled14dObligations, params.variableCapOverage ?? 0];
+  if (values.some(value => !Number.isFinite(value)) || values[1] < 0 || values[2] < 0) throw new RangeError('Invalid cashflow values');
+  const net = addMoney(addMoney(moneyFromMajor(values[0], params.currencyCode), moneyFromMajor(-values[1], params.currencyCode)), moneyFromMajor(-values[2], params.currencyCode)).minorUnits;
+  return { safeExtraAmount: moneyToMajor(makeMoney(params.currencyCode, Math.max(0, net))), status: net > 0 ? 'surplus' : net === 0 ? 'tight' : 'deficit' };
 }

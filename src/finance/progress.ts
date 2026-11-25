@@ -4,7 +4,7 @@ import { type DateOnly } from './calendar.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { type LedgerTransaction, calculateTransactionBalanceDelta } from './ledger.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
-import { moneyToMajor } from './money.ts';
+import { moneyToMajor, moneyFromMajor } from './money.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { getCurrency } from './currencies.ts';
 
@@ -17,6 +17,7 @@ export type ProgressDebtItem = Readonly<{
   balance: number;
   originalBalance: number | null;
   creditLimit: number | null;
+  apr?: number;
 }>;
 
 export type ActivitySummary = Readonly<{
@@ -428,4 +429,19 @@ export function calculateMilestones(params: {
     progressMilestone('progress_75', '75% Debt Free', 75),
     progressMilestone('progress_100', '100% Debt Free', 100),
   ];
+}
+
+/** Suggest a tracked card with utilization above 30%, prioritizing highest APR when known. */
+export function calculateUtilizationAdvisor(debts: readonly ProgressDebtItem[], currencyCode = 'USD'): { bestCardId: string; cardName: string; currentPercent: number; projectedCardPercent: number; paydownTo30: number; projectedOverallPercent: number } | null {
+  const tracked = debts.filter(d => d.category === 'Credit card' && d.creditLimit !== null && d.creditLimit > 0 && Number.isFinite(d.balance));
+  const candidates = tracked.filter(d => d.balance / d.creditLimit! > 0.3);
+  candidates.sort((a, b) => (b.apr ?? -1) - (a.apr ?? -1) || b.balance / b.creditLimit! - a.balance / a.creditLimit! || b.balance - a.balance || a.id.localeCompare(b.id));
+  const card = candidates[0];
+  if (!card) return null;
+  const balance = moneyFromMajor(card.balance, currencyCode).minorUnits;
+  const limit = moneyFromMajor(card.creditLimit!, currencyCode).minorUnits;
+  const paydown = Math.max(0, balance - Number(BigInt(limit) * 3n / 10n));
+  const totalLimit = tracked.reduce((sum, d) => sum + moneyFromMajor(d.creditLimit!, currencyCode).minorUnits, 0);
+  const totalUsed = tracked.reduce((sum, d) => sum + Math.max(0, moneyFromMajor(d.balance, currencyCode).minorUnits), 0);
+  return { bestCardId: card.id, cardName: card.name, currentPercent: balance / limit * 100, projectedCardPercent: (balance - paydown) / limit * 100, paydownTo30: moneyToMajor({ currency: currencyCode, minorUnits: paydown }), projectedOverallPercent: (totalUsed - paydown) / totalLimit * 100 };
 }

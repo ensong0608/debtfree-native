@@ -7,8 +7,9 @@ import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Crypto from 'expo-crypto';
-import { CALLBACK, classifyAuthError, parseCallback, productionConfigProblem, sandboxConfigProblem } from './auth-guards';
+import { CALLBACK, classifyAuthError, isEmailPasswordAuthEnabled, parseCallback, productionConfigProblem, sandboxConfigProblem, validateEmailPasswordInput } from './auth-guards';
 import { createChunkedStorage, type KeyValueStore } from './secure-chunks';
+export { isEmailPasswordAuthEnabled, validateEmailPasswordInput } from './auth-guards';
 
 // React Native's Hermes runtime does not provide WebCrypto's subtle.digest by default; without it,
 // @supabase/auth-js downgrades PKCE from S256 to plain. Wire expo-crypto into globalThis.crypto first.
@@ -155,6 +156,47 @@ export async function verifiedSession(): Promise<Session | null> {
   const confirmed = { ...data.session, user: identity.user };
   verifiedIdentities.set(confirmed, { user: identity.user, verifiedAt: Date.now() });
   return confirmed;
+}
+
+const emailErrors: Partial<Record<ReturnType<typeof classifyAuthError>, string>> = {
+  invalid_credentials: 'Incorrect email or password.',
+  email_not_confirmed: 'Confirm your email address before signing in.',
+  user_already_registered: 'An account with this email already exists. Try signing in.',
+  weak_password: 'Choose a stronger password.',
+  rate_limit: 'Too many attempts. Please wait and try again.',
+};
+
+async function emailAuth(email: string, password: string, signUp: boolean): Promise<{ session: Session | null; needsEmailConfirmation: boolean }> {
+  if (!isEmailPasswordAuthEnabled()) throw new Error('Email sign-in is not available.');
+  const validation = validateEmailPasswordInput(email, password);
+  if (validation) throw new Error(validation);
+  const supabase = getClient();
+  storageFailed = false;
+  let result: Awaited<ReturnType<typeof supabase.auth.signUp>>;
+  try {
+    result = signUp
+      ? await supabase.auth.signUp({ email: email.trim(), password })
+      : await supabase.auth.signInWithPassword({ email: email.trim(), password });
+  } catch (error) { throw failure(error, 'Email sign-in could not be completed. Please try again.'); }
+  if (result.error) {
+    const category = classifyAuthError(result.error);
+    if (result.error.status === 429 && !storageFailed) throw new Error(emailErrors.rate_limit);
+    const message = emailErrors[category];
+    throw failure(result.error, message ?? 'Email sign-in could not be completed. Please try again.');
+  }
+  if (!result.data.session) {
+    if (signUp) return { session: null, needsEmailConfirmation: true };
+    throw new Error(MESSAGES.unverified);
+  }
+  await releaseSignedOutLock();
+  const session = await verifiedSession();
+  if (!session) throw new Error(MESSAGES.unverified);
+  return { session, needsEmailConfirmation: false };
+}
+
+export function signUpWithEmail(email: string, password: string) { return emailAuth(email, password, true); }
+export async function signInWithEmail(email: string, password: string): Promise<Session | null> {
+  return (await emailAuth(email, password, false)).session;
 }
 
 // Authorization codes already submitted in this process; a replayed callback is rejected before reaching the server.

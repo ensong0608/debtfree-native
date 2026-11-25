@@ -393,10 +393,11 @@ export function ObligationPaySheet({
     <SheetModal visible={!readOnly && target !== null} onClose={handleClose}>
       <Card style={{ padding: 0, borderWidth: 0, shadowOpacity: 0, elevation: 0 }}>
         <SheetFormHeader
-          title={`Payment for ${normalizeDisplayName(target?.name ?? '')}`}
+          title={`Record payment for ${normalizeDisplayName(target?.name ?? '')}`}
           closeLabel="Close payment details"
           onClose={handleClose}
         />
+        <Text style={ui.small}>Records a payment in your BitLess ledger. BitLess does not connect to banks or move money.</Text>
         <Text style={ui.small}>
           {target?.installmentLabel ? `Due ${target?.dueDate ?? ''} · ${target.installmentLabel}` : `Due ${target?.dueDate ?? ''}`}
         </Text>

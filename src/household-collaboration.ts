@@ -11,6 +11,7 @@ import { RestoreRejectedError, type RestoreAdapter, type RestoreReceipt, type Re
 import type { BackupOwner, NativeBackup } from './finance/backup.ts';
 
 export const HOUSEHOLD_INVITE_SCHEME = 'com.debtfree.native.test';
+const OFFICIAL_DOMAIN = process.env.EXPO_PUBLIC_OFFICIAL_DOMAIN?.trim() || 'https://ensong0608.github.io/debtfree-native';
 
 export type HouseholdInvitationRole = 'member' | 'viewer';
 
@@ -32,7 +33,7 @@ export type HouseholdMemberSummary = {
 };
 
 export type InviteDeliveryStatus = {
-  status: 'sent' | 'failed' | 'unconfigured';
+  status: 'sent' | 'failed' | 'unconfigured' | 'skipped';
   message: string;
 };
 
@@ -232,8 +233,8 @@ export function buildHouseholdInviteWebUrl(rawToken: string, baseUrl?: string): 
   if (token.length < 32 || token.length > 128 || /\s/.test(token)) {
     throw new Error('Invalid invite token.');
   }
-  void baseUrl;
-  return 'https://bitless-household-invite.ensong608.chatgpt.site/#token=' + encodeURIComponent(token);
+  const normalizedBase = (baseUrl?.trim() || OFFICIAL_DOMAIN).replace(/\/+$/, '');
+  return `${normalizedBase}/invite/#token=${encodeURIComponent(token)}`;
 }
 
 export function parseHouseholdInviteInput(input: string, options?: { allowedHosts?: string[] }): string | null {
@@ -259,7 +260,15 @@ export function parseHouseholdInviteInput(input: string, options?: { allowedHost
 
     if (protocol === 'https' || protocol === 'http') {
       const hostname = parsed.hostname.toLowerCase();
-      const isAllowedHost = hostname === 'bitless-household-invite.ensong608.chatgpt.site'
+      let configuredHostname = '';
+      try {
+        configuredHostname = new URL(OFFICIAL_DOMAIN).hostname.toLowerCase();
+      } catch {
+        // Ignore an invalid optional domain and retain the built-in allowlist.
+      }
+      const isAllowedHost = hostname === 'ensong0608.github.io'
+        || Boolean(configuredHostname && hostname === configuredHostname)
+        || hostname === 'bitless-household-invite.ensong608.chatgpt.site'
         || hostname.endsWith('.supabase.co')
         || hostname === 'supabase.co'
         || hostname === 'debtfree.app'
@@ -364,7 +373,7 @@ export async function listHouseholdInvitations(
       const row = asRecord(item) ?? {};
       return {
         invitationId: String(row.invitationId ?? ''),
-        emailHint: String(row.emailHint ?? ''),
+        emailHint: typeof row.emailHint === 'string' && row.emailHint.trim() ? row.emailHint.trim() : 'Shareable invite link',
         role: normalizeInviteRole(row.role),
         expiresAt: String(row.expiresAt ?? ''),
         expired: Boolean(row.expired),
@@ -377,14 +386,15 @@ export async function listHouseholdInvitations(
 export async function createHouseholdInvitation(
   session: Session,
   context: HouseholdContext,
-  params: { inviteeEmail: string; role: HouseholdInvitationRole },
+  params: { inviteeEmail?: string | null; role: HouseholdInvitationRole },
 ): Promise<CreatedOrRotatedInviteResult> {
   const verified = assertSignedInContext(session, context);
   if (verified.role !== 'owner') {
     throw new Error('Only the household owner can invite members.');
   }
-  const email = params.inviteeEmail.trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  const normalizedEmail = (params.inviteeEmail ?? '').trim().toLowerCase();
+  const email = normalizedEmail.length > 0 ? normalizedEmail : null;
+  if (email !== null && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new Error('Enter a valid email address for the invitee.');
   }
 
@@ -424,7 +434,15 @@ export async function createHouseholdInvitation(
   }
 
   const invitationId = resultRecord.invitationId;
-  const deliveryResult = await deliverInvitationEmail(supabase, verified.householdId, invitationId, rawToken);
+  const deliveryResult: { deliveryState: 'prepared' | 'sent' | 'uncertain'; delivery: InviteDeliveryStatus } = email !== null
+    ? await deliverInvitationEmail(supabase, verified.householdId, invitationId, rawToken)
+    : {
+      deliveryState: 'prepared',
+      delivery: {
+        status: 'skipped',
+        message: 'Shareable invite link ready. Send it via text, chat, or any app.',
+      },
+    };
 
   return {
     invitationId,
@@ -464,7 +482,15 @@ export async function rotateHouseholdInvitation(
     throw new Error(formatRpcError(error, 'Could not refresh household invitation.'));
   }
 
-  const deliveryResult = await deliverInvitationEmail(supabase, verified.householdId, record.invitationId, rawToken);
+  const deliveryResult: { deliveryState: 'prepared' | 'sent' | 'uncertain'; delivery: InviteDeliveryStatus } = record.hasEmail === false
+    ? {
+      deliveryState: 'prepared',
+      delivery: {
+        status: 'skipped',
+        message: 'Fresh shareable invite link ready. Send it via text, chat, or any app.',
+      },
+    }
+    : await deliverInvitationEmail(supabase, verified.householdId, record.invitationId, rawToken);
 
   return {
     invitationId: record.invitationId,

@@ -30,7 +30,31 @@ export function decodeDebtAmount(value: number | string, currency: string, signe
 export function canonicalOptionalDebtAmount(value: number | string | null | undefined, currency: string): string | null {
   return value == null ? null : canonicalDebtAmount(value, currency);
 }
+export function validateExtendedSettings(data: UserOnboardingData): void {
+  const record = (value: unknown): Record<string, any> => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Invalid settings map');
+    return value as Record<string, any>;
+  };
+  const entries = (value: unknown) => Object.entries(record(value));
+  const validId = (id: string) => { if (!id.trim() || id !== id.trim()) throw new TypeError('Invalid settings ID'); };
+  if (data.promoTermsByDebtId !== undefined) for (const [id, raw] of entries(data.promoTermsByDebtId)) {
+    validId(id); const term = record(raw);
+    if (!data.debts.some(d => d.id === id && d.category === 'Credit card')) throw new TypeError('Promo requires a credit card');
+    for (const rate of [term.promoApr, term.postPromoApr]) if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0 || rate > 100) throw new TypeError('Invalid promotional APR');
+    parseDateOnly(term.promoEndDate);
+  }
+  if (data.customPayoffOrder !== undefined && (!Array.isArray(data.customPayoffOrder) || data.customPayoffOrder.some(id => typeof id !== 'string' || !id.trim() || id !== id.trim()))) throw new TypeError('Invalid custom payoff order');
+  if (data.minimumModeByDebtId !== undefined) for (const [id, mode] of entries(data.minimumModeByDebtId)) { validId(id); if (mode !== 'manual' && mode !== 'auto') throw new TypeError('Invalid minimum mode'); }
+  if (data.variableCategoryCaps !== undefined) for (const [id, cap] of entries(data.variableCategoryCaps)) { validId(id); if (typeof cap !== 'number' || !Number.isFinite(cap) || cap < 0) throw new TypeError('Invalid category cap'); }
+  if (data.irregularBillScheduleByBillId !== undefined) for (const [id, raw] of entries(data.irregularBillScheduleByBillId)) {
+    validId(id); const schedule = record(raw);
+    if (!['monthly', 'quarterly', 'semiannual', 'annual'].includes(schedule.frequency)) throw new TypeError('Invalid bill frequency');
+    if (schedule.nextDueDate !== undefined) parseDateOnly(schedule.nextDueDate);
+  }
+}
+
 export function validateStoredAmounts(data: UserOnboardingData): void {
+  validateExtendedSettings(data);
   if (data.householdName !== undefined && (typeof data.householdName !== 'string' || !data.householdName.trim() || data.householdName !== data.householdName.trim() || data.householdName.length > 120)) throw new TypeError('Invalid household name');
   const currency = resolveCurrencyOption(data).code;
   canonicalDebtAmount(data.primaryIncomeAmount, currency);

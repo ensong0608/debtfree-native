@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Join a household | BitLess</title>
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+  <header class="header"><div class="wrap header-inner">
+    <a class="brand" href="../">Debt<span>Free</span></a>
+    <nav aria-label="Main navigation"><a href="../help/">Help</a><a href="../privacy/">Privacy</a><a href="../terms/">Terms</a></nav>
+  </div></header>
+  <main class="wrap">
+    <section class="hero">
+      <p class="eyebrow">Household invitation</p>
+      <h1>Join your household in BitLess</h1>
+      <p id="status" role="status">Preparing your invitation…</p>
+    </section>
+    <section class="card" aria-labelledby="code-heading">
+      <h2 id="code-heading">Your invite code</h2>
+      <p>Open BitLess and enter this code when asked to accept a household invitation.</p>
+      <p><code id="invite-code">No valid code was found in this link.</code></p>
+      <button class="button" id="copy-code" type="button" disabled>Copy invite code</button>
+      <p class="meta">If the app did not open automatically, open BitLess, choose the household invitation option, and paste this code.</p>
+    </section>
+    <p class="meta"><a href="../">Back to BitLess</a></p>
+  </main>
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      const token = (params.get('token') || '').trim();
+      const valid = token.length >= 32 && token.length <= 128 && !/\s/.test(token);
+      const code = document.getElementById('invite-code');
+      const status = document.getElementById('status');
+      const copy = document.getElementById('copy-code');
+      if (!valid) {
+        status.textContent = 'This invitation link is missing a valid invite code. Ask the household owner to send a fresh invitation.';
+        return;
+      }
+      code.textContent = token;
+      copy.disabled = false;
+      copy.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(token);
+          status.textContent = 'Invite code copied. Open BitLess and paste it to join.';
+        } catch {
+          status.textContent = 'Select and copy the invite code above, then paste it in BitLess.';
+        }
+      });
+      status.textContent = 'Opening BitLess… If it does not open, copy the code below and enter it in the app.';
+      window.location.href = 'debtfree://invite?token=' + encodeURIComponent(token);
+    })();
+  </script>
+</body>
+</html>
