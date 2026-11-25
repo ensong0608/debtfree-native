@@ -1,5 +1,7 @@
 # DebtFree public pages — review draft
 
+GitHub Pages staging URL: <https://ensong0608.github.io/debtfree-native>. The household invite landing page is at <https://ensong0608.github.io/debtfree-native/invite/>. Replace this staging domain by setting `EXPO_PUBLIC_OFFICIAL_DOMAIN` in the app and `DFN_OFFICIAL_DOMAIN` in the invitation Edge Function after purchasing and configuring a custom domain.
+
 These static pages are a local review draft for the official Help, Privacy, Terms, and account-deletion URLs. They are not published and must not be deployed while the draft banner or any `[[...]]` placeholder remains.
 
 Each HTML file also has a `noindex` directive while it is a draft. Remove the draft banners and `noindex` directives only after all facts and contact paths have been verified for the public release.

@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  autoTagTransactionForBills,
   buildTransactionObligationIndex,
   calculateOverdueObligations,
   findUnassignedPaymentsForObligation,
   getObligationPaymentState,
+  getPaidMonthlyObligationKeys,
   getScheduledObligationRows,
   matchPaymentsToObligation,
   paymentMatchesObligation,
@@ -438,4 +440,52 @@ test('findUnassignedPaymentsForObligation surfaces manual bill charges and same-
   assert.equal(getObligationPaymentState(debitBillObligation, [matchedDebit], 'USD').status, 'paid');
   assert.equal(paymentMatchesObligation(matchedDebt, debtObligation), true);
   assert.equal(getObligationPaymentState(debtObligation, [matchedDebt], 'USD').status, 'paid');
+});
+
+test('auto-matches unlinked debit bill payments 1-to-1 and respects mid-month bill creation when paid', () => {
+  const hoaBill = {
+    id: 'bill-hoa',
+    name: 'HOA',
+    category: 'housing',
+    amount: makeMoney('USD', 16300),
+    dueDay: 1,
+    paymentMethod: 'debit',
+    active: true,
+    autoPost: false,
+    createdAt: '2026-11-05T00:00:00Z',
+    updatedAt: '2026-11-05T00:00:00Z',
+  };
+  const unlinkedHoaTx = makeTx({
+    id: 'tx:hoa-nov',
+    accountId: null,
+    date: '2026-11-02',
+    appliesToDate: null,
+    amount: makeMoney('USD', 16300),
+    category: 'debit_spending',
+    payee: 'HOA',
+    memo: '',
+  });
+
+  const paid = getPaidMonthlyObligationKeys({
+    month: '2026-11',
+    debts: [],
+    recurringBills: [hoaBill],
+    transactions: [unlinkedHoaTx],
+    currencyCode: 'USD',
+    historicalBillIdsByDebtId: {},
+  });
+  assert.equal(paid.has('bill:bill-hoa'), true);
+
+  const overdue = calculateOverdueObligations({
+    debts: [],
+    recurringBills: [{ ...hoaBill, createdAt: '2026-10-01T00:00:00Z' }],
+    transactions: [unlinkedHoaTx],
+    asOfDate: '2026-11-24',
+    currencyCode: 'USD',
+  });
+  assert.equal(overdue.some(item => item.bill?.id === 'bill-hoa' && item.dueCycleMonth === '2026-11'), false);
+
+  const tagged = autoTagTransactionForBills(unlinkedHoaTx, [hoaBill]);
+  assert.equal(tagged.appliesToDate, '2026-11-01');
+  assert.match(tagged.memo ?? '', /\[bill:bill-hoa\]/);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isAllowedSandbox, callbackCode, parseCallback, sandboxConfigProblem, classifyAuthError, CALLBACK, PRODUCTION_PROJECT_REF } from '../src/auth-guards.ts';
+import { isAllowedSandbox, callbackCode, parseCallback, sandboxConfigProblem, classifyAuthError, isEmailPasswordAuthEnabled, validateEmailPasswordInput, CALLBACK, PRODUCTION_PROJECT_REF } from '../src/auth-guards.ts';
 
 test('only matching test project URL and publishable key are accepted', () => {
   assert.equal(isAllowedSandbox('https://sandbox123.supabase.co', 'sandbox123', 'sb_publishable_123'), true);
@@ -59,4 +59,25 @@ test('auth errors separate temporary failures from definitive rejections', () =>
   assert.equal(classifyAuthError({ name: 'AuthApiError', code: 'session_not_found' }), 'invalid');
   assert.equal(classifyAuthError(new Error('boom')), 'unknown');
   assert.equal(classifyAuthError(null), 'unknown');
+});
+
+
+test('email authentication is enabled by default outside production and explicitly gated in production', () => {
+  assert.equal(isEmailPasswordAuthEnabled('sandbox', undefined), true);
+  assert.equal(isEmailPasswordAuthEnabled('sandbox', 'false'), false);
+  assert.equal(isEmailPasswordAuthEnabled('production', undefined), false);
+  assert.equal(isEmailPasswordAuthEnabled('production', 'true'), true);
+  assert.equal(isEmailPasswordAuthEnabled('production', 'false'), false);
+});
+
+test('email and password validation trims email and requires six password characters', () => {
+  assert.equal(validateEmailPasswordInput(' user@example.com ', '123456'), null);
+  for (const email of ['', 'bad', 'a@b', 'a b@example.com']) assert.match(validateEmailPasswordInput(email, '123456'), /email/i);
+  assert.match(validateEmailPasswordInput('a@example.com', '12345'), /6 characters/);
+});
+
+test('email auth errors are classified by server code', () => {
+  for (const [code, expected] of Object.entries({ invalid_credentials: 'invalid_credentials', email_not_confirmed: 'email_not_confirmed', user_already_exists: 'user_already_registered', weak_password: 'weak_password', over_request_rate_limit: 'rate_limit', over_email_send_rate_limit: 'rate_limit' })) {
+    assert.equal(classifyAuthError({ code, status: 400 }), expected);
+  }
 });

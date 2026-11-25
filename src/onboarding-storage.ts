@@ -1,5 +1,5 @@
 import { appearanceStorageKeys } from './components/appearance-theme';
-import { PermissionsAndroid, Platform } from 'react-native';
+import { requestLocalNotificationPermission } from './notifications';
 import { PERSONAL_SETTINGS_FIELDS, SHARED_SETTINGS_FIELDS, reconcileConfirmedPersonalSettings } from './settings-contract';
 import type { Session } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
@@ -1027,6 +1027,12 @@ function settingsAfterDebtDeletion(data: UserOnboardingData, debtId: string, bil
       if (relation?.billId === billId) delete loanBillPairingByDebtId[key];
     }
   }
+  const promoTermsByDebtId = { ...(data.promoTermsByDebtId ?? {}) };
+  const minimumModeByDebtId = { ...(data.minimumModeByDebtId ?? {}) };
+  const irregularBillScheduleByBillId = { ...(data.irregularBillScheduleByBillId ?? {}) };
+  delete promoTermsByDebtId[debtId];
+  delete minimumModeByDebtId[debtId];
+  if (billId) delete irregularBillScheduleByBillId[billId];
   const mortgageEscrowByDebtId = { ...(data.mortgageEscrowByDebtId ?? {}) };
   const mortgageExtraPaymentByDebtId = { ...(data.mortgageExtraPaymentByDebtId ?? {}) };
   const debtPaymentSplitPlansByDebtId = { ...(data.debtPaymentSplitPlansByDebtId ?? {}) };
@@ -1046,6 +1052,8 @@ function settingsAfterDebtDeletion(data: UserOnboardingData, debtId: string, bil
     ...data,
     archivedPaidOffDebtIds: (data.archivedPaidOffDebtIds ?? []).filter(id => id !== debtId),
     loanBillPairingByDebtId,
+    promoTermsByDebtId, minimumModeByDebtId, irregularBillScheduleByBillId,
+    customPayoffOrder: data.customPayoffOrder?.filter(id => id !== debtId),
     mortgageEscrowByDebtId,
     mortgageExtraPaymentByDebtId,
     debtPaymentSplitPlansByDebtId,
@@ -1266,31 +1274,6 @@ export async function clearUserDeviceDataAfterAccountDeletion(userId: string, ho
 /**
  * Request native OS notification permission when the user taps "Enable notifications".
  */
-export async function requestNativeNotificationPermission(): Promise<
-  'granted' | 'denied' | 'unavailable'
-> {
-  if (Platform.OS === 'android') {
-    const apiLevel = typeof Platform.Version === 'number' ? Platform.Version : Number(Platform.Version);
-    if (apiLevel < 33) {
-      // Android 12 and below grant notification permission at install time
-      return 'granted';
-    }
-    try {
-      const permission = PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS;
-      if (!permission) return 'granted';
-      const alreadyGranted = await PermissionsAndroid.check(permission);
-      if (alreadyGranted) return 'granted';
-      const result = await PermissionsAndroid.request(permission, {
-        title: 'Enable DebtFree Payment Reminders',
-        message:
-          'Allow DebtFree to send upcoming payment reminders, past-due alerts, and payoff milestone notifications.',
-        buttonPositive: 'Allow',
-        buttonNegative: 'Not now',
-      });
-      return result === PermissionsAndroid.RESULTS.GRANTED ? 'granted' : 'denied';
-    } catch {
-      return 'unavailable';
-    }
-  }
-  return 'unavailable';
+export async function requestNativeNotificationPermission(): Promise<'granted' | 'denied' | 'unavailable'> {
+  return requestLocalNotificationPermission();
 }

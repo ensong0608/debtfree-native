@@ -325,7 +325,7 @@ export function UpcomingObligations({
         </Pressable>
       ) : null}
     </View> : null}
-    {!rows.length && !hasAnnualFeeInWindow ? <View style={{ alignItems: 'center', paddingVertical: 32, gap: 8 }}><AppIcon name="check" size={30} color="#76DCB9" /><Text style={ui.heading}>All caught up</Text><Text style={ui.small}>No unpaid items in the attention window.</Text></View> : null}
+    {!rows.length && !hasAnnualFeeInWindow ? <View style={{ alignItems: 'center', paddingVertical: 32, gap: 8 }}><AppIcon name="check" size={30} color="#76DCB9" /><Text style={ui.heading}>All caught up</Text><Text style={ui.small}>No unpaid items due soon. Add bills in Budget or set an account due date to see reminders.</Text></View> : null}
     {sortedMonths.map(([month, dates]) => {
       const monthItems = [...dates.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
@@ -421,8 +421,9 @@ export function UpcomingObligations({
     />
     <SheetModal visible={!readOnly && payNowTarget !== null} onClose={() => { if (!payNowBusy) setPayNowTarget(null); }}>
       <Card style={{ padding: 0, borderWidth: 0, shadowOpacity: 0, elevation: 0 }}>
-        <SheetFormHeader title={`Payment for ${normalizeDisplayName(payNowTarget?.name ?? '')}`} closeLabel="Close payment details"
+        <SheetFormHeader title={`Record payment for ${normalizeDisplayName(payNowTarget?.name ?? '')}`} closeLabel="Close payment details"
           onClose={() => { if (!payNowBusy) setPayNowTarget(null); }} />
+        <Text style={ui.small}>Records a payment in your BitLess ledger. BitLess does not connect to banks or move money.</Text>
         <Text style={ui.small}>{`Due ${payNowTarget?.dueDate ?? ''}`}</Text>
         {!!payNowError && <Text accessibilityRole="alert" style={[ui.small, { color: '#F08B78' }]}>{payNowError}</Text>}
         <View style={{ backgroundColor: palette.hero, borderRadius: 16, padding: 16, gap: 12, overflow: 'hidden' }}>

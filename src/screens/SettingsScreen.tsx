@@ -45,6 +45,7 @@ import {
 } from '../debt-storage-domain';
 import { getPendingFinanceSummary, getPendingFinanceOperations, recoverPendingFinanceWrites, loadFinanceRecords, canRetryPendingFinanceOperation } from '../finance-storage';
 import { createNativeBackup, parseNativeBackup, createRestorePlan, createBackupCheckpointRepository, nativeBackupLifecycleWarnings, type RestoreCheckpoint } from '../finance/backup';
+import { buildTransactionsCsv } from '../finance/csv';
 import { createChunkedStorage } from '../secure-chunks';
 import type { LedgerTransaction, ReconciliationAnchor } from '../finance/ledger';
 import type { RecurringBill } from '../finance/recurring-bills';
@@ -421,6 +422,10 @@ export function SettingsScreen({
     await Share.share({ title: 'DebtFree native backup JSON', message: JSON.stringify(backup, null, 2) });
     setBackupMessage(`Share sheet opened for the validated backup. ${nativeBackupLifecycleWarnings(backup).join(' ')} Restoration is currently unavailable.`);
   });
+  const exportTransactionsCsv = () => void runBackupAction(async () => {
+    const csv = buildTransactionsCsv(transactions, onboardingData.debts, recurringBills, currencyCode);
+    await Share.share({ title: 'BitLess transactions CSV', message: csv });
+  });
   const preflightBackup = () => void runBackupAction(async () => {
     const current = await currentBackup();
     const { userId: uid, householdId: hid, membershipVersion, role } = owner();
@@ -773,7 +778,10 @@ export function SettingsScreen({
     setLatestInvite(result);
     setInviteEmail('');
     setCollabNotice(result.delivery.message);
-    await syncHouseholdAfterCollabMutation();
+    await refreshCollaborationState(onboardingData);
+    if (result.delivery.status !== 'sent') {
+      await handleShareInvite(result);
+    }
   });
 
   const handleRotateInvite = (invitationId: string) => void runCollabAction(async () => {
@@ -782,7 +790,10 @@ export function SettingsScreen({
     const result = await rotateHouseholdInvitation(session!, current.householdContext, invitationId);
     setLatestInvite(result);
     setCollabNotice(result.delivery.message);
-    await syncHouseholdAfterCollabMutation();
+    await refreshCollaborationState(onboardingData);
+    if (result.delivery.status !== 'sent') {
+      await handleShareInvite(result);
+    }
   });
 
   const handleRevokeInvite = (invitationId: string, emailHint: string) => {
@@ -798,7 +809,7 @@ export function SettingsScreen({
           const current = owner();
           await cancelHouseholdInvitation(session!, current.householdContext, invitationId);
           setCollabNotice(`Invitation for ${emailHint} revoked.`);
-          await syncHouseholdAfterCollabMutation();
+          await refreshCollaborationState(onboardingData);
         });
       },
     });
@@ -1057,7 +1068,7 @@ export function SettingsScreen({
     if (onboardingData.strategy === strategy) return;
     void persistOnboardingPatch(
       { strategy },
-      `Payoff strategy set to ${strategy === 'snowball' ? 'Snowball' : 'Avalanche'}.`,
+      `Payoff strategy set to ${strategy === 'snowball' ? 'Snowball' : strategy === 'custom' ? 'Custom' : 'Avalanche'}.`,
     );
   };
 
@@ -1194,6 +1205,7 @@ export function SettingsScreen({
       </View>
 
       <ScrollView
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
         style={{ flex: 1, overflow: 'hidden' }}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 24) + 16 }]}
         keyboardShouldPersistTaps="handled"
@@ -1560,11 +1572,12 @@ export function SettingsScreen({
             <View style={ui.divider}>
               <Text style={styles.subLabel}>Invite Member (up to 3 total)</Text>
               <Text style={[ui.small, { marginBottom: 8 }]}>
-                Invite a partner as a Member (can edit) or an advisor as a Viewer (read-only).
+                Choose their access level and tap Create & Share Invite to send a link via text or any app. Add an email only if you also want to lock the invite to one account.
               </Text>
+              <Text style={[ui.small, { fontWeight: '600', marginBottom: 4 }]}>Invitee email (Optional)</Text>
               <TextInput
-                accessibilityLabel="Invitee email address"
-                placeholder="partner@example.com"
+                accessibilityLabel="Invitee email address (optional)"
+                placeholder="Optional: partner@example.com"
                 placeholderTextColor={palette.muted}
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -1599,11 +1612,11 @@ export function SettingsScreen({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Create household invitation"
-                disabled={collabBusy || !inviteEmail.trim()}
+                disabled={collabBusy}
                 onPress={handleCreateInvite}
-                style={[styles.primaryInlineBtn, { backgroundColor: ctaBg, marginTop: 10 }, (collabBusy || !inviteEmail.trim()) && styles.disabled]}
+                style={[styles.primaryInlineBtn, { backgroundColor: ctaBg, marginTop: 10 }, collabBusy && styles.disabled]}
               >
-                <Text style={[styles.primaryInlineBtnText, { color: ctaFg }]}>{collabBusy ? 'Sending…' : 'Send Invite'}</Text>
+                <Text style={[styles.primaryInlineBtnText, { color: ctaFg }]}>{collabBusy ? 'Creating…' : 'Create & Share Invite'}</Text>
               </Pressable>
 
               {latestInvite ? (
@@ -1665,19 +1678,33 @@ export function SettingsScreen({
             <View style={ui.divider}>
               <Text style={styles.subLabel}>Join a Household</Text>
               <Text style={[ui.small, { marginBottom: 8 }]}>
-                Paste an invite link or code sent to your account email. Joining switches your active view; your existing household data stays separate and is never merged.
+                Paste an invite link or code shared with you. Joining switches your active view; your existing household data stays separate and is never merged.
               </Text>
-              <TextInput
-                accessibilityLabel="Invite link or invite code"
-                placeholder="Paste invite link or code"
-                placeholderTextColor={palette.muted}
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!collabBusy}
-                value={joinInput}
-                onChangeText={setJoinInput}
-                style={[styles.modalTextInput, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border, fontSize: 13, fontWeight: '500', letterSpacing: 0 }]}
-              />
+              <View style={[ui.row, { gap: 8, alignItems: 'center' }]}>
+                <TextInput
+                  accessibilityLabel="Invite link or invite code"
+                  placeholder="Paste invite link or code"
+                  placeholderTextColor={palette.muted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  clearButtonMode="while-editing"
+                  editable={!collabBusy}
+                  value={joinInput}
+                  onChangeText={setJoinInput}
+                  style={[styles.modalTextInput, styles.flex1, { color: palette.text, backgroundColor: palette.surface, borderColor: palette.border, fontSize: 13, fontWeight: '500', letterSpacing: 0 }]}
+                />
+                {joinInput.length > 0 ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear invite input"
+                    disabled={collabBusy}
+                    onPress={() => setJoinInput('')}
+                    style={[ui.button, collabBusy && styles.disabled]}
+                  >
+                    <Text style={[ui.buttonText, { color: palette.muted }]}>Clear</Text>
+                  </Pressable>
+                ) : null}
+              </View>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Join household"
@@ -1757,10 +1784,12 @@ export function SettingsScreen({
             <Text style={styles.rowSub}>
               {onboardingData.strategy === 'snowball'
                 ? 'Snowball — Lowest balance first for quick wins'
-                : 'Avalanche — Highest APR first to minimize total interest'}
+                : onboardingData.strategy === 'custom'
+                  ? 'Custom — Your chosen payoff order in Accounts → Strategy'
+                  : 'Avalanche — Highest APR first to minimize total interest'}
             </Text>
             <View style={[ui.row, { marginTop: 10 }]}>
-              {(['snowball', 'avalanche'] as const).map(strategy => {
+              {(['snowball', 'avalanche', 'custom'] as const).map(strategy => {
                 const selected = onboardingData.strategy === strategy;
                 return (
                   <Pressable
@@ -1770,7 +1799,9 @@ export function SettingsScreen({
                     accessibilityLabel={
                       strategy === 'snowball'
                         ? 'Snowball: Lowest balance first'
-                        : 'Avalanche: Highest APR first'
+                        : strategy === 'custom'
+                          ? 'Custom: Your payoff order'
+                          : 'Avalanche: Highest APR first'
                     }
                     disabled={!canEdit}
                     onPress={() => handleSelectStrategy(strategy)}
@@ -1781,21 +1812,22 @@ export function SettingsScreen({
                     ]}
                   >
                     <AppIcon
-                      name={strategy}
+                      name={strategy === 'custom' ? 'layers' : strategy}
                       size={16}
                       color={selected ? palette.brand : palette.muted}
                     />
                     <View style={styles.flex1}>
                       <Text
+                        numberOfLines={1}
                         style={[
                           styles.strategyTitle,
                           selected && [styles.strategyTitleSelected, { color: palette.brand }],
                         ]}
                       >
-                        {strategy === 'snowball' ? 'Snowball' : 'Avalanche'}
+                        {strategy === 'snowball' ? 'Snowball' : strategy === 'custom' ? 'Custom' : 'Avalanche'}
                       </Text>
-                      <Text style={styles.strategySub}>
-                        {strategy === 'snowball' ? 'Lowest balance' : 'Highest APR'}
+                      <Text numberOfLines={1} style={styles.strategySub}>
+                        {strategy === 'snowball' ? 'Lowest balance' : strategy === 'custom' ? 'Your order' : 'Highest APR'}
                       </Text>
                     </View>
                   </Pressable>
@@ -1867,7 +1899,7 @@ export function SettingsScreen({
             />
             <SettingSwitchRow
               title="Past-due alerts"
-              subtitle="Get notified immediately when an obligation becomes overdue"
+              subtitle="Receive a local reminder for past-due obligations"
               checked={onboardingData.notifications.overdueAlerts}
               disabled={savingPrefs || !canEdit}
               onToggle={() => void handleToggleNotification('overdueAlerts')}
@@ -1880,7 +1912,7 @@ export function SettingsScreen({
               onToggle={() => void handleToggleNotification('milestonesAndProgress')}
             />
             <Text style={[ui.small, { marginTop: 8, fontStyle: 'italic', color: palette.muted }]}>
-              Note: Notification switches record your saved preferences. Background scheduled push notifications are deferred pending platform scheduler integration.
+              Upcoming, past-due, and milestone notifications are scheduled locally on this device when permission is granted. Remote push is not yet available.
             </Text>
           </View>
         </Card>
@@ -1964,6 +1996,7 @@ export function SettingsScreen({
           })}
           <Pressable accessibilityRole="button" disabled={backupBusy} onPress={refreshConfirmation} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Refresh confirmation</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={backupBusy} onPress={exportBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export backup JSON</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={backupBusy || transactions.filter(t => t.deletedAt === null).length === 0} onPress={exportTransactionsCsv} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export transactions CSV</Text></Pressable>
           <TextInput accessibilityLabel="Native backup JSON" multiline value={backupText} onChangeText={value => { setBackupText(value); setBackupMessage(''); }} placeholder="Paste backup JSON to review" placeholderTextColor={palette.muted} style={styles.devJsonInput} />
           <Pressable accessibilityRole="button" disabled={backupBusy || !backupText.trim()} onPress={preflightBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Validate and review</Text></Pressable>
           <Text style={ui.small}>{checkpoint ? `Checkpoint: ${checkpoint.status}; ${checkpoint.cursor} of ${checkpoint.plan.operations.length} operations. ${checkpoint.plan.conflicts} conflicts.` : 'No checkpoint found.'}</Text>

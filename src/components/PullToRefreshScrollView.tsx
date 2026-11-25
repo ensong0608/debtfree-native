@@ -5,6 +5,7 @@ import {
   Easing,
   PanResponder,
   Platform,
+  RefreshControl,
   ScrollView as NativeScrollView,
   UIManager,
   requireNativeComponent,
@@ -364,8 +365,8 @@ export function PullToRefreshScrollView({
         : 'Pull down to refresh';
 
   const body = (
-    <View style={{ flex: 1, overflow: 'hidden' }} {...(!NativePullDownView && onRefresh && panResponder ? panResponder.panHandlers : {})}>
-      {onRefresh ? (
+    <View style={{ flex: 1, overflow: 'hidden' }} {...(Platform.OS !== 'ios' && !NativePullDownView && onRefresh && panResponder ? panResponder.panHandlers : {})}>
+      {onRefresh && Platform.OS !== 'ios' ? (
         <Animated.View
           pointerEvents="none"
           accessibilityLiveRegion="polite"
@@ -416,10 +417,11 @@ export function PullToRefreshScrollView({
           </View>
         </Animated.View>
       ) : null}
-      <Animated.View style={{ flex: 1, transform: [{ translateY: pullY }] }}>
+      <Animated.View style={Platform.OS === 'ios' ? { flex: 1 } : { flex: 1, transform: [{ translateY: pullY }] }}>
         <ScrollView
           ref={scrollViewRef}
           nestedScrollEnabled
+          refreshControl={Platform.OS === 'ios' && onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={() => { void Promise.resolve().then(onRefresh).catch(() => {}); }} /> : undefined}
           contentContainerStyle={contentContainerStyle}
           showsVerticalScrollIndicator={showsVerticalScrollIndicator}
           keyboardShouldPersistTaps={keyboardShouldPersistTaps}
@@ -432,22 +434,9 @@ export function PullToRefreshScrollView({
           onScroll={event => {
             const offsetY = event.nativeEvent.contentOffset.y;
             scrollYRef.current = offsetY;
-            if (Platform.OS === 'ios' && onRefreshRef.current && !refreshingRef.current && !awaitingLocalRefreshRef.current) {
-              if (offsetY < 0) {
-                handlePullMove(-offsetY);
-              } else if (dragStateRef.current.pulling) {
-                handlePullMove(0);
-              }
-            }
             onScroll?.(event);
           }}
-          onScrollEndDrag={event => {
-            if (Platform.OS === 'ios' && dragStateRef.current.pulling) {
-              const offsetY = event.nativeEvent.contentOffset.y;
-              handlePullRelease(offsetY < 0 ? -offsetY : 0, false);
-            }
-            onScrollEndDrag?.(event);
-          }}
+          onScrollEndDrag={onScrollEndDrag}
           onMomentumScrollEnd={onMomentumScrollEnd}
         >
           {headerContent}

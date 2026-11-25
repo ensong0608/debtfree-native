@@ -2,6 +2,8 @@
 // @ts-ignore TS5097
 import type { UserOnboardingData } from '../onboarding-domain.ts';
 // @ts-ignore TS5097
+import { validateExtendedSettings } from '../debt-storage-domain.ts';
+// @ts-ignore TS5097
 import { getCurrency } from './currencies.ts';
 // @ts-ignore TS5097
 import { makeMoney, parseMoney, type Money } from './money.ts';
@@ -52,7 +54,7 @@ export function validateNativeBackup(value: unknown, owner: BackupOwner): assert
   if (d.version !== 1 || d.userId !== owner.userId || d.householdId !== owner.householdId) fail('Onboarding data belongs to a different user or household');
   if ((d.currencyCode ?? ({US:'USD', CA:'CAD', GB:'GBP', AU:'AUD'} as Record<string,string>)[d.countryCode]) !== value.currency) fail('Onboarding currency mismatch');
   choice(d.currentStage, ['welcome','signup_1','signup_2','signup_3','signup_4','onboard_1','onboard_2','onboard_3','onboard_4','onboard_5','home'], 'stage');
-  choice(d.countryCode, ['US','CA','GB','AU'], 'country'); choice(d.primaryPayFrequency, ['biweekly','monthly','weekly','twice_monthly'], 'frequency'); choice(d.selectedPlan, ['premium','premium_bank_sync'], 'plan'); choice(d.homeStatus, ['Own','Rent','Other'], 'home status'); choice(d.vehicleStatus, ['Finance','Lease','Own','None'], 'vehicle status'); choice(d.strategy, ['snowball','avalanche'], 'strategy'); choice(d.consideredBeforeAi, ['yes','no',null], 'referral answer');
+  choice(d.countryCode, ['US','CA','GB','AU'], 'country'); choice(d.primaryPayFrequency, ['biweekly','monthly','weekly','twice_monthly'], 'frequency'); choice(d.selectedPlan, ['premium','premium_bank_sync'], 'plan'); choice(d.homeStatus, ['Own','Rent','Other'], 'home status'); choice(d.vehicleStatus, ['Finance','Lease','Own','None'], 'vehicle status'); choice(d.strategy, ['snowball','avalanche','custom'], 'strategy'); choice(d.consideredBeforeAi, ['yes','no',null], 'referral answer');
   for (const k of ['signupCompleted','onboardingCompleted']) bool(d[k], k);
   for (const k of ['managesWithPartner','worksWithProfessional']) choice(d[k], [true,false,null], k);
   if (typeof d.referralSource !== 'string') fail('Invalid referral source'); rows(d.goals, 'goals'); if (d.goals.some((x: unknown) => typeof x !== 'string')) fail('Invalid goals');
@@ -65,6 +67,7 @@ export function validateNativeBackup(value: unknown, owner: BackupOwner): assert
   timestamp(d.updatedAt, 'onboarding updatedAt'); if (d.completedAt !== null) timestamp(d.completedAt, 'completedAt');
   if (d.householdTimeZone !== undefined) { try { new Intl.DateTimeFormat('en', {timeZone:d.householdTimeZone}); } catch { fail('Invalid household time zone'); } }
   rows(d.debts, 'debts'); rows(value.transactions, 'transactions'); rows(value.recurringBills, 'recurringBills'); rows(value.reconciliationAnchors, 'reconciliationAnchors');
+  validateExtendedSettings(d as UserOnboardingData);
   unique(d.debts, 'debt'); const txs = unique(value.transactions, 'transaction'); unique(value.recurringBills, 'bill'); unique(value.reconciliationAnchors, 'anchor');
   if (d.archivedPaidOffDebtIds !== undefined) {
     rows(d.archivedPaidOffDebtIds, 'archived paid-off debt IDs');

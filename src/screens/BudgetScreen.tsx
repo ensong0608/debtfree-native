@@ -22,11 +22,13 @@ import {
   type UserOnboardingData,
   type PayFrequency,
   type LoanBillPairing,
+  type IrregularBillSchedule,
   type AdditionalIncomeSource,
   parseMoneyInput,
 } from '../onboarding-domain';
 import {
   calculateMonthlyCashflow,
+  calculateBillMonthlyReserve,
   calculateCategoryBreakdown,
   summarizeMonthlyExpenses,
   buildMonthlyBudgetBreakdown,
@@ -122,6 +124,8 @@ function BudgetScreenInner({
   onSaveIncome,
   onSaveLoanBillPairings,
   onSaveRecurringBillCategoryLabels,
+  onSaveVariableCategoryCaps,
+  onSaveIrregularBillSchedules,
   onSettings,
   onAddRecurringBill,
   onDeleteRecurringBill,
@@ -144,6 +148,8 @@ function BudgetScreenInner({
   onSaveIncome: (patch: Pick<UserOnboardingData, 'primaryIncomeName' | 'primaryIncomeAmount' | 'primaryGrossIncomeAmount' | 'primaryPayFrequency' | 'primaryMonthlyIncome' | 'additionalIncomes'>) => Promise<void>;
   onSaveLoanBillPairings: (pairings: Record<string, LoanBillPairing>) => Promise<void>;
   onSaveRecurringBillCategoryLabels: (labels: Record<string, string>) => Promise<void>;
+  onSaveVariableCategoryCaps?: (caps: Record<string, number>) => Promise<void>;
+  onSaveIrregularBillSchedules?: (schedules: Record<string, IrregularBillSchedule>) => Promise<void>;
   onSettings: () => void;
   onAddRecurringBill: (bill: RecurringBill) => Promise<{ outcome: 'confirmed' | 'pending' } | void> | { outcome: 'confirmed' | 'pending' } | void;
   onDeleteRecurringBill?: (billId: string, expectedSnapshotToken: string) => Promise<{
@@ -196,6 +202,12 @@ function BudgetScreenInner({
   const [incomeBusy, setIncomeBusy] = useState(false);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [expandedExpenseCategory, setExpandedExpenseCategory] = useState<string | null>(null);
+
+  const [capKey, setCapKey] = useState<string | null>(null);
+  const [capAmount, setCapAmount] = useState('');
+  const [capError, setCapError] = useState('');
+  const [capBusy, setCapBusy] = useState(false);
+  const [billFrequency, setBillFrequency] = useState<IrregularBillSchedule['frequency']>('monthly');
 
   // New Recurring Bill Form State
   const [newBillName, setNewBillName] = useState('');
@@ -332,15 +344,16 @@ function BudgetScreenInner({
   const effectiveTimeZone = householdTimeZone || DEVICE_TIME_ZONE;
 
   const todayStr = currentHouseholdDate(effectiveTimeZone);
+  const reserveBills = useMemo(() => activeRecurringBills.map(bill => ({ ...bill, amount: calculateBillMonthlyReserve(bill.amount, data.irregularBillScheduleByBillId?.[bill.id]?.frequency ?? 'monthly') })), [activeRecurringBills, data.irregularBillScheduleByBillId]);
   const cashflow = useMemo(
     () => calculateMonthlyCashflow({
       monthlyIncome: income,
-      recurringBills: activeRecurringBills,
+      recurringBills: reserveBills,
       monthlyDebtPlanPayment: debtCommitment.total,
       unifiedLoans,
       currencyCode,
     }),
-    [income, activeRecurringBills, debtCommitment.total, unifiedLoans, currencyCode],
+    [income, reserveBills, debtCommitment.total, unifiedLoans, currencyCode],
   );
   const expenseSummary = useMemo(
     () => summarizeMonthlyExpenses({
@@ -369,7 +382,7 @@ function BudgetScreenInner({
 
   const categoryBreakdown = useMemo(
     () => calculateCategoryBreakdown({
-      recurringBills: activeRecurringBills,
+      recurringBills: reserveBills,
       customCategoryLabelsByBillId: data.recurringBillCategoryLabelByBillId,
       monthlyIncome: income,
       monthlyDebtPlanPayment: debtCommitment.total,
@@ -378,7 +391,7 @@ function BudgetScreenInner({
       debtAccountCount: debtCommitment.accounts.length,
     }),
     [
-      activeRecurringBills,
+      reserveBills,
       data.recurringBillCategoryLabelByBillId,
       income,
       debtCommitment.total,
@@ -483,6 +496,7 @@ function BudgetScreenInner({
       return;
     }
     if (!canEdit) return;
+    setBillFrequency(data.irregularBillScheduleByBillId?.[bill.id]?.frequency ?? 'monthly');
     setEditingBill(bill);
     draftBillIdRef.current = bill.id;
     draftBillPaidTodayRef.current = {};
@@ -641,6 +655,12 @@ function BudgetScreenInner({
         }
       }
       if (!billWriteConfirmed) pairingCleanupWarning = 'The bill change is awaiting server confirmation. Its loan/bill link and schedule were preserved until that confirmation arrives.';
+      if (onSaveIrregularBillSchedules) {
+        const schedules = { ...(data.irregularBillScheduleByBillId ?? {}) };
+        if (billFrequency === 'monthly') delete schedules[newBill.id];
+        else schedules[newBill.id] = { ...schedules[newBill.id], frequency: billFrequency };
+        await onSaveIrregularBillSchedules(schedules);
+      }
       setNewBillName('');
       setNewBillAmount('');
       setNewBillCustomCategory('');
@@ -863,7 +883,14 @@ function BudgetScreenInner({
                       <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: color }} />
                       <View style={{ flex: 1, minWidth: 0 }}>
                         <Text style={[ui.heading, { fontSize: 16 }]} numberOfLines={1}>{category?.label ?? item.label}</Text>
-                        <Text numberOfLines={1} style={[ui.small, { marginTop: 1 }]}>{category?.subtitle ?? 'Recorded transactions'}</Text>
+                        <View style={[ui.row, { gap: 6, marginTop: 1, alignItems: 'center' }]}>
+                          <Text numberOfLines={1} style={[ui.small, { flexShrink: 1 }]}>{category?.subtitle ?? 'Recorded transactions'}</Text>
+                          {onSaveVariableCategoryCaps && canEdit && item.categoryKey !== 'debts' && item.categoryKey !== 'housing' && item.categoryKey !== 'auto' ? (
+                            <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${item.label} cap`} hitSlop={6} onPress={() => { setCapKey(item.categoryKey); setCapAmount(data.variableCategoryCaps?.[item.categoryKey] != null ? String(data.variableCategoryCaps[item.categoryKey]) : ''); setCapError(''); }} style={{ paddingHorizontal: 7, paddingVertical: 1.5, borderRadius: 999, backgroundColor: palette.raised, borderWidth: 1, borderColor: palette.border }}>
+                              <Text style={{ color: palette.brand, fontSize: 11, fontWeight: '700' }}>Cap</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
                       </View>
                     </View>
                     <View style={{ alignItems: 'flex-end', maxWidth: '42%', minWidth: 0 }}>
@@ -872,6 +899,11 @@ function BudgetScreenInner({
                     </View>
                     <AppIcon name={isExpanded ? 'chevronDown' : 'chevronRight'} size={15} color="#AAB3AD" />
                   </Pressable>
+                  {data.variableCategoryCaps?.[item.categoryKey] != null && data.variableCategoryCaps[item.categoryKey] > 0 ? (() => {
+                    const cap = data.variableCategoryCaps![item.categoryKey];
+                    const remaining = cap - item.amount;
+                    return <View style={{ gap: 4 }}><Text style={[ui.small, { color: remaining >= 0 ? posInkColor : '#F08B78' }]}>{`${formatCurrency(item.amount, currencySymbol)} / ${formatCurrency(cap, currencySymbol)} · ${remaining >= 0 ? formatCurrency(remaining, currencySymbol) + ' left' : '+' + formatCurrency(-remaining, currencySymbol)}`}</Text><View style={{ height: 6, borderRadius: 3, backgroundColor: palette.raised, overflow: 'hidden' }}><View style={{ height: '100%', width: `${Math.min(100, Math.max(0, item.amount / cap * 100))}%`, backgroundColor: remaining >= 0 ? posInkColor : '#F08B78' }} /></View></View>;
+                  })() : null}
                   {isExpanded ? renderExpenseTransactions(drilldown) : null}
                 </View>
               );
@@ -965,6 +997,7 @@ function BudgetScreenInner({
       onSettings={onSettings}
       onAdd={!canEdit || showAddBillModal ? undefined : () => {
         setEditingBill(null);
+        setBillFrequency('monthly');
         draftBillIdRef.current = Crypto.randomUUID();
         draftBillPaidTodayRef.current = {};
         setNewBillName('');
@@ -1163,23 +1196,25 @@ function BudgetScreenInner({
                       <View style={[ui.iconCircle, { width: 34, height: 34, borderRadius: 17, borderWidth: 0, backgroundColor: catColor + '18' }]}>
                         <AppIcon name={icon} size={18} color={catColor} />
                       </View>
-                      <View style={{ flex: 1 }}>
-                        <View style={[ui.row, { gap: 6, alignItems: 'baseline' }]}>
-                          <Text style={[ui.heading, { fontSize: 16, flexShrink: 1 }]}>{item.label}</Text>
-                          <Text style={[ui.small, { color: catColor, fontWeight: '700', fontSize: 13 }]}>{budgetUnresolved ? 'N/A' : item.percentOfIncome + '%'}</Text>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <View style={[ui.row, { gap: 6, alignItems: 'center', flexWrap: 'nowrap' }]}>
+                          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85} ellipsizeMode="tail" style={[ui.heading, { fontSize: 16, flexShrink: 1 }]}>{item.label}</Text>
+                          <View style={{ paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999, backgroundColor: catColor + '18', flexShrink: 0 }}>
+                            <Text numberOfLines={1} style={[ui.small, { color: catColor, fontWeight: '700', fontSize: 12 }]}>{budgetUnresolved ? 'N/A' : `${item.percentOfIncome}%`}</Text>
+                          </View>
                         </View>
-                        <Text style={ui.small}>
+                        <Text numberOfLines={1} style={ui.small}>
                             {isDebt
-                              ? 'Card minimums + extra'
+                              ? 'Minimum + extra'
                               : item.count > 0
                                 ? (matchingUnifiedLoans.length > 0
                                     ? `${item.count} active ${item.count === 1 ? 'item' : 'items'}`
                                     : `${item.count} active bill${item.count > 1 ? 's' : ''}`)
-                                : 'No bills added'}
+                                : 'No bills added yet · tap + to add one'}
                         </Text>
                       </View>
                     </View>
-                    <View style={{ alignItems: 'flex-end', maxWidth: '45%', minWidth: 0, flexShrink: 1 }}>
+                    <View style={{ alignItems: 'flex-end', flexShrink: 0 }}>
                       <AmountText style={[ui.value, { color: catColor, textAlign: 'right' }]} value={budgetUnresolved ? 'Review needed' : formatCurrency(item.amount, currencySymbol)} />
                     </View>
                     <AppIcon name={expandedCategory === item.categoryKey ? 'chevronDown' : 'chevronRight'} size={15} color="#AAB3AD" />
@@ -1284,7 +1319,7 @@ function BudgetScreenInner({
                                 {paidObligations?.has(obligationScheduleKey('bill', bill.id)) ? <Text style={[ui.small, { color: posInkColor, fontWeight: '800' }]}>Paid</Text> : null}
                               </View>
                               <View style={[ui.row, { gap: 8, alignItems: 'center' }]}>
-                                <Text style={ui.value}>{formatCurrency(moneyToMajor(bill.amount), currencySymbol)}</Text>
+                                <View><Text style={ui.value}>{formatCurrency(moneyToMajor(bill.amount), currencySymbol)}</Text>{data.irregularBillScheduleByBillId?.[bill.id]?.frequency && data.irregularBillScheduleByBillId[bill.id].frequency !== 'monthly' ? <Text style={ui.small}>{formatCurrency(moneyToMajor(calculateBillMonthlyReserve(bill.amount, data.irregularBillScheduleByBillId[bill.id].frequency)), currencySymbol)}/mo reserve</Text> : null}</View>
                                 {canEdit ? <AppIcon name="edit" size={14} color={palette.brand} /> : null}
                               </View>
                             </Pressable>
@@ -1406,7 +1441,7 @@ function BudgetScreenInner({
                   </View>
 
                   <View style={[rowStyle, rowBorderStyle]}>
-                    <Text style={[ui.text, { color: palette.muted }]}>Monthly amount *</Text>
+                    <Text style={[ui.text, { color: palette.muted }]}>Amount *</Text>
                     <View style={[ui.row, { flex: 1, justifyContent: 'flex-end', gap: 4 }]}>
                       <Text style={[ui.text, { color: palette.muted, fontWeight: '600' }]}>{currencySymbol}</Text>
                       <TextInput
@@ -1421,6 +1456,7 @@ function BudgetScreenInner({
                     </View>
                   </View>
 
+                  {onSaveIrregularBillSchedules ? <View style={[rowStyle, rowBorderStyle, { flexWrap: 'wrap', gap: 8 }]}><Text style={[ui.text, { color: palette.muted }]}>Frequency</Text><View style={[ui.row, { gap: 6, flexWrap: 'wrap' }]}>{([['monthly', 'Monthly'], ['quarterly', 'Quarterly'], ['semiannual', '6 mo'], ['annual', 'Annual']] as const).map(([value, label]) => <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: billFrequency === value }} onPress={() => setBillFrequency(value)} style={{ paddingHorizontal: 8, paddingVertical: 6, borderRadius: 12, backgroundColor: billFrequency === value ? palette.brand : palette.raised }}><Text style={[ui.small, { color: billFrequency === value ? ctaFg : palette.text }]}>{label}</Text></Pressable>)}</View></View> : null}
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={selectedBillCategoryLabel ? `Category: ${selectedBillCategoryLabel}` : 'Category: Choose category'}
@@ -1663,6 +1699,9 @@ function BudgetScreenInner({
         );
       })()}
 
+      <SheetModal visible={capKey !== null} onClose={() => setCapKey(null)} contentSized>
+        <View style={{ gap: 10 }}><SheetFormHeader title="Monthly cap" closeLabel="Close cap editor" onClose={() => setCapKey(null)} /><TextInput accessibilityLabel="Monthly cap amount" style={[ui.input, { flex: 0 }]} keyboardType="decimal-pad" value={capAmount} onChangeText={value => setCapAmount(previous => acceptMoneyEdit(previous, value, currencyCode))} placeholder="0.00" placeholderTextColor={palette.muted} />{capError ? <Text accessibilityRole="alert" style={[ui.small, { color: '#F08B78' }]}>{capError}</Text> : null}<Pressable accessibilityRole="button" disabled={capBusy} onPress={() => { void (async () => { if (!capKey || !onSaveVariableCategoryCaps) return; const amount = capAmount.trim() ? parseMoneyInput(capAmount, currencyCode) : 0; if (amount == null || !Number.isFinite(amount) || amount < 0) { setCapError('Enter a valid amount.'); return; } setCapBusy(true); try { const caps = { ...(data.variableCategoryCaps ?? {}) }; if (amount === 0) delete caps[capKey]; else caps[capKey] = amount; await onSaveVariableCategoryCaps(caps); setCapKey(null); } catch (error) { setCapError(error instanceof Error ? error.message : 'Unable to save cap.'); } finally { setCapBusy(false); } })(); }} style={[ui.button, { alignItems: 'center' }]}><Text style={ui.buttonText}>{capBusy ? 'Saving?' : 'Save'}</Text></Pressable></View>
+      </SheetModal>
       <SheetModal visible={showIncomeModal} onClose={() => setShowIncomeModal(false)} contentSized>
         <View style={{ gap: 8 }}>
           <SheetFormHeader title={incomeEditorId === 'new' ? 'Add income' : 'Edit income'}

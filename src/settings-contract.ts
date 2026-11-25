@@ -40,4 +40,5 @@ export const SHARED_SETTINGS_FIELDS = [
   'obligationSchedules', 'debtPaymentSplitPlansByDebtId', 'billPaymentSplitPlansByBillId',
   'mortgageEscrowByDebtId', 'mortgageExtraPaymentByDebtId', 'loanBillPairingByDebtId',
   'recurringBillCategoryLabelByBillId', 'archivedPaidOffDebtIds',
+  'promoTermsByDebtId', 'customPayoffOrder', 'minimumModeByDebtId', 'variableCategoryCaps', 'irregularBillScheduleByBillId',
 ] as const;
