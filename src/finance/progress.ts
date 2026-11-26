@@ -7,6 +7,12 @@ import { type LedgerTransaction, calculateTransactionBalanceDelta } from './ledg
 import { moneyToMajor, moneyFromMajor } from './money.ts';
 // @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
 import { getCurrency } from './currencies.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { summarizeMonthlyExpenses, type ExpenseDebtInput } from './budget.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { type RecurringBill } from './recurring-bills.ts';
+// @ts-ignore TS5097: no-emit typecheck without allowImportingTsExtensions.
+import { type LoanBillPairingMap } from './loan-bill-pairing.ts';
 
 export type ProgressPeriod = 'current_month' | 'previous_month' | 'lifetime' | `${number}` | `${number}-${number}`;
 
@@ -444,4 +450,151 @@ export function calculateUtilizationAdvisor(debts: readonly ProgressDebtItem[], 
   const totalLimit = tracked.reduce((sum, d) => sum + moneyFromMajor(d.creditLimit!, currencyCode).minorUnits, 0);
   const totalUsed = tracked.reduce((sum, d) => sum + Math.max(0, moneyFromMajor(d.balance, currencyCode).minorUnits), 0);
   return { bestCardId: card.id, cardName: card.name, currentPercent: balance / limit * 100, projectedCardPercent: (balance - paydown) / limit * 100, paydownTo30: moneyToMajor({ currency: currencyCode, minorUnits: paydown }), projectedOverallPercent: (totalUsed - paydown) / totalLimit * 100 };
+}
+
+export type MonthlyCashflowTrendPoint = Readonly<{
+  month: string;
+  income: number;
+  spending: number;
+  cardCharges: number;
+  netSaved: number;
+  savingsRatePercent: number | null;
+}>;
+
+/** Return `count` ascending YYYY-MM month strings ending at `currentMonth`. */
+export function recentMonthKeys(currentMonth: string, count = 4): string[] {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(currentMonth) || count <= 0) return [];
+  const months: string[] = [];
+  let cursor = currentMonth;
+  for (let i = 0; i < count; i++) {
+    months.unshift(cursor);
+    cursor = getPreviousMonth(cursor);
+  }
+  return months;
+}
+
+/** Multi-month Income vs. Spending and Savings Rate summary built from confirmed ledger activity. */
+export function calculateMonthlyCashflowTrends(params: {
+  months: readonly string[];
+  monthlyIncome: number;
+  transactions: readonly LedgerTransaction[];
+  debts?: readonly ExpenseDebtInput[];
+  recurringBills?: readonly RecurringBill[];
+  loanBillPairingByDebtId?: LoanBillPairingMap;
+  archivedPaidOffDebtIds?: readonly string[];
+  historicalBillIdsByDebtId?: Readonly<Record<string, readonly string[]>>;
+  currencyCode?: string;
+}): MonthlyCashflowTrendPoint[] {
+  const {
+    months,
+    monthlyIncome,
+    transactions,
+    debts = [],
+    recurringBills = [],
+    loanBillPairingByDebtId,
+    archivedPaidOffDebtIds,
+    historicalBillIdsByDebtId,
+    currencyCode = 'USD',
+  } = params;
+  const safeIncome = roundToCurrency(Number.isFinite(monthlyIncome) ? Math.max(0, monthlyIncome) : 0, currencyCode);
+  return months.map(month => {
+    const summary = summarizeMonthlyExpenses({
+      month,
+      currencyCode,
+      transactions,
+      debts,
+      recurringBills,
+      loanBillPairingByDebtId,
+      archivedPaidOffDebtIds,
+      historicalBillIdsByDebtId,
+    });
+    const spending = roundToCurrency(summary.cashOutflow, currencyCode);
+    const netSaved = roundToCurrency(safeIncome - spending, currencyCode);
+    const savingsRatePercent = safeIncome > 0 ? Math.round(((safeIncome - spending) / safeIncome) * 100) : null;
+    return {
+      month,
+      income: safeIncome,
+      spending,
+      cardCharges: roundToCurrency(summary.unpaidCharges, currencyCode),
+      netSaved,
+      savingsRatePercent,
+    };
+  });
+}
+
+/** Non-debt budgeting and cashflow milestones backed by confirmed activity. */
+export function calculateZeroDebtMilestones(params: {
+  trends: readonly MonthlyCashflowTrendPoint[];
+  transactions: readonly LedgerTransaction[];
+  recurringBills: readonly RecurringBill[];
+  monthlyIncome: number;
+  currentMonth: string;
+}): Milestone[] {
+  const { trends, transactions, recurringBills, monthlyIncome, currentMonth } = params;
+  const confirmedExpenseMonths = new Set(
+    transactions
+      .filter(tx => tx.deletedAt === null && !tx.isPending && tx.source !== 'reconciliation' && tx.amount.minorUnits > 0)
+      .map(tx => tx.date.slice(0, 7)),
+  );
+  const hasActiveBills = recurringBills.some(bill => bill.active);
+  const hasIncome = Number.isFinite(monthlyIncome) && monthlyIncome > 0;
+  const firstBudgetEarned = hasIncome && (hasActiveBills || confirmedExpenseMonths.size > 0);
+
+  // Only count months with real tracked activity (or active bills in the current month) toward a streak.
+  let streak = 0;
+  const orderedNewestFirst = [...trends].sort((a, b) => b.month.localeCompare(a.month));
+  for (const point of orderedNewestFirst) {
+    const hasActivity = confirmedExpenseMonths.has(point.month) || (point.month === currentMonth && hasActiveBills);
+    if (point.income > 0 && hasActivity && point.spending <= point.income) {
+      streak += 1;
+    } else if (point.month <= currentMonth && streak > 0) {
+      break;
+    } else if (point.month === currentMonth) {
+      break;
+    }
+  }
+
+  const currentTrend = trends.find(point => point.month === currentMonth);
+  const currentTracked = confirmedExpenseMonths.has(currentMonth) || hasActiveBills;
+  const currentSavingsRate = currentTracked && currentTrend?.savingsRatePercent != null ? currentTrend.savingsRatePercent : null;
+
+  return [
+    {
+      id: 'first_budget_month',
+      title: 'First budget month',
+      description: firstBudgetEarned
+        ? 'Monthly income and tracked bills or expenses are active.'
+        : 'Add your monthly income and at least one bill or expense to begin.',
+      targetValue: 1,
+      currentValue: firstBudgetEarned ? 1 : 0,
+      percent: firstBudgetEarned ? 100 : 0,
+      status: firstBudgetEarned ? 'completed' : 'in_progress',
+    },
+    {
+      id: 'positive_cashflow_streak',
+      title: 'Positive cashflow streak (3 mo)',
+      description: streak >= 3
+        ? `${streak} tracked months stayed within your monthly income.`
+        : streak > 0
+          ? `${streak} of 3 tracked months within monthly income.`
+          : 'Stay within your monthly income across tracked months to build a streak.',
+      targetValue: 3,
+      currentValue: Math.min(3, streak),
+      percent: Math.min(100, Math.round((Math.min(3, streak) / 3) * 100)),
+      status: streak >= 3 ? 'completed' : 'in_progress',
+    },
+    {
+      id: 'savings_rate_20',
+      title: '20% monthly savings rate',
+      description: !hasIncome || !currentTracked
+        ? 'Add monthly income and log bills or spending this month to measure savings rate.'
+        : (currentSavingsRate ?? 0) >= 20
+          ? `Current month savings rate is ${currentSavingsRate}%.`
+          : `Currently at ${Math.max(0, currentSavingsRate ?? 0)}% of the 20% monthly savings goal.`,
+      targetValue: 20,
+      currentValue: Math.max(0, currentSavingsRate ?? 0),
+      percent: currentSavingsRate !== null ? Math.max(0, Math.min(100, Math.round((currentSavingsRate / 20) * 100))) : 0,
+      status: !hasIncome || !currentTracked ? 'locked' : (currentSavingsRate ?? 0) >= 20 ? 'completed' : 'in_progress',
+    },
+  ];
 }

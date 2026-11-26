@@ -25,6 +25,7 @@ import {
   resolveAutoLoanSplitSuggestion,
   resolveNextAutoDueDate,
   resolveOneTimePaymentPeriod,
+  SIGNUP_GOALS,
   sortDebtsByStrategy,
   suggestLoanPaymentSplit,
   summarizeInterestBurn,
@@ -58,26 +59,20 @@ test('Strategy models one entered amount without stacking it on the saved monthl
   assert.ok(lower.interestSaved < 0);
 });
 
-test('Sign-Up Step 2–4 validations enforce required selections and conditional AI follow-up', () => {
-  assert.equal(validateSignUpStep2([]), 'Select at least one goal to continue.');
-  assert.equal(validateSignUpStep2(['Pay down my credit card debt']), null);
+test('Sign-Up Step 2–4 include zero-debt goals, neutral defaults, and allow optional skipping', () => {
+  const defaults = createDefaultOnboardingData('user-123');
+  assert.deepEqual(defaults.goals, []);
+  assert.ok(SIGNUP_GOALS.includes('Build a budget / track spending'));
+  assert.ok(SIGNUP_GOALS.includes('I have no debt'));
 
-  assert.equal(validateSignUpStep3('', null), 'Select how you heard about DebtFree to continue.');
-  assert.equal(validateSignUpStep3('Friend or family', null), null);
-  assert.equal(
-    validateSignUpStep3(AI_REFERRAL_SOURCE, null),
-    'Please choose whether you were considering DebtFree before asking an AI assistant.',
-  );
-  assert.equal(validateSignUpStep3(AI_REFERRAL_SOURCE, 'no'), null);
+  assert.equal(validateSignUpStep2([]), null);
+  assert.equal(validateSignUpStep2(['I have no debt', 'Build a budget / track spending']), null);
 
-  assert.equal(
-    validateSignUpStep4(null, false),
-    'Please select whether you manage finances with a partner.',
-  );
-  assert.equal(
-    validateSignUpStep4(true, null),
-    'Please select whether you work with a financial professional.',
-  );
+  assert.equal(validateSignUpStep3('', null), null);
+  assert.equal(validateSignUpStep3('Prefer not to say', null), null);
+  assert.equal(validateSignUpStep3(AI_REFERRAL_SOURCE, null), null);
+
+  assert.equal(validateSignUpStep4(null, null), null);
   assert.equal(validateSignUpStep4(true, false), null);
 });
 
@@ -160,6 +155,9 @@ test('Debt validation checks required fields, numeric ranges, and home/vehicle o
   assert.match(validateDebtsStep('Rent', 'Finance', [cardItem]) ?? '', /Auto loan/);
   // Rent + Own vehicle with 1 credit card passes
   assert.equal(validateDebtsStep('Rent', 'Own', [cardItem]), null);
+  // Explicit zero-debt declaration passes without requiring debts
+  assert.equal(validateDebtsStep('Rent', 'Own', [], true), null);
+  assert.match(validateDebtsStep('Rent', 'Own', []) ?? '', /no debts right now/);
 });
 
 test('Snowball and Avalanche strategies order debts and calculate payoff schedules accurately', () => {

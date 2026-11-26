@@ -33,7 +33,22 @@ import { getObligationCycle, type ObligationSchedules } from '../finance/obligat
 import { AnnualFeeSchedule, getAnnualFeeRows } from '../components/AnnualFeeSchedule';
 import { clampDate, firstEligibleSplitTerm, getPlannedDebtInstallments, resolveDebtSplitPlanState, type DebtPaymentSplitPlansByDebtId, type BillPaymentSplitPlansByBillId } from '../finance/debt-payment-split';
 import { getCurrency } from '../finance/currencies';
-import { detectRecurringCandidates, parseBankCsv, buildSplitTransactionPayloads } from '../finance/csv';
+import { detectRecurringCandidates, parseBankCsv, buildSplitTransactionPayloads, resolveCsvRowCategory } from '../finance/csv';
+import {
+  EMPTY_PAYEE_MEMORY_STATE,
+  deleteCsvPayeeRule,
+  deleteCsvPreset,
+  listRecentPayees,
+  lookupPayeeMemory,
+  recordPayeeMemory,
+  upsertCsvPayeeRule,
+  upsertCsvPreset,
+  type CsvColumnMapping,
+  type CsvImportPreset,
+  type PayeeMemoryEntry,
+  type PayeeMemoryStoreState,
+} from '../finance/payee-memory';
+import { loadPayeeMemoryState, savePayeeMemoryState } from '../payee-memory-storage';
 import { bottomInsetPadding } from '../components/bottom-inset';
 import { DEFAULT_TAB_UI_PREFERENCES, useSetTabUiPreferences, useTransactionsUiPreferences, type HistorySortOption, type HistoryTransactionTypeFilter, type TabUiPreferences, type TransactionsDateFilter } from '../components/TabShellContext';
 
@@ -103,14 +118,14 @@ const formatTransactionSourceLabel = (source?: string, memo?: string | null): st
 };
 
 const CATEGORY_CHOICES: { label: string; category: TransactionCategory; isDebt: boolean }[] = [
-  { label: 'Payment', category: 'payment', isDebt: true },
+  { label: 'Cash / Debit', category: 'debit_spending', isDebt: false },
   { label: 'Purchase', category: 'purchase', isDebt: true },
+  { label: 'Payment', category: 'payment', isDebt: true },
   { label: 'Subscription', category: 'subscription', isDebt: true },
   { label: 'Utilities', category: 'utilities', isDebt: true },
   { label: 'Interest', category: 'interest', isDebt: true },
   { label: 'Fee', category: 'fee', isDebt: true },
   { label: 'Refund', category: 'refund', isDebt: true },
-  { label: 'Cash / Debit', category: 'debit_spending', isDebt: false },
 ];
 
 const EMPTY_TRANSACTIONS: LedgerTransaction[] = [];
@@ -691,6 +706,7 @@ const ScheduledSegment = memo(function ScheduledSegment({
 });
 
 export const TransactionsScreen = memo(function TransactionsScreen({
+  userId,
   debts,
   mortgageEscrowByDebtId = {},
   transactions = EMPTY_TRANSACTIONS,
@@ -719,6 +735,7 @@ export const TransactionsScreen = memo(function TransactionsScreen({
   onEditDismiss,
   onCreateBillFromCandidate,
 }: {
+  userId?: string;
   initialTransactionId?: string | null;
   initialSection?: string;
   onEditDismiss?: () => void;
@@ -842,13 +859,58 @@ export const TransactionsScreen = memo(function TransactionsScreen({
   const [csvError, setCsvError] = useState('');
   const [csvSaving, setCsvSaving] = useState(false);
   const csvSavingRef = useRef(false);
+  const [payeeMemoryState, setPayeeMemoryState] = useState<{
+    ownerId: string | undefined;
+    data: PayeeMemoryStoreState;
+  }>({ ownerId: userId, data: EMPTY_PAYEE_MEMORY_STATE });
+  const activePayeeMemory = payeeMemoryState.ownerId === userId ? payeeMemoryState.data : EMPTY_PAYEE_MEMORY_STATE;
+  const payeeMemoryOwnerRef = useRef(userId);
+  useEffect(() => {
+    payeeMemoryOwnerRef.current = userId;
+    let active = true;
+    void loadPayeeMemoryState(userId).then(loaded => {
+      if (active && payeeMemoryOwnerRef.current === userId) {
+        setPayeeMemoryState({ ownerId: userId, data: loaded });
+      }
+    });
+    return () => { active = false; };
+  }, [userId]);
+  const updatePayeeMemoryState = useCallback((updater: (current: PayeeMemoryStoreState) => PayeeMemoryStoreState) => {
+    const expectedOwner = userId;
+    setPayeeMemoryState(current => {
+      const base = current.ownerId === expectedOwner ? current.data : EMPTY_PAYEE_MEMORY_STATE;
+      return { ownerId: expectedOwner, data: updater(base) };
+    });
+    void savePayeeMemoryState(expectedOwner, updater)
+      .then(saved => {
+        if (payeeMemoryOwnerRef.current === expectedOwner) {
+          setPayeeMemoryState({ ownerId: expectedOwner, data: saved });
+        }
+      })
+      .catch(() => {
+        void loadPayeeMemoryState(expectedOwner).then(persisted => {
+          if (payeeMemoryOwnerRef.current === expectedOwner) {
+            setPayeeMemoryState({ ownerId: expectedOwner, data: persisted });
+          }
+        });
+        setCsvError('Could not save payee preferences on this device.');
+      });
+  }, [userId]);
+  const [showCsvMapping, setShowCsvMapping] = useState(false);
+  const [csvMapping, setCsvMapping] = useState<CsvColumnMapping>({});
+  const [csvPresetName, setCsvPresetName] = useState('');
+  const [showCsvRuleForm, setShowCsvRuleForm] = useState(false);
+  const [csvRulePattern, setCsvRulePattern] = useState('');
+  const [csvRuleCategory, setCsvRuleCategory] = useState<TransactionCategory>('debit_spending');
   const csvPreview = useMemo(() => {
     try {
-      const parsed = csvText.trim() ? parseBankCsv(csvText, transactions, currencyCode) : [];
+      const parsed = csvText.trim()
+        ? parseBankCsv(csvText, transactions, currencyCode, { mapping: csvMapping, rules: activePayeeMemory.rules })
+        : [];
       const ready = parsed.filter(row => !row.likelyDuplicate && (csvAccount ? row.amount.minorUnits !== 0 : row.amount.minorUnits < 0));
       return { ready, skipped: parsed.length - ready.length, error: '' };
     } catch (error) { return { ready: [], skipped: 0, error: (error as Error).message }; }
-  }, [csvText, transactions, currencyCode, csvAccount]);
+  }, [csvText, transactions, currencyCode, csvAccount, csvMapping, activePayeeMemory.rules]);
   const [billError, setBillError] = useState('');
   const [payTarget, setPayTarget] = useState<PayNowTarget | null>(null);
   const [splitPlanState, setSplitPlanState] = useState<{
@@ -1228,6 +1290,18 @@ export const TransactionsScreen = memo(function TransactionsScreen({
     }
   };
 
+  const recentPayees = useMemo(
+    () => listRecentPayees(activePayeeMemory.payees, transactions, 8),
+    [activePayeeMemory.payees, transactions],
+  );
+  const handleRememberPayee = useCallback((entry: { payee: string; category: TransactionCategory; accountId?: string | null }) => {
+    if (!entry.payee.trim()) return;
+    updatePayeeMemoryState(current => ({
+      ...current,
+      payees: recordPayeeMemory(current.payees, entry),
+    }));
+  }, [updatePayeeMemoryState]);
+
   const addTransactionModal = canEdit && showAddForm ? (
     <AddTransactionModal
       debts={debts}
@@ -1237,6 +1311,9 @@ export const TransactionsScreen = memo(function TransactionsScreen({
       obligationSchedules={obligationSchedules}
       historicalBillIdsByDebtId={historicalBillIdsByDebtId}
       recentPurchase={recentPurchase}
+      payeeMemory={activePayeeMemory.payees}
+      recentPayees={recentPayees}
+      onRememberPayee={handleRememberPayee}
       todayStr={todayStr}
       currentMonthStr={currentMonthStr}
       currencyCode={currencyCode}
@@ -1570,21 +1647,152 @@ export const TransactionsScreen = memo(function TransactionsScreen({
       ))}
     >
       {addTransactionModal}
-      {showCsvImport ? <SheetModal visible onClose={() => { if (!csvSaving) { setShowCsvImport(false); setCsvRemaining(null); setCsvText(''); setCsvError(''); } }} height="85%" closeLabel="Close CSV import">
+      {showCsvImport ? <SheetModal visible onClose={() => { if (!csvSaving) { setShowCsvImport(false); setCsvRemaining(null); setCsvText(''); setCsvError(''); } }} height="88%" closeLabel="Close CSV import">
         <ScrollView contentContainerStyle={{ padding: 20, gap: 12 }} keyboardShouldPersistTaps="handled">
           <Text style={ui.heading}>Import CSV</Text>
+          {activePayeeMemory.presets.length > 0 ? (
+            <View style={{ gap: 6 }}>
+              <Text style={ui.small}>Saved presets</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                {activePayeeMemory.presets.map((preset: CsvImportPreset) => (
+                  <View key={preset.id} style={{ flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: palette.cardBorder, backgroundColor: palette.surface, paddingLeft: 12, paddingRight: 6, minHeight: 34, gap: 6 }}>
+                    <Pressable accessibilityRole="button" onPress={() => {
+                      setCsvAccount(preset.targetAccountId);
+                      setCsvMapping(preset.mapping);
+                      if (typeof preset.mapping.chargesPositive === 'boolean') setChargesPositive(preset.mapping.chargesPositive);
+                      setCsvError('');
+                    }}>
+                      <Text style={{ color: palette.text, fontSize: 13, fontWeight: '600' }}>{preset.name}</Text>
+                    </Pressable>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`Delete preset ${preset.name}`} onPress={() => updatePayeeMemoryState(cur => ({ ...cur, presets: deleteCsvPreset(cur.presets, preset.id) }))} hitSlop={6}>
+                      <Text style={{ color: palette.muted, fontSize: 13, fontWeight: '700' }}>×</Text>
+                    </Pressable>
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
           <TextInput accessibilityLabel="Paste CSV" multiline editable={!csvRemaining && !csvSaving} value={csvText} onChangeText={setCsvText} placeholder="Paste CSV with Date, Description and Amount" placeholderTextColor={palette.muted} style={[ui.input, { minHeight: 100, color: palette.text, borderColor: palette.inputBorder }]} />
           <SelectDropdown label="Target" sheetTitle="Choose target" value={csvAccount} options={[{ label: 'Cash / Debit', value: '' }, ...debtAccountDropdownOptions]} onSelect={setCsvAccount} />
-          {csvAccount ? <View style={{ flexDirection: 'row', gap: 12 }}>{[false, true].map(positive => <Pressable key={String(positive)} onPress={() => setChargesPositive(positive)}><Text style={{ color: chargesPositive === positive ? palette.brand : palette.muted }}>{positive ? 'Charges (+)' : 'Charges (?)'}</Text></Pressable>)}</View> : null}
-          <Text style={ui.small}>{csvRemaining ? csvRemaining.length : csvPreview.ready.length} new ? {csvPreview.skipped} skipped</Text>
-          {(csvRemaining ?? csvPreview.ready).slice(0, 5).map((row, index) => <Text key={index} style={ui.small}>{row.date} ? {row.payee} ? {formatCurrency(Math.abs(moneyToMajor(row.amount)), currencySymbol)}{ 'category' in row ? ` ? ${row.category}` : ` ? ${csvAccount ? ((row.amount.minorUnits > 0) === chargesPositive ? 'purchase' : 'payment') : 'debit_spending'}`}</Text>)}
-          {csvError || csvPreview.error ? <Text style={{ color: palette.text }}>{csvError || csvPreview.error}</Text> : null}
+          {csvAccount ? <View style={{ flexDirection: 'row', gap: 12 }}>{[false, true].map(positive => <Pressable key={String(positive)} onPress={() => setChargesPositive(positive)}><Text style={{ color: chargesPositive === positive ? palette.brand : palette.muted }}>{positive ? 'Charges (+)' : 'Charges (-)'}</Text></Pressable>)}</View> : null}
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <Pressable accessibilityRole="button" onPress={() => setShowCsvMapping(v => !v)}>
+              <Text style={{ color: palette.brand, fontSize: 13, fontWeight: '600' }}>{showCsvMapping ? 'Hide column mapping & presets' : 'Column mapping & save preset'}</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" onPress={() => setShowCsvRuleForm(v => !v)}>
+              <Text style={{ color: palette.brand, fontSize: 13, fontWeight: '600' }}>{showCsvRuleForm ? 'Hide payee rules' : `Payee rules (${activePayeeMemory.rules.length})`}</Text>
+            </Pressable>
+          </View>
+
+          {showCsvMapping ? (
+            <View style={{ gap: 8, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.raised }}>
+              <Text style={ui.small}>Optional header overrides (leave blank for Date / Description / Amount):</Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TextInput accessibilityLabel="Date column header" placeholder="Date column" placeholderTextColor={palette.muted} value={csvMapping.dateColumn ?? ''} onChangeText={v => setCsvMapping(m => ({ ...m, dateColumn: v }))} style={[ui.input, { flex: 1, color: palette.text, borderColor: palette.inputBorder }]} />
+                <TextInput accessibilityLabel="Payee column header" placeholder="Payee column" placeholderTextColor={palette.muted} value={csvMapping.payeeColumn ?? ''} onChangeText={v => setCsvMapping(m => ({ ...m, payeeColumn: v }))} style={[ui.input, { flex: 1, color: palette.text, borderColor: palette.inputBorder }]} />
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TextInput accessibilityLabel="Amount column header" placeholder="Amount column" placeholderTextColor={palette.muted} value={csvMapping.amountColumn ?? ''} onChangeText={v => setCsvMapping(m => ({ ...m, amountColumn: v }))} style={[ui.input, { flex: 1, color: palette.text, borderColor: palette.inputBorder }]} />
+                <TextInput accessibilityLabel="Debit column header" placeholder="Debit" placeholderTextColor={palette.muted} value={csvMapping.debitColumn ?? ''} onChangeText={v => setCsvMapping(m => ({ ...m, debitColumn: v }))} style={[ui.input, { flex: 1, color: palette.text, borderColor: palette.inputBorder }]} />
+                <TextInput accessibilityLabel="Credit column header" placeholder="Credit" placeholderTextColor={palette.muted} value={csvMapping.creditColumn ?? ''} onChangeText={v => setCsvMapping(m => ({ ...m, creditColumn: v }))} style={[ui.input, { flex: 1, color: palette.text, borderColor: palette.inputBorder }]} />
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                <TextInput accessibilityLabel="Preset name" placeholder="Preset name (e.g. Chase Checking)" placeholderTextColor={palette.muted} value={csvPresetName} onChangeText={setCsvPresetName} style={[ui.input, { flex: 1, color: palette.text, borderColor: palette.inputBorder }]} />
+                <Pressable accessibilityRole="button" onPress={() => {
+                  try {
+                    const savedName = csvPresetName.trim();
+                    updatePayeeMemoryState(cur => ({
+                      ...cur,
+                      presets: upsertCsvPreset(cur.presets, {
+                        name: savedName,
+                        targetAccountId: csvAccount,
+                        mapping: { ...csvMapping, chargesPositive },
+                      }),
+                    }));
+                    setCsvPresetName('');
+                    setCsvError('');
+                  } catch (e) { setCsvError((e as Error).message); }
+                }} style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: palette.tint }}>
+                  <Text style={{ color: palette.brand, fontWeight: '700', fontSize: 13 }}>Save preset</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
+
+          {showCsvRuleForm ? (
+            <View style={{ gap: 8, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: palette.border, backgroundColor: palette.raised }}>
+              <Text style={ui.small}>Auto-assign category when imported payee contains:</Text>
+              <TextInput accessibilityLabel="Payee rule keyword" placeholder="Payee keyword (e.g. Trader Joe's, Netflix)" placeholderTextColor={palette.muted} value={csvRulePattern} onChangeText={setCsvRulePattern} style={[ui.input, { color: palette.text, borderColor: palette.inputBorder }]} />
+              <SelectDropdown
+                label="Rule category"
+                sheetTitle="Rule category"
+                value={csvRuleCategory}
+                options={CATEGORY_CHOICES.map(c => ({ label: c.label, value: c.category }))}
+                onSelect={val => setCsvRuleCategory(val)}
+              />
+              <Pressable accessibilityRole="button" onPress={() => {
+                try {
+                  updatePayeeMemoryState(cur => ({
+                    ...cur,
+                    rules: upsertCsvPayeeRule(cur.rules, {
+                      pattern: csvRulePattern,
+                      category: csvRuleCategory,
+                      accountId: csvRuleCategory === 'debit_spending' ? null : (csvAccount || null),
+                    }),
+                  }));
+                  setCsvRulePattern('');
+                  setCsvError('');
+                } catch (e) { setCsvError((e as Error).message); }
+              }} style={{ alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: palette.tint }}>
+                <Text style={{ color: palette.brand, fontWeight: '700', fontSize: 13 }}>Add rule</Text>
+              </Pressable>
+              {activePayeeMemory.rules.length > 0 ? (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {activePayeeMemory.rules.map(rule => (
+                    <Pressable key={rule.id} accessibilityRole="button" accessibilityLabel={`Remove rule ${rule.pattern}`} onPress={() => updatePayeeMemoryState(cur => ({ ...cur, rules: deleteCsvPayeeRule(cur.rules, rule.id) }))} style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14, borderWidth: 1, borderColor: palette.cardBorder, backgroundColor: palette.surface }}>
+                      <Text style={{ color: palette.text, fontSize: 12 }}>{`${rule.pattern} → ${formatTransactionCategoryLabel(rule.category)} ×`}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          <Text style={ui.small}>{csvRemaining ? csvRemaining.length : csvPreview.ready.length} new · {csvPreview.skipped} skipped</Text>
+          {(csvRemaining ?? csvPreview.ready).slice(0, 5).map((row, index) => {
+            const resolvedCategory: TransactionCategory = 'category' in row
+              ? row.category
+              : resolveCsvRowCategory({
+                  amount: row.amount,
+                  hasDebtAccount: Boolean(csvAccount),
+                  chargesPositive,
+                  suggestedCategory: row.suggestedCategory,
+                });
+            return (
+              <Text key={index} style={ui.small}>
+                {`${row.date} · ${row.payee || 'Imported'} · ${formatCurrency(Math.abs(moneyToMajor(row.amount)), currencySymbol)} · ${formatTransactionCategoryLabel(resolvedCategory)}`}
+              </Text>
+            );
+          })}
+          {csvError || csvPreview.error ? <Text style={{ color: palette.neg }}>{csvError || csvPreview.error}</Text> : null}
           <Pressable accessibilityRole="button" disabled={csvSaving || (!csvRemaining && !csvPreview.ready.length)} onPress={async () => {
             if (csvSavingRef.current) return;
-            const rows: LedgerTransaction[] = csvRemaining ?? csvPreview.ready.map(row => ({ id: `tx:${Crypto.randomUUID()}`, accountId: csvAccount || null, date: parseDateOnly(row.date), appliesToDate: null, amount: makeMoney(currencyCode, Math.abs(row.amount.minorUnits)), category: csvAccount ? ((row.amount.minorUnits > 0) === chargesPositive ? 'purchase' : 'payment') : 'debit_spending', payee: row.payee || 'Imported transaction', source: 'manual', reconciled: false, createdAt: new Date().toISOString(), deletedAt: null }));
+            const rows: LedgerTransaction[] = csvRemaining ?? csvPreview.ready.map(row => {
+              const resolvedCategory = resolveCsvRowCategory({
+                amount: row.amount,
+                hasDebtAccount: Boolean(csvAccount),
+                chargesPositive,
+                suggestedCategory: row.suggestedCategory,
+              });
+              const resolvedAccountId = resolvedCategory === 'debit_spending'
+                ? null
+                : (row.suggestedAccountId && debts.some(d => d.id === row.suggestedAccountId) ? row.suggestedAccountId : (csvAccount || null));
+              return { id: `tx:${Crypto.randomUUID()}`, accountId: resolvedAccountId, date: parseDateOnly(row.date), appliesToDate: null, amount: makeMoney(currencyCode, Math.abs(row.amount.minorUnits)), category: resolvedCategory, payee: row.payee || 'Imported transaction', source: 'manual', reconciled: false, createdAt: new Date().toISOString(), deletedAt: null };
+            });
             csvSavingRef.current = true; setCsvSaving(true); setCsvRemaining(rows); setCsvError('');
             try { await saveTransactionBatch(rows, setCsvRemaining); setShowCsvImport(false); setCsvRemaining(null); setCsvText(''); } catch (error) { setCsvError((error as Error).message || 'Unable to save transactions'); } finally { csvSavingRef.current = false; setCsvSaving(false); }
-          }}><Text style={{ color: palette.brand, fontWeight: '700' }}>{csvSaving ? 'Saving?' : 'Import transactions'}</Text></Pressable>
+          }}><Text style={{ color: palette.brand, fontWeight: '700' }}>{csvSaving ? 'Saving…' : 'Import transactions'}</Text></Pressable>
         </ScrollView>
       </SheetModal> : null}
 
@@ -1945,6 +2153,9 @@ const AddTransactionModal = memo(function AddTransactionModal({
   obligationSchedules,
   historicalBillIdsByDebtId,
   recentPurchase,
+  payeeMemory,
+  recentPayees,
+  onRememberPayee,
   todayStr,
   currentMonthStr,
   currencyCode,
@@ -1963,6 +2174,9 @@ const AddTransactionModal = memo(function AddTransactionModal({
   obligationSchedules?: ObligationSchedules;
   historicalBillIdsByDebtId: Readonly<Record<string, readonly string[]>>;
   recentPurchase?: LedgerTransaction;
+  payeeMemory: Readonly<Record<string, PayeeMemoryEntry>>;
+  recentPayees: readonly PayeeMemoryEntry[];
+  onRememberPayee?: (entry: { payee: string; category: TransactionCategory; accountId?: string | null }) => void;
   todayStr: DateOnly;
   currentMonthStr: string;
   currencyCode: string;
@@ -1980,6 +2194,8 @@ const AddTransactionModal = memo(function AddTransactionModal({
   const [newNote, setNewNote] = useState('');
   const [newAmount, setNewAmount] = useState('');
   const [newCategoryIdx, setNewCategoryIdx] = useState(0);
+  const [categoryManuallyPicked, setCategoryManuallyPicked] = useState(false);
+  const [rememberedMatchLabel, setRememberedMatchLabel] = useState('');
   const [newAccountId, setNewAccountId] = useState(debts[0]?.id ?? '');
   const [newDate, setNewDate] = useState(() => currentHouseholdDate(householdTimeZone));
   const [newAppliesToDate, setNewAppliesToDate] = useState('');
@@ -2086,6 +2302,9 @@ const AddTransactionModal = memo(function AddTransactionModal({
         setSplitRemaining(rows);
         await onSaveBatch(rows, setSplitRemaining);
       } else await onSave(tx);
+      if (newPayee.trim()) {
+        onRememberPayee?.({ payee: newPayee.trim(), category: catOption.category, accountId });
+      }
     } catch (e) {
       const msg = (e as Error).message || 'Unable to save transaction';
       setFormError(msg);
@@ -2137,6 +2356,39 @@ const AddTransactionModal = memo(function AddTransactionModal({
         {!!formError && (
           <Text accessibilityRole="alert" style={[ui.small, { color: appearanceColor('#F08B78', isLight) }]}>{formError}</Text>
         )}
+
+        <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+          {(debts.length > 0 ? [0, 1, 2] : [0]).map(idx => {
+            const choice = CATEGORY_CHOICES[idx];
+            if (!choice) return null;
+            const active = newCategoryIdx === idx;
+            return (
+              <Pressable
+                key={choice.category}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                onPress={() => {
+                  setNewCategoryIdx(idx);
+                  setCategoryManuallyPicked(true);
+                  setRememberedMatchLabel('');
+                }}
+                style={{
+                  minHeight: 34,
+                  paddingHorizontal: 12,
+                  borderRadius: 17,
+                  borderWidth: 1,
+                  borderColor: active ? palette.brand : palette.cardBorder,
+                  backgroundColor: active ? palette.tint : palette.surface,
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={{ color: active ? palette.brand : palette.text, fontSize: 13, fontWeight: active ? '700' : '600' }}>
+                  {choice.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
 
         <View style={{ borderRadius: 16, borderWidth: 1, borderColor: palette.border, backgroundColor: isLight ? palette.surface : palette.raised, paddingHorizontal: 15, overflow: 'hidden' }}>
           <Pressable
@@ -2204,7 +2456,77 @@ const AddTransactionModal = memo(function AddTransactionModal({
               style={{ flex: 1, minWidth: 96, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 15, fontWeight: '600' }}
             />
           </View>
+
+          <View style={{ height: 1, backgroundColor: palette.border }} />
+          <View style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 2 }}>
+            <Text style={{ color: palette.text, fontSize: 15, fontWeight: '500' }}>Payee</Text>
+            <TextInput
+              accessibilityLabel="Payee"
+              placeholder="Merchant or payee (optional)"
+              placeholderTextColor={palette.muted}
+              textAlign="right"
+              value={newPayee}
+              onChangeText={val => {
+                setNewPayee(val);
+                if (!categoryManuallyPicked) {
+                  const matched = lookupPayeeMemory(payeeMemory, val);
+                  if (matched) {
+                    const matchedIdx = CATEGORY_CHOICES.findIndex(c => c.category === matched.category);
+                    if (matchedIdx >= 0 && (matched.category === 'debit_spending' || debts.length > 0)) {
+                      setNewCategoryIdx(matchedIdx);
+                      setRememberedMatchLabel(CATEGORY_CHOICES[matchedIdx].label);
+                      if (matched.accountId && debts.some(d => d.id === matched.accountId)) {
+                        setNewAccountId(matched.accountId);
+                      }
+                    }
+                  } else {
+                    setRememberedMatchLabel('');
+                  }
+                }
+              }}
+              style={{ flex: 1, minWidth: 120, minHeight: 44, paddingVertical: 8, paddingHorizontal: 0, textAlign: 'right', color: palette.text, fontSize: 15, fontWeight: '500' }}
+            />
+          </View>
         </View>
+
+        {rememberedMatchLabel ? (
+          <Text style={[ui.small, { color: palette.brand }]}>{`Auto-selected ${rememberedMatchLabel} from payee memory`}</Text>
+        ) : null}
+
+        {recentPayees.length > 0 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+            {recentPayees.map(entry => (
+              <Pressable
+                key={entry.payee}
+                accessibilityRole="button"
+                accessibilityLabel={`Use payee ${entry.payee}`}
+                onPress={() => {
+                  setNewPayee(entry.payee);
+                  const idx = CATEGORY_CHOICES.findIndex(c => c.category === entry.category);
+                  if (idx >= 0 && (entry.category === 'debit_spending' || debts.length > 0)) {
+                    setNewCategoryIdx(idx);
+                    setRememberedMatchLabel(CATEGORY_CHOICES[idx].label);
+                  }
+                  if (entry.accountId && debts.some(d => d.id === entry.accountId)) {
+                    setNewAccountId(entry.accountId);
+                  }
+                  setCategoryManuallyPicked(false);
+                }}
+                style={{
+                  minHeight: 32,
+                  paddingHorizontal: 11,
+                  borderRadius: 16,
+                  borderWidth: 1,
+                  borderColor: palette.cardBorder,
+                  backgroundColor: palette.surface,
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={{ color: palette.text, fontSize: 12.5, fontWeight: '600' }}>{entry.payee}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : null}
 
         {CATEGORY_CHOICES[newCategoryIdx].isDebt && selectedDebt && newAmount ? (() => {
           try {
@@ -2246,8 +2568,6 @@ const AddTransactionModal = memo(function AddTransactionModal({
 
           {showMoreDetails ? (
             <View style={{ gap: 10 }}>
-              <Text style={ui.small}>Payee (optional)</Text>
-              <TextInput accessibilityLabel="Payee" placeholder="Payee" placeholderTextColor={palette.muted} value={newPayee} onChangeText={setNewPayee} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
               <Text style={ui.small}>Note (optional)</Text>
               <TextInput accessibilityLabel="Note" placeholder="Note" placeholderTextColor={palette.muted} value={newNote} onChangeText={setNewNote} style={[ui.input, { backgroundColor: palette.surface, borderColor: palette.inputBorder, color: palette.text }]} />
               {['purchase', 'debit_spending'].includes(CATEGORY_CHOICES[newCategoryIdx].category) ? <View style={{ gap: 8 }}>

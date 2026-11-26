@@ -7,6 +7,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
@@ -25,11 +26,16 @@ import {
   isConfigured,
   listenAppState,
   onAuthInvalidated,
+  onPasswordRecovery,
   createSessionVerification,
   signInWithApple,
   signInWithGoogle,
   signInWithEmail,
   signUpWithEmail,
+  requestPasswordReset,
+  completePasswordResetCallback,
+  updatePasswordForRecovery,
+  resendEmailConfirmation,
   signOut,
   verifiedSession,
   getSupabaseClient,
@@ -141,6 +147,10 @@ function RootApp() {
   const [pendingDeletionRequest, setPendingDeletionRequest] = useState<AccountDeletionRequest | null>(null);
   const [appleAvailable, setAppleAvailable] = useState(false);
   const [householdSummaries, setHouseholdSummaries] = useState<HouseholdMembershipSummary[]>([]);
+  const [passwordRecoveryPending, setPasswordRecoveryPending] = useState(false);
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState('');
+  const [recoveryError, setRecoveryError] = useState('');
 
   const [recoveryIssue, setRecoveryIssue] = useState<HouseholdDataUnavailableError | null>(null);
   const recoveryContextRef = useRef<HouseholdContext | null>(null);
@@ -578,10 +588,19 @@ function RootApp() {
     void (async () => {
       try {
         const url = await Linking.getInitialURL();
+        const recovered = url ? await completePasswordResetCallback(url).catch(err => {
+          if (mounted.current) setError(err instanceof Error ? err.message : 'Unable to verify password reset link.');
+          return null;
+        }) : null;
+        if (recovered && mounted.current) {
+          sessionRef.current = recovered;
+          setSession(recovered);
+          setPasswordRecoveryPending(true);
+        }
         const token = url ? parseHouseholdInviteInput(url) : null;
         if (token) await receiveInvite(token);
         else rememberInvite(await invitationStore.load());
-        if (mounted.current) void validate();
+        if (mounted.current && !recovered) void validate();
       } catch (err) {
         if (mounted.current) {
           setError(err instanceof Error ? err.message : 'Unable to recover your invitation. Try again.');
@@ -601,10 +620,32 @@ function RootApp() {
     }
     const handleIncomingUrl = (url: string | null | undefined) => {
       if (!url || !mounted.current) return;
+      void completePasswordResetCallback(url)
+        .then(recovered => {
+          if (recovered && mounted.current) {
+            sessionRef.current = recovered;
+            setSession(recovered);
+            setRecoveryNewPassword('');
+            setRecoveryConfirmPassword('');
+            setRecoveryError('');
+            setPasswordRecoveryPending(true);
+          }
+        })
+        .catch(err => {
+          if (mounted.current) setError(err instanceof Error ? err.message : 'Unable to verify password reset link.');
+        });
       const token = parseHouseholdInviteInput(url);
       if (!token) return;
       void receiveInvite(token).catch(err => { if (mounted.current) setError(err instanceof Error ? err.message : 'Unable to save your invitation. Open the link again.'); });
     };
+    const unsubscribeRecovery = onPasswordRecovery(() => {
+      if (mounted.current) {
+        setRecoveryNewPassword('');
+        setRecoveryConfirmPassword('');
+        setRecoveryError('');
+        setPasswordRecoveryPending(true);
+      }
+    });
     const linkSub = Linking.addEventListener('url', event => handleIncomingUrl(event.url));
     const subscription = listenAppState(() => {
       // Re-verify silently on return to the foreground when an active session already rendered the app.
@@ -643,6 +684,7 @@ function RootApp() {
       linkSub.remove();
       subscription.remove();
       unsubscribe();
+      unsubscribeRecovery();
     };
   }, [validate, setAuthScreen, setStage, receiveInvite, rememberInvite]);
 
@@ -726,6 +768,36 @@ function RootApp() {
     if (needsConfirmation && mounted.current) setNotice('Check your email for a confirmation link, then sign in.');
     return Boolean(session) || needsConfirmation;
   };
+  const runEmailRecoveryAction = async (action: () => Promise<void>, successMessage: string): Promise<boolean> => {
+    if (busyRef.current) return false;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await action();
+      if (mounted.current) setNotice(successMessage);
+      return true;
+    } catch (err) {
+      if (mounted.current) setError(err instanceof Error ? err.message : 'Unable to complete request. Please try again.');
+      return false;
+    } finally {
+      if (mounted.current) {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    }
+  };
+  const handlePasswordReset = (email: string) =>
+    runEmailRecoveryAction(
+      () => requestPasswordReset(email),
+      `If an account exists for ${email.trim()}, we sent a password reset link. Check your inbox.`,
+    );
+  const handleResendConfirmation = (email: string) =>
+    runEmailRecoveryAction(
+      () => resendEmailConfirmation(email),
+      `Confirmation email resent to ${email.trim()}. Check your inbox and spam folder.`,
+    );
 
   const logout = async () => {
     if (busyRef.current) return;
@@ -948,6 +1020,82 @@ function RootApp() {
     );
   }
 
+  if (passwordRecoveryPending && session) {
+    const submitRecoveryPassword = async () => {
+      if (busyRef.current) return;
+      if (recoveryNewPassword.length < 6) {
+        setRecoveryError('Password must be at least 6 characters.');
+        return;
+      }
+      if (recoveryNewPassword !== recoveryConfirmPassword) {
+        setRecoveryError('Passwords do not match.');
+        return;
+      }
+      busyRef.current = true;
+      setBusy(true);
+      setRecoveryError('');
+      try {
+        const refreshed = await updatePasswordForRecovery(recoveryNewPassword);
+        if (!mounted.current) return;
+        const activeSession = refreshed ?? session;
+        sessionRef.current = activeSession;
+        setSession(activeSession);
+        setPasswordRecoveryPending(false);
+        setRecoveryNewPassword('');
+        setRecoveryConfirmPassword('');
+        setNotice('Password updated.');
+        busyRef.current = false;
+        setBusy(false);
+        void validate();
+      } catch (err) {
+        if (mounted.current) {
+          setRecoveryError(err instanceof Error ? err.message : 'Unable to update password.');
+          busyRef.current = false;
+          setBusy(false);
+        }
+      }
+    };
+    return (
+      <View style={styles.root}>
+        <StatusBar style="light" />
+        <SafeAreaView style={styles.unavailableWrap} edges={['top', 'bottom', 'left', 'right']}>
+          <Text style={styles.unavailableTitle} accessibilityRole="header">Choose a new password</Text>
+          <TextInput
+            accessibilityLabel="New password"
+            placeholder="New password (min 6 characters)"
+            placeholderTextColor="#9AA6A0"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!busy}
+            value={recoveryNewPassword}
+            onChangeText={setRecoveryNewPassword}
+            style={{ width: '100%', minHeight: 48, borderRadius: 9, borderWidth: 1, borderColor: '#5D6660', backgroundColor: '#1E2321', color: '#F9F9F6', paddingHorizontal: 14 }}
+          />
+          <TextInput
+            accessibilityLabel="Confirm new password"
+            placeholder="Confirm new password"
+            placeholderTextColor="#9AA6A0"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!busy}
+            value={recoveryConfirmPassword}
+            onChangeText={setRecoveryConfirmPassword}
+            style={{ width: '100%', minHeight: 48, borderRadius: 9, borderWidth: 1, borderColor: '#5D6660', backgroundColor: '#1E2321', color: '#F9F9F6', paddingHorizontal: 14 }}
+          />
+          {!!recoveryError ? <Text style={styles.unavailableError} accessibilityRole="alert">{recoveryError}</Text> : null}
+          <Pressable accessibilityRole="button" disabled={busy} style={[styles.primaryButton, busy && styles.disabledButton]} onPress={() => void submitRecoveryPassword()}>
+            <Text style={styles.primaryButtonText}>{busy ? 'Saving…' : 'Save new password'}</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" disabled={busy} style={styles.secondaryButton} onPress={() => { setPasswordRecoveryPending(false); void logout(); }}>
+            <Text style={styles.secondaryButtonText}>Cancel and sign out</Text>
+          </Pressable>
+        </SafeAreaView>
+      </View>
+    );
+  }
+
   if (authState === 'recovery' && session) {
     return <NativeAppearanceProvider userId={session.user.id}><SafeAreaView style={{ flex: 1 }}><AccountRecoveryScreen email={session.user.email ?? 'Signed in'} issue={error || 'Your household could not be loaded. Refresh to try again.'} diagnostics={recoveryIssue?.diagnostics ?? []} recoveryKind={recoveryIssue?.recoveryKind} pendingOperationCount={recoveryIssue?.pendingOperationCount ?? 0} households={householdSummaries} currentId={recoveryIssue?.context?.householdId} currentRole={recoveryIssue?.context?.role} actionBusy={busy} onRepair={handleRepairDebtCategory} onSyncAndRecover={handleSyncAndRecoverPending} onAcceptServerState={handleAcceptServerStateAndContinue} onSwitch={handleSwitchHousehold} onJoin={handleAcceptHouseholdInvite} onRefresh={retry} onSignOut={() => void logout()} /></SafeAreaView></NativeAppearanceProvider>;
   }
@@ -1071,6 +1219,8 @@ function RootApp() {
         onAppleSignIn={() => login(signInWithApple)}
         onEmailSignIn={handleEmailSignIn}
         onEmailSignUp={handleEmailSignUp}
+        onResetPassword={handlePasswordReset}
+        onResendConfirmation={handleResendConfirmation}
         onSignOut={logout}
         onDeleteAccount={deleteAccount}
         accountDeletionEnabled={process.env.EXPO_PUBLIC_ACCOUNT_DELETION_ENABLED === 'true'}

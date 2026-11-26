@@ -7,9 +7,9 @@ import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Crypto from 'expo-crypto';
-import { CALLBACK, classifyAuthError, isEmailPasswordAuthEnabled, parseCallback, productionConfigProblem, sandboxConfigProblem, validateEmailPasswordInput } from './auth-guards';
+import { CALLBACK, RECOVERY_CALLBACK, classifyAuthError, isEmailPasswordAuthEnabled, parseCallback, parseRecoveryCallback, productionConfigProblem, sandboxConfigProblem, validateEmailInput, validateEmailPasswordInput } from './auth-guards';
 import { createChunkedStorage, type KeyValueStore } from './secure-chunks';
-export { isEmailPasswordAuthEnabled, validateEmailPasswordInput } from './auth-guards';
+export { isEmailPasswordAuthEnabled, validateEmailInput, validateEmailPasswordInput } from './auth-guards';
 
 // React Native's Hermes runtime does not provide WebCrypto's subtle.digest by default; without it,
 // @supabase/auth-js downgrades PKCE from S256 to plain. Wire expo-crypto into globalThis.crypto first.
@@ -199,6 +199,79 @@ export async function signInWithEmail(email: string, password: string): Promise<
   return (await emailAuth(email, password, false)).session;
 }
 
+export async function requestPasswordReset(email: string): Promise<void> {
+  if (!isEmailPasswordAuthEnabled()) throw new Error('Email sign-in is not available.');
+  const validation = validateEmailInput(email);
+  if (validation) throw new Error(validation);
+  const supabase = getClient();
+  storageFailed = false;
+  let error: unknown = null;
+  try {
+    error = (await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: RECOVERY_CALLBACK })).error;
+  } catch (caught) {
+    throw failure(caught, 'Password reset email could not be sent. Please try again.');
+  }
+  if (error) {
+    const status = (error as { status?: number }).status;
+    if (status === 429 && !storageFailed) throw new Error(emailErrors.rate_limit);
+    throw failure(error, emailErrors[classifyAuthError(error)] ?? 'Password reset email could not be sent. Please try again.');
+  }
+}
+
+export async function completePasswordResetCallback(url: string): Promise<Session | null> {
+  if (!isEmailPasswordAuthEnabled()) return null;
+  const parsed = parseRecoveryCallback(url);
+  if (parsed.kind === 'error') throw new Error(parsed.reason === 'access_denied' ? 'Password reset was cancelled.' : 'Password reset link could not be verified.');
+  if (parsed.kind !== 'code' || consumedCodes.has(parsed.code)) return null;
+  consumedCodes.add(parsed.code);
+  const supabase = getClient();
+  storageFailed = false;
+  let exchangeError: unknown = null;
+  try { exchangeError = (await supabase.auth.exchangeCodeForSession(parsed.code)).error; }
+  catch (error) { exchangeError = error; }
+  if (exchangeError) throw failure(exchangeError, 'Password reset link expired or is invalid. Request a new one.');
+  await releaseSignedOutLock();
+  return verifiedSession();
+}
+
+export async function updatePasswordForRecovery(newPassword: string): Promise<Session | null> {
+  if (!isEmailPasswordAuthEnabled()) throw new Error('Email sign-in is not available.');
+  if (newPassword.length < 6) throw new Error('Password must be at least 6 characters.');
+  const supabase = getClient();
+  storageFailed = false;
+  let error: unknown = null;
+  try {
+    error = (await supabase.auth.updateUser({ password: newPassword })).error;
+  } catch (caught) {
+    throw failure(caught, 'Password could not be updated. Please try again.');
+  }
+  if (error) {
+    const category = classifyAuthError(error);
+    if ((error as { status?: number }).status === 429 && !storageFailed) throw new Error(emailErrors.rate_limit);
+    throw failure(error, emailErrors[category] ?? 'Password could not be updated. Request a new reset email and try again.');
+  }
+  return verifiedSession();
+}
+
+export async function resendEmailConfirmation(email: string): Promise<void> {
+  if (!isEmailPasswordAuthEnabled()) throw new Error('Email sign-in is not available.');
+  const validation = validateEmailInput(email);
+  if (validation) throw new Error(validation);
+  const supabase = getClient();
+  storageFailed = false;
+  let error: unknown = null;
+  try {
+    error = (await supabase.auth.resend({ type: 'signup', email: email.trim() })).error;
+  } catch (caught) {
+    throw failure(caught, 'Confirmation email could not be resent. Please try again.');
+  }
+  if (error) {
+    const status = (error as { status?: number }).status;
+    if (status === 429 && !storageFailed) throw new Error(emailErrors.rate_limit);
+    throw failure(error, emailErrors[classifyAuthError(error)] ?? 'Confirmation email could not be resent. Please try again.');
+  }
+}
+
 // Authorization codes already submitted in this process; a replayed callback is rejected before reaching the server.
 const consumedCodes = new Set<string>();
 
@@ -282,6 +355,13 @@ export function onAuthInvalidated(onInvalid: () => void) {
   if (!client) return () => {};
   const { data } = client.auth.onAuthStateChange(event => {
     if (event === 'SIGNED_OUT') onInvalid();
+  });
+  return () => data.subscription.unsubscribe();
+}
+export function onPasswordRecovery(onRecovery: () => void) {
+  if (!client) return () => {};
+  const { data } = client.auth.onAuthStateChange(event => {
+    if (event === 'PASSWORD_RECOVERY') onRecovery();
   });
   return () => data.subscription.unsubscribe();
 }

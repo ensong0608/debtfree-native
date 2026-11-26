@@ -1,9 +1,17 @@
 # DebtFree Native — Active Task Tracker
 
-- **Next Task ID:** `T-369`
-- **Branch:** `feature/quiet-complexity` (branched from `feature/improve-finance-history-2` @ `5b3d19d`)
+- **Next Task ID:** `T-373`
+- **Branch:** `BitLess/zero-debt-phase-a`
 - **Archive (`T-001..T-349`):** `C:\Development\AI-Infrastructure\memory\debtfree-native\TRACKER_ARCHIVE_T001_T349.md`
 - **Rule:** Keep this file **under 100 lines**. Archive completed milestones periodically.
+
+---
+
+## Completed — Phase A: Zero-Debt Readiness, Auth/Copy Polish & <5s Daily Ergonomics (`T-369..T-372` on `BitLess/zero-debt-phase-a`)
+- **`T-369` (`DONE`):** Unblocked & rebranded zero-debt onboarding (`src/onboarding-domain.ts`, `src/OnboardingAndHome.tsx`, `tests/onboarding-domain.test.mjs`): replaced remaining `DebtFree` copy with `BitLess`, cleared debt-only `goals` default, added zero-debt goals, made `signup_2`..`signup_4` optional/skippable (`Skip for now` / `Prefer not to say`), added `onboard_1` income skip, and added `"I have no debts right now"` in `onboard_3` to land directly on Home.
+- **`T-370` (`DONE`):** Added `Forgot password?` PKCE reset + callback recovery screen (`App.tsx`, `src/auth.ts`, `src/auth-guards.ts`, `src/OnboardingAndHome.tsx`), `Check your email / Resend confirmation` state on `signup_1`, plain-language `CLOUD SYNC & BACKUPS` copy (technical checkpoint hidden unless active/conflicted), and expanded zero-debt `Help & Guides` (`src/screens/SettingsScreen.tsx`).
+- **`T-371` (`DONE`):** Streamlined sub-5s expense logging (`Cash / Debit` first + quick mode pills, inline `Payee`, `Recent Payee` chips, per-user `Payee → Category` memory) and saved CSV import presets + sign-safe payee rules (`src/finance/payee-memory.ts`, `src/payee-memory-storage.ts`, `src/finance/csv.ts`, `src/screens/TransactionsScreen.tsx`, `tests/payee-memory.test.mjs`).
+- **`T-372` (`DONE`):** Added adaptive zero-debt Home Hero (`Debt-Free ($0 owed)` / `Safe to Spend` + `Monthly Savings Rate %` gated on verified inventory) and Progress multi-month `Income vs. Spending` + `Savings Rate` trends and non-debt milestones (`src/finance/progress.ts`, `src/screens/HomeScreen.tsx`, `src/screens/ProgressScreen.tsx`, `tests/finance-progress.test.mjs`). Verified with `tsc --noEmit`, `eslint`, `49/49` targeted tests, and `GPT-6.1 Terra` review.
 
 ---
 

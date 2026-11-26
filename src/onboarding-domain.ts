@@ -15,7 +15,7 @@ import type { HouseholdContext } from './household-context';
 import { calculatePayoff, type PayoffResult, type PayoffAccountInput } from './finance/payoff.ts';
 /**
  * Pure domain types, validation rules, income normalization, and Snowball/Avalanche
- * payoff calculation engine for the DebtFree Native Sign-Up, Onboarding, and Home flows.
+ * payoff calculation engine for the BitLess Sign-Up, Onboarding, and Home flows.
  */
 
 export type FlowStage =
@@ -32,8 +32,9 @@ export type FlowStage =
   | 'home';
 
 export const SIGNUP_GOALS = [
+  'Build a budget / track spending',
+  'I have no debt',
   'Pay down my credit card debt',
-  'Build a monthly budget',
   'Keep up with upcoming bills',
   'See when I can be debt-free',
   'Stay motivated with milestones',
@@ -316,7 +317,7 @@ export function createDefaultOnboardingData(userId: string): UserOnboardingData 
     currentStage: 'signup_2',
     signupCompleted: false,
     onboardingCompleted: false,
-    goals: ['Pay down my credit card debt'],
+    goals: [],
     referralSource: '',
     consideredBeforeAi: null,
     countryCode: 'US',
@@ -369,36 +370,21 @@ export function resolveAuthenticatedStage(data: UserOnboardingData): FlowStage {
   return data.signupCompleted ? 'onboard_1' : 'signup_2';
 }
 
-export function validateSignUpStep2(goals: string[]): string | null {
-  if (!Array.isArray(goals) || goals.length === 0) {
-    return 'Select at least one goal to continue.';
-  }
+export function validateSignUpStep2(_goals: string[]): string | null {
   return null;
 }
 
 export function validateSignUpStep3(
-  referralSource: string,
-  consideredBeforeAi: 'yes' | 'no' | null,
+  _referralSource: string,
+  _consideredBeforeAi: 'yes' | 'no' | null,
 ): string | null {
-  if (!referralSource.trim()) {
-    return 'Select how you heard about DebtFree to continue.';
-  }
-  if (referralSource === AI_REFERRAL_SOURCE && consideredBeforeAi === null) {
-    return 'Please choose whether you were considering DebtFree before asking an AI assistant.';
-  }
   return null;
 }
 
 export function validateSignUpStep4(
-  managesWithPartner: boolean | null,
-  worksWithProfessional: boolean | null,
+  _managesWithPartner: boolean | null,
+  _worksWithProfessional: boolean | null,
 ): string | null {
-  if (managesWithPartner === null) {
-    return 'Please select whether you manage finances with a partner.';
-  }
-  if (worksWithProfessional === null) {
-    return 'Please select whether you work with a financial professional.';
-  }
   return null;
 }
 
@@ -513,12 +499,16 @@ export function validateDebtsStep(
   homeStatus: HomeOwnershipStatus,
   vehicleStatus: VehicleOwnershipStatus,
   debts: DebtItem[],
+  allowNoDebts = false,
 ): string | null {
+  if (allowNoDebts && debts.length === 0) {
+    return null;
+  }
   if (vehicleStatus === 'Finance' && !debts.some(d => d.category === 'Auto loan')) {
     return 'You selected that you finance a vehicle. Please add your Auto loan details or update Your vehicle selection.';
   }
   if (debts.length === 0) {
-    return 'Add at least one debt account to continue.';
+    return 'Add at least one debt account to continue, or select "I have no debts right now".';
   }
   return null;
 }

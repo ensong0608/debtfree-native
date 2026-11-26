@@ -1,5 +1,5 @@
 import { resolveAuthenticatedStage } from './onboarding-domain';
-import { isEmailPasswordAuthEnabled } from './auth';
+import { isEmailPasswordAuthEnabled, validateEmailInput } from './auth';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -113,6 +113,8 @@ type Props = {
   onAppleSignIn: () => Promise<Session | null>;
   onEmailSignIn: (email: string, password: string) => Promise<boolean>;
   onEmailSignUp: (email: string, password: string) => Promise<boolean>;
+  onResetPassword?: (email: string) => Promise<boolean>;
+  onResendConfirmation?: (email: string) => Promise<boolean>;
   onSignOut: () => Promise<void>;
   onDeleteAccount: () => Promise<void>;
   accountDeletionEnabled: boolean;
@@ -256,6 +258,8 @@ function DebtFreeFlowContent({
   onAppleSignIn,
   onEmailSignIn,
   onEmailSignUp,
+  onResetPassword,
+  onResendConfirmation,
   onSignOut,
   onDeleteAccount,
   accountDeletionEnabled,
@@ -273,7 +277,8 @@ function DebtFreeFlowContent({
   const [signInMode, setSignInMode] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  useEffect(() => { setPassword(''); }, [session?.user.id]);
+  const [pendingConfirmationEmail, setPendingConfirmationEmail] = useState('');
+  useEffect(() => { setPassword(''); setPendingConfirmationEmail(''); }, [session?.user.id]);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState('');
   const savingRef = useRef(false);
@@ -1225,12 +1230,12 @@ function DebtFreeFlowContent({
       <SafeAreaView style={[styles.root, { backgroundColor: palette.canvas }]} edges={['top', 'bottom', 'left', 'right']}>
         <ScrollView contentContainerStyle={styles.welcomeScroll} showsVerticalScrollIndicator={false}>
           <View style={styles.logoRow}>
-            <View style={styles.logoBrand} accessible accessibilityRole="header" accessibilityLabel="DebtFree">
+            <View style={styles.logoBrand} accessible accessibilityRole="header" accessibilityLabel="BitLess">
               <View style={styles.brandMark}>
                 <AppIcon name="brandRise" size={16} color={palette.onBrand} />
               </View>
               <Text style={styles.logoText}>
-                Debt<Text style={styles.logoTextAccent}>Free</Text>
+                Bit<Text style={styles.logoTextAccent}>Less</Text>
               </Text>
             </View>
             <Pressable
@@ -1274,13 +1279,13 @@ function DebtFreeFlowContent({
 
           <View style={styles.welcomeCopy}>
             <View style={styles.badgeSmall}>
-              <Text style={styles.badgeSmallText}>BUILT FOR YOUR DEBT-FREE JOURNEY</Text>
+              <Text style={styles.badgeSmallText}>BUILT FOR CLARITY & CONTROL</Text>
             </View>
             <Text style={styles.welcomeTitle} accessibilityRole="header">
-              {'Take control.\nPay off debt.'}
+              {'Track spending.\nPay off debt.'}
             </Text>
             <Text style={styles.welcomeSubtitle}>
-              Bring your balances, bills and payoff plan together in one clear place.
+              Bring your budget, bills, and payoff plan together in one clear place.
             </Text>
           </View>
 
@@ -1402,23 +1407,98 @@ function DebtFreeFlowContent({
             </View>
           ) : null}
 
+          {(() => {
+            const confirmationEmail = pendingConfirmationEmail || (/confirm your email/i.test(authError) && validateEmailInput(email) === null ? email.trim() : '');
+            return configured && isEmailPasswordAuthEnabled() && !isSignedIn && confirmationEmail ? (
+            <View style={styles.calloutOrange}>
+              <Text style={styles.calloutOrangeTitle}>Check your email</Text>
+              <Text style={styles.calloutOrangeText}>
+                {`Confirm ${confirmationEmail} using the link we sent, then sign in.`}
+              </Text>
+              {onResendConfirmation ? (
+                <View style={[styles.choiceGrid2, { marginTop: 10 }]}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Resend confirmation email"
+                    disabled={authBusy}
+                    style={[styles.subtleActionBtn, authBusy && styles.disabledButton]}
+                    onPress={() => {
+                      clearErrors();
+                      void onResendConfirmation(confirmationEmail);
+                    }}
+                  >
+                    <Text style={styles.subtleActionBtnText}>Resend confirmation</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Use a different email"
+                    disabled={authBusy}
+                    style={[styles.subtleActionBtn, authBusy && styles.disabledButton]}
+                    onPress={() => {
+                      clearErrors();
+                      setPendingConfirmationEmail('');
+                    }}
+                  >
+                    <Text style={styles.subtleActionBtnText}>Different email</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+            ) : null;
+          })()}
+
           {configured && isEmailPasswordAuthEnabled() && !isSignedIn ? (
             <View>
               <Text style={styles.fieldLabel}>Email *</Text>
-              <TextInput accessibilityLabel="Email" value={email} onChangeText={setEmail}
+              <TextInput accessibilityLabel="Email" value={email} onChangeText={val => {
+                setEmail(val);
+                if (pendingConfirmationEmail && val.trim().toLowerCase() !== pendingConfirmationEmail.toLowerCase()) {
+                  setPendingConfirmationEmail('');
+                }
+              }}
                 autoCapitalize="none" autoCorrect={false} keyboardType="email-address" textContentType="emailAddress"
                 editable={!authBusy} style={styles.bigFieldInput} />
               <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Password *</Text>
               <TextInput accessibilityLabel="Password" value={password} onChangeText={setPassword}
                 autoCapitalize="none" autoCorrect={false} secureTextEntry textContentType="password"
                 editable={!authBusy} style={styles.bigFieldInput} />
+              {signInMode && onResetPassword ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Forgot password"
+                  disabled={authBusy}
+                  style={{ alignSelf: 'flex-end', marginTop: 8, paddingVertical: 4 }}
+                  onPress={() => {
+                    clearErrors();
+                    const emailProblem = validateEmailInput(email);
+                    if (emailProblem) {
+                      setLocalError(emailProblem);
+                      return;
+                    }
+                    void onResetPassword(email);
+                  }}
+                >
+                  <Text style={styles.linkText}>Forgot password?</Text>
+                </Pressable>
+              ) : null}
               <Pressable accessibilityRole="button" accessibilityLabel={signInMode ? 'Sign in' : 'Create account'}
                 accessibilityState={{ disabled: authBusy, busy: authBusy }} disabled={authBusy}
                 style={[styles.primaryButton, { marginTop: 16 }, authBusy && styles.disabledButton]}
                 onPress={() => {
                   clearErrors();
+                  const normalizedEmail = email.trim();
                   void (signInMode ? onEmailSignIn(email, password) : onEmailSignUp(email, password))
-                    .then(success => { if (success) setPassword(''); });
+                    .then(success => {
+                      if (success) {
+                        setPassword('');
+                        if (!signInMode && normalizedEmail) {
+                          setPendingConfirmationEmail(normalizedEmail);
+                          setSignInMode(true);
+                        } else {
+                          setPendingConfirmationEmail('');
+                        }
+                      }
+                    });
                 }}>
                 <Text style={styles.primaryButtonText}>{signInMode ? 'Sign in' : 'Create account'}</Text>
               </Pressable>
@@ -1505,7 +1585,7 @@ function DebtFreeFlowContent({
 
           <View style={styles.calloutTeal}>
             <Text style={styles.calloutTealText}>
-              Your financial details remain private. You decide what to add to DebtFree.
+              Your financial details remain private. You decide what to add to BitLess.
             </Text>
           </View>
 
@@ -1607,10 +1687,10 @@ function DebtFreeFlowContent({
         <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
           <View style={styles.introBox}>
             <Text style={styles.introTitle} accessibilityRole="header">
-              What brings you to DebtFree? *
+              What brings you to BitLess?
             </Text>
             <Text style={styles.introSubtitle}>
-              Choose what matters most. We’ll use it to tailor your experience.
+              Optional — choose any that fit, or skip for now.
             </Text>
           </View>
 
@@ -1647,6 +1727,18 @@ function DebtFreeFlowContent({
             ) : (
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Skip goals"
+            disabled={saving}
+            style={[styles.subtleActionBtn, { marginTop: 10 }, saving && styles.disabledButton]}
+            onPress={() => {
+              clearErrors();
+              void persistAndMove({ goals: [] }, 'signup_3');
+            }}
+          >
+            <Text style={styles.subtleActionBtnText}>Skip for now</Text>
           </Pressable>
         </View>
       </SafeAreaView>
@@ -1691,8 +1783,9 @@ function DebtFreeFlowContent({
         <ScrollView contentContainerStyle={styles.stepContent} showsVerticalScrollIndicator={false}>
           <View style={[styles.introBox, styles.introCompact]}>
             <Text style={[styles.introTitle, styles.introTitleCompact]} accessibilityRole="header">
-              How did you hear about DebtFree? *
+              How did you hear about BitLess?
             </Text>
+            <Text style={styles.introSubtitle}>Optional — skip anytime.</Text>
           </View>
 
           {REFERRAL_SOURCES.map(source => (
@@ -1713,12 +1806,24 @@ function DebtFreeFlowContent({
               }}
             />
           ))}
+          <ChoiceButton
+            label="Prefer not to say"
+            selected={onboardingData.referralSource === 'Prefer not to say'}
+            onPress={() => {
+              clearErrors();
+              onUpdateOnboardingData({
+                ...onboardingData,
+                referralSource: 'Prefer not to say',
+                consideredBeforeAi: null,
+              });
+            }}
+          />
 
           {isAiSelected ? (
             <View style={styles.calloutOrange}>
               <Text style={styles.calloutOrangeTitle}>If you chose AI</Text>
               <Text style={styles.calloutOrangeText}>
-                Were you considering DebtFree before asking an AI assistant? *
+                Were you considering BitLess before asking an AI assistant?
               </Text>
               <View style={[styles.choiceGrid2, { marginTop: 10 }]}>
                 <ChoiceButton
@@ -1763,6 +1868,18 @@ function DebtFreeFlowContent({
             ) : (
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Skip referral question"
+            disabled={saving}
+            style={[styles.subtleActionBtn, { marginTop: 10 }, saving && styles.disabledButton]}
+            onPress={() => {
+              clearErrors();
+              void persistAndMove({ referralSource: '', consideredBeforeAi: null }, 'signup_4');
+            }}
+          >
+            <Text style={styles.subtleActionBtnText}>Skip for now</Text>
           </Pressable>
         </View>
       </SafeAreaView>
@@ -1859,7 +1976,7 @@ function DebtFreeFlowContent({
             </View>
           ) : null}
 
-          <Text style={styles.fieldLabel}>Do you manage finances with a partner? *</Text>
+          <Text style={styles.fieldLabel}>Do you manage finances with a partner? (Optional)</Text>
           <View style={styles.choiceGrid2}>
             <ChoiceButton
               label="Yes"
@@ -1880,9 +1997,18 @@ function DebtFreeFlowContent({
               }}
             />
           </View>
+          <ChoiceButton
+            label="Prefer not to say"
+            compact
+            selected={onboardingData.managesWithPartner === null}
+            onPress={() => {
+              clearErrors();
+              onUpdateOnboardingData({ ...onboardingData, managesWithPartner: null });
+            }}
+          />
 
           <Text style={[styles.fieldLabel, { marginTop: 24 }]}>
-            Do you work with a financial professional? *
+            Do you work with a financial professional? (Optional)
           </Text>
           <View style={styles.choiceGrid2}>
             <ChoiceButton
@@ -1904,10 +2030,19 @@ function DebtFreeFlowContent({
               }}
             />
           </View>
+          <ChoiceButton
+            label="Prefer not to say"
+            compact
+            selected={onboardingData.worksWithProfessional === null}
+            onPress={() => {
+              clearErrors();
+              onUpdateOnboardingData({ ...onboardingData, worksWithProfessional: null });
+            }}
+          />
 
           <View style={[styles.calloutTeal, { marginTop: 28 }]}>
             <Text style={styles.calloutTealText}>
-              Next, we’ll personalize your debt payoff plan in four short steps.
+              Next, personalize your budget and any debts in up to four short steps—or skip straight to Home.
             </Text>
           </View>
 
@@ -2252,6 +2387,26 @@ function DebtFreeFlowContent({
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
           </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Skip income for now"
+            disabled={saving}
+            style={[styles.subtleActionBtn, { marginTop: 10 }, saving && styles.disabledButton]}
+            onPress={() => {
+              clearErrors();
+              void persistAndMove(
+                {
+                  primaryIncomeAmount: 0,
+                  primaryPayFrequency: onboardingData.primaryPayFrequency,
+                  primaryMonthlyIncome: 0,
+                  additionalIncomes: [],
+                },
+                'onboard_3',
+              );
+            }}
+          >
+            <Text style={styles.subtleActionBtnText}>Skip for now</Text>
+          </Pressable>
         </View>
       </SafeAreaView>
     );
@@ -2292,6 +2447,30 @@ function DebtFreeFlowContent({
           debts: onboardingData.debts,
         },
         'onboard_4',
+      );
+    };
+
+    const handleZeroDebtFinish = () => {
+      const err = validateDebtsStep(
+        onboardingData.homeStatus,
+        onboardingData.vehicleStatus,
+        onboardingData.debts,
+        true,
+      );
+      if (err) {
+        setLocalError(err);
+        return;
+      }
+      clearErrors();
+      void persistAndMove(
+        {
+          homeStatus: onboardingData.homeStatus,
+          vehicleStatus: onboardingData.vehicleStatus,
+          debts: [],
+          onboardingCompleted: true,
+          completedAt: new Date().toISOString(),
+        },
+        'home',
       );
     };
 
@@ -2530,6 +2709,17 @@ function DebtFreeFlowContent({
               <Text style={styles.primaryButtonText}>Continue</Text>
             )}
           </Pressable>
+          {onboardingData.debts.length === 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="I have no debts right now"
+              disabled={saving}
+              style={[styles.subtleActionBtn, { marginTop: 10 }, saving && styles.disabledButton]}
+              onPress={handleZeroDebtFinish}
+            >
+              <Text style={styles.subtleActionBtnText}>I have no debts right now</Text>
+            </Pressable>
+          ) : null}
         </View>
       </SafeAreaView>
     );

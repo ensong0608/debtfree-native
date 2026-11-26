@@ -202,7 +202,7 @@ test('partial v2 wins over backup and retains defaults across household switch',
   fixture.profile = { version: 1, userId: 'alice', householdId: 'personal-original', settingsRevision: 2, signupCompleted: true, managesWithPartner: true, updatedAt: '2026-01-01' };
   const loaded = await loadUserOnboardingData(session);
   assert.equal(loaded.signupCompleted, true); assert.equal(loaded.managesWithPartner, true);
-  assert.deepEqual(loaded.goals, ['Pay down my credit card debt']); assert.deepEqual(loaded.debts, []);
+  assert.deepEqual(loaded.goals, []); assert.deepEqual(loaded.debts, []);
   assert.equal(loaded.householdId, 'shared'); assert.equal(loaded.profileSettingsRevision, 2);
 });
 
