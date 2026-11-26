@@ -6,6 +6,9 @@ import {
   calculateAccountActivities,
   calculateCreditUtilization,
   calculateMilestones,
+  calculateMonthlyCashflowTrends,
+  calculateZeroDebtMilestones,
+  recentMonthKeys,
 } from '../src/finance/progress.ts';
 import { makeMoney } from '../src/finance/money.ts';
 import { parseDateOnly } from '../src/finance/calendar.ts';
@@ -292,4 +295,68 @@ test('T-299: nonMortgagePayments excludes mortgages and adjustment categories ne
   assert.equal(summary.totalAdjustments, 25);
   const milestones = calculateMilestones({ debts, transactions: txs });
   assert.equal(milestones.find(m => m.id === 'progress_25').status, 'in_progress');
+});
+
+test('T-372: zero-debt cashflow trends and non-debt milestones rely on confirmed monthly activity', () => {
+  const months = recentMonthKeys('2026-11', 3);
+  assert.deepEqual(months, ['2026-09', '2026-10', '2026-11']);
+
+  const tx = (id, date, amountCents) => ({
+    id,
+    accountId: null,
+    date: parseDateOnly(date),
+    amount: makeMoney('USD', amountCents),
+    category: 'debit_spending',
+    payee: 'Groceries',
+    source: 'manual',
+    reconciled: false,
+    createdAt: `${date}T12:00:00Z`,
+    deletedAt: null,
+  });
+
+  const transactions = [
+    tx('sep', '2026-09-10', 200000),
+    tx('oct', '2026-10-12', 250000),
+    tx('nov', '2026-11-08', 300000),
+  ];
+  const trends = calculateMonthlyCashflowTrends({
+    months,
+    monthlyIncome: 5000,
+    transactions,
+    currencyCode: 'USD',
+  });
+  assert.equal(trends.length, 3);
+  assert.equal(trends[0].savingsRatePercent, 60);
+  assert.equal(trends[1].savingsRatePercent, 50);
+  assert.equal(trends[2].savingsRatePercent, 40);
+  assert.equal(trends[2].netSaved, 2000);
+
+  const milestones = calculateZeroDebtMilestones({
+    trends,
+    transactions,
+    recurringBills: [],
+    monthlyIncome: 5000,
+    currentMonth: '2026-11',
+  });
+  assert.equal(milestones.find(m => m.id === 'first_budget_month').status, 'completed');
+  assert.equal(milestones.find(m => m.id === 'positive_cashflow_streak').currentValue, 3);
+  assert.equal(milestones.find(m => m.id === 'positive_cashflow_streak').status, 'completed');
+  assert.equal(milestones.find(m => m.id === 'savings_rate_20').status, 'completed');
+
+  // Empty month without activity does not award a 3-month streak or savings-rate achievement.
+  const emptyTrends = calculateMonthlyCashflowTrends({
+    months,
+    monthlyIncome: 5000,
+    transactions: [],
+    currencyCode: 'USD',
+  });
+  const emptyMilestones = calculateZeroDebtMilestones({
+    trends: emptyTrends,
+    transactions: [],
+    recurringBills: [],
+    monthlyIncome: 5000,
+    currentMonth: '2026-11',
+  });
+  assert.equal(emptyMilestones.find(m => m.id === 'positive_cashflow_streak').currentValue, 0);
+  assert.equal(emptyMilestones.find(m => m.id === 'savings_rate_20').status, 'locked');
 });

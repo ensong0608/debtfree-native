@@ -109,9 +109,12 @@ const SUPPORT_DOCS: Record<
     title: 'Help & Guides',
     url: process.env.EXPO_PUBLIC_HELP_URL ?? null,
     summary: [
-      'Snowball prioritizes your smallest balance first for fast momentum, while Avalanche targets the highest APR to minimize total interest.',
-      'Recurring bills on credit cards increase card balance only when confirmed; debit bills track checking cashflow without creating debt.',
-      'Use Reconcile on any Debt Account detail screen to align your tracked balance with your latest statement.',
+      'Zero-debt budgeting: Even with $0 debt, use Budget to track monthly income, bills, and spending caps, and check Home for your Safe to Spend surplus and Savings Rate.',
+      'Fast daily logging: In Transactions, tap Add Transaction to log Cash / Debit or card purchases in seconds—BitLess remembers your Payee → Category choices and offers Recent Payee chips.',
+      'CSV import presets & rules: Paste bank or card CSV statements, save custom column mappings per bank, and create payee rules so recurring merchants auto-categorize.',
+      'Progress trends: Review multi-month Income vs. Spending, Savings Rate %, and cashflow milestones in Progress even when you have no active debts.',
+      'Payoff methods: Snowball prioritizes your smallest balance first for quick wins, Avalanche targets the highest APR to minimize interest, and Custom lets you order accounts yourself.',
+      'Bills & reconciliation: Credit-card bills update card balances only when confirmed; debit bills track checking cashflow. Use Reconcile on any Debt Account detail screen to match your latest statement.',
     ],
   },
   privacy: {
@@ -120,7 +123,7 @@ const SUPPORT_DOCS: Record<
     summary: [
       'Your financial accounts, ledger transactions, and payoff preferences are scoped strictly to your authenticated household account via Row-Level Security.',
       'Local offline cache entries on this device are encrypted using platform hardware-backed SecureStore while unlocked.',
-      'DebtFree never sells your personal financial records or transaction history to third-party advertisers.',
+      'BitLess never sells your personal financial records or transaction history to third-party advertisers.',
     ],
   },
   terms: {
@@ -128,7 +131,7 @@ const SUPPORT_DOCS: Record<
     url: process.env.EXPO_PUBLIC_TERMS_URL ?? null,
     summary: [
       'Payoff dates and amortization tables are mathematical projections based on the balances, APRs, and extra monthly payments you enter.',
-      'Recording or scheduling a bill inside DebtFree updates your personal ledger only and does not initiate bank transfers or lender payments.',
+      'Recording or scheduling a bill inside BitLess updates your personal ledger only and does not initiate bank transfers or lender payments.',
       'Always verify minimum payment amounts and due dates directly against your official lender statements.',
     ],
   },
@@ -419,8 +422,8 @@ export function SettingsScreen({
   };
   const exportBackup = () => void runBackupAction(async () => {
     const backup = await currentBackup();
-    await Share.share({ title: 'DebtFree native backup JSON', message: JSON.stringify(backup, null, 2) });
-    setBackupMessage(`Share sheet opened for the validated backup. ${nativeBackupLifecycleWarnings(backup).join(' ')} Restoration is currently unavailable.`);
+    await Share.share({ title: 'BitLess native backup JSON', message: JSON.stringify(backup, null, 2) });
+    setBackupMessage(`Share sheet opened for your JSON backup. ${nativeBackupLifecycleWarnings(backup).join(' ')}`);
   });
   const exportTransactionsCsv = () => void runBackupAction(async () => {
     const csv = buildTransactionsCsv(transactions, onboardingData.debts, recurringBills, currencyCode);
@@ -819,17 +822,17 @@ export function SettingsScreen({
     try {
       const webUrl = invite.inviteWebUrl || buildHouseholdInviteWebUrl(invite.rawToken);
       const roleDescription = invite.role === 'viewer' ? 'viewer (read-only)' : 'member (can edit finances)';
-      const shareTitle = `Join ${householdName} on DebtFree`;
+      const shareTitle = `Join ${householdName} on BitLess`;
       await Share.share(
         Platform.select({
           ios: {
             title: shareTitle,
             url: webUrl,
-            message: `You're invited to join "${householdName}" on DebtFree as a ${roleDescription}.\n\nTap to join:\n${webUrl}\n\nInvite code: ${invite.rawToken}`,
+            message: `You're invited to join "${householdName}" on BitLess as a ${roleDescription}.\n\nTap to join:\n${webUrl}\n\nInvite code: ${invite.rawToken}`,
           },
           default: {
             title: shareTitle,
-            message: `You're invited to join "${householdName}" on DebtFree as a ${roleDescription}.\n\nTap the link to join:\n${webUrl}\n\nOr enter this invite code in Settings → Household:\n${invite.rawToken}`,
+            message: `You're invited to join "${householdName}" on BitLess as a ${roleDescription}.\n\nTap the link to join:\n${webUrl}\n\nOr enter this invite code in Settings → Household:\n${invite.rawToken}`,
           },
         })
       );
@@ -1926,7 +1929,7 @@ export function SettingsScreen({
         <Card>
           {(
             [
-              { key: 'guides', label: 'Help & Guides', sub: 'Payoff methods, bills & reconciliation' },
+              { key: 'guides', label: 'Help & Guides', sub: 'Zero-debt budgeting, daily logging, payoff & bills' },
               { key: 'privacy', label: 'Privacy Policy', sub: 'Data protection & hardware encryption' },
               { key: 'terms', label: 'Terms of Service', sub: 'Forecasting disclosures & usage terms' },
             ] as const
@@ -1955,7 +1958,7 @@ export function SettingsScreen({
         <Text style={[styles.sectionHeader, { color: dangerColor }]}>ACCOUNT DELETION</Text>
         <Card style={styles.dangerCard}>
           <Text style={ui.heading}>Delete account and data</Text>
-          <Text style={ui.small}>Permanently remove your DebtFree sign-in and associated cloud financial data. Financial data reset and backup restore are not available in this release.</Text>
+          <Text style={ui.small}>Permanently remove your BitLess sign-in and associated cloud financial data. Financial data reset and backup restore are not available in this release.</Text>
           {accountDeletionEnabled && session ? (
             <Pressable accessibilityRole="button" accessibilityLabel="Delete account and data" disabled={deletingAccount || authBusy} onPress={confirmDeleteAccount} style={[styles.dangerButton, (deletingAccount || authBusy) && styles.disabled]}>
               {deletingAccount ? <ActivityIndicator size="small" color={dangerColor} /> : <AppIcon name="reset" size={16} color={dangerColor} />}
@@ -1964,17 +1967,23 @@ export function SettingsScreen({
           ) : <Text style={styles.rowSub}>Account deletion is not configured in this build yet.</Text>}
           {process.env.EXPO_PUBLIC_ACCOUNT_DELETION_URL ? (
             <Pressable accessibilityRole="link" onPress={() => void handleOpenExternalDoc(process.env.EXPO_PUBLIC_ACCOUNT_DELETION_URL ?? null)} style={styles.linkRow}>
-              <Text style={styles.rowTitle}>Request deletion on the DebtFree website</Text>
+              <Text style={styles.rowTitle}>Request deletion on the BitLess website</Text>
               <AppIcon name="chevronRight" size={18} color={palette.brand} />
             </Pressable>
           ) : null}
         </Card>
 
-        <Text style={[styles.sectionHeader, { color: palette.brand }]}>BACKUP & RECOVERY</Text>
+        <Text style={[styles.sectionHeader, { color: palette.brand }]}>CLOUD SYNC & BACKUPS</Text>
         <Card>
-          <Text style={ui.heading}>Native backup</Text>
-          <Text style={ui.small}>Export a validated JSON snapshot or review a pasted backup. Full restore is not available in this release.</Text>
-          <Text style={ui.small}>{visiblePendingStatus}</Text>
+          <Text style={ui.heading}>Automatic cloud sync & exports</Text>
+          <Text style={ui.small}>Your data auto-syncs to your BitLess account whenever you are signed in. Export a JSON backup or CSV spreadsheet anytime to keep a personal copy.</Text>
+          <Text style={ui.small}>
+            {!pendingScopeAvailable
+              ? 'Sign in to check your cloud sync status.'
+              : visiblePendingOperations.length === 0
+                ? 'Cloud sync is up to date — no pending changes.'
+                : visiblePendingStatus}
+          </Text>
           {visiblePendingOperations.map((command, index) => {
             const archived = Boolean(command.resolution);
             const rejected = command.failure?.kind === 'rejected';
@@ -1994,13 +2003,17 @@ export function SettingsScreen({
               {reviewable ? <Pressable accessibilityRole="button" disabled={backupBusy} onPress={() => confirmServerState(command)} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Review current server state</Text></Pressable> : null}
             </View>;
           })}
-          <Pressable accessibilityRole="button" disabled={backupBusy} onPress={refreshConfirmation} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Refresh confirmation</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={backupBusy} onPress={refreshConfirmation} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Check sync status</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={backupBusy} onPress={exportBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export backup JSON</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={backupBusy || transactions.filter(t => t.deletedAt === null).length === 0} onPress={exportTransactionsCsv} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export transactions CSV</Text></Pressable>
-          <TextInput accessibilityLabel="Native backup JSON" multiline value={backupText} onChangeText={value => { setBackupText(value); setBackupMessage(''); }} placeholder="Paste backup JSON to review" placeholderTextColor={palette.muted} style={styles.devJsonInput} />
-          <Pressable accessibilityRole="button" disabled={backupBusy || !backupText.trim()} onPress={preflightBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Validate and review</Text></Pressable>
-          <Text style={ui.small}>{checkpoint ? `Checkpoint: ${checkpoint.status}; ${checkpoint.cursor} of ${checkpoint.plan.operations.length} operations. ${checkpoint.plan.conflicts} conflicts.` : 'No checkpoint found.'}</Text>
-          {checkpoint ? <Pressable accessibilityRole="button" disabled={backupBusy} onPress={() => void runBackupAction(async () => { await Share.share({ title: 'DebtFree recovery checkpoint JSON', message: JSON.stringify(checkpoint, null, 2) }); })} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export checkpoint JSON</Text></Pressable> : null}
+          <TextInput accessibilityLabel="Native backup JSON" multiline value={backupText} onChangeText={value => { setBackupText(value); setBackupMessage(''); }} placeholder="Paste a backup JSON file to inspect its contents" placeholderTextColor={palette.muted} style={styles.devJsonInput} />
+          <Pressable accessibilityRole="button" disabled={backupBusy || !backupText.trim()} onPress={preflightBackup} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Check backup file</Text></Pressable>
+          {checkpoint && (checkpoint.status !== 'completed' || checkpoint.plan.conflicts > 0) ? (
+            <View style={ui.divider}>
+              <Text style={ui.small}>{`Recovery progress: ${checkpoint.cursor} of ${checkpoint.plan.operations.length} items checked (${checkpoint.plan.conflicts} conflicts).`}</Text>
+              <Pressable accessibilityRole="button" disabled={backupBusy} onPress={() => void runBackupAction(async () => { await Share.share({ title: 'BitLess recovery checkpoint JSON', message: JSON.stringify(checkpoint, null, 2) }); })} style={styles.devSecondaryButton}><Text style={styles.devSecondaryButtonText}>Export recovery details JSON</Text></Pressable>
+            </View>
+          ) : null}
           {!!backupMessage && <Text accessibilityRole="alert" style={styles.rowSub}>{backupMessage}</Text>}
         </Card>
         </>}

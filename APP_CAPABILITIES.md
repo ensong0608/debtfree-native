@@ -7,7 +7,8 @@ This inventory reflects the native app source. Availability can depend on the pl
 ## Home
 
 - See debt balance snapshots and estimated payoff dates across cards and loans, mortgages, and auto debt, along with next-payment principal, interest, and escrow estimates for active mortgages (once monthly escrow is entered) and daily-interest principal, interest, and daily cost estimates for active auto loans. The balance snapshot and recorded payment activity answer different questions.
-- See a conditional **Safe Extra** amount when monthly cash flow leaves surplus after 14-day obligations and spending-cap pace, with a one-tap **Boost #1** shortcut into Strategy.
+- When verified active debt is `$0`, Home adapts to show a **Debt-Free ($0 owed)** summary with **Safe to Spend** (monthly surplus after bills, caps, and 14-day obligations) and **Monthly Savings Rate %**, linking directly to **Budget**.
+- See a conditional **Safe Extra** amount when monthly cash flow leaves surplus after 14-day obligations and spending-cap pace, with a one-tap **Boost #1** shortcut into Strategy when active debts exist.
 - Review the active payoff strategy and jump directly to **Accounts → Strategy**.
 - See unpaid and partly paid obligations that need attention, including overdue items, when there are applicable entries. Open an obligation to record a payment, with an editable principal, interest, and escrow breakdown for mortgage and auto loan payments (auto loans estimate Actual/365 daily interest from the prior payment date with a Daily/Monthly switch and monthly fallback). Review recent ledger activity and open transaction details from Home.
 
@@ -22,8 +23,8 @@ This inventory reflects the native app source. Availability can depend on the pl
 
 ## Transactions and obligations
 
-- Manually add, edit, and delete ledger entries for payments, purchases, fees, interest, cash/debit spending, and other activity, or **Import CSV** from pasted bank/card statements with sign-convention toggles and duplicate detection. History supports search, lifetime/year/month views, multi-select transaction-type and account/group filters with active filter chips, sorting by date or amount (including paid-off accounts), smart recurring-bill suggestions from repeated purchases, and due-cycle cues when an entry is applied to a different month's cycle.
-- When adding a transaction, expand **More details** for an optional payee and note, inline **+ Split** allocation across 2–4 categories, or the applicable payment breakdown. A purchase can reuse an account from recent confirmed purchase history with one tap.
+- Manually add, edit, and delete ledger entries for payments, purchases, fees, interest, cash/debit spending, and other activity, or **Import CSV** from pasted bank/card statements with sign-convention toggles, saved column-mapping presets, payee-to-category auto-rules, and duplicate detection. History supports search, lifetime/year/month views, multi-select transaction-type and account/group filters with active filter chips, sorting by date or amount (including paid-off accounts), smart recurring-bill suggestions from repeated purchases, and due-cycle cues when an entry is applied to a different month's cycle.
+- When adding a transaction, quick mode pills (`Cash / Debit`, `Purchase`, `Payment`), inline **Payee** entry, **Recent Payee** chips, and per-user **Payee → Category** memory streamline everyday expense logging; expand **More details** for an optional note, inline **+ Split** allocation across 2–4 categories, or the applicable payment breakdown. A purchase can reuse an account from recent confirmed purchase history with one tap.
 - Keep history attached to the same account or recurring bill when its name changes. Link a mortgage or auto loan to its matching recurring bill so the same obligation can be tracked together. Record loan payments from Transactions, Accounts, or payment sheets with editable estimated principal, interest, and applicable escrow (once mortgage escrow is entered; auto loans estimate Actual/365 daily simple interest from the prior payment date with a Daily/Monthly switch on the payment sheet and monthly fallback when no prior payment exists), or clear the split to record cashflow only. The principal allocation determines the loan balance reduction.
 - Browse bills, debt minimums, and annual card fees in **Transactions → Scheduled** using a monthly calendar or due-date list. Record full, partial, or advance payments against the applicable cycle while preserving the actual transaction date.
 - Change the due day for account minimums and recurring bills. The next unpaid reminder can move to the new date, and future reminders follow the new day. Moving an overdue reminder requires confirmation.
@@ -38,16 +39,16 @@ This inventory reflects the native app source. Availability can depend on the pl
 
 ## Progress
 
-- Review credit card and personal loan payments, charges, and net balance changes for a selected month, year, or all recorded history. Compare recorded payments with the current plan and review individual active accounts in **Balance activity**. Archived accounts remain in the applicable totals and history.
+- Review credit card and personal loan payments, charges, and net balance changes for a selected month, year, or all recorded history, plus multi-month **Income vs. Spending** and **Savings Rate %** trends. When verified active debt is `$0`, Progress highlights cashflow, savings rate, and non-debt milestones (*First budget month*, *Positive cashflow streak*, *20% monthly savings rate*) alongside any historical paid-off accounts.
 - Check overall and individual card utilization from tracked balances and limits, plus a **30% Target Advisor** showing the paydown needed to bring the highest-impact card below 30% with a one-tap **Simulate** shortcut.
 - Track milestones supported by confirmed history and a current credit-utilization goal. Pending payments and reconciliation adjustments do not count as recorded payment achievements.
 
 ## Sign-in, household access, and settings
 
-- Create an account or sign in with email and password where enabled; email confirmation may be required. Sign in with Google and complete guided household setup, including income and debts. The app also has an iOS Apple sign-in flow, with physical-device verification still pending.
+- Create an account or sign in with email and password where enabled, including **Forgot password?** reset emails and **Check your email / Resend confirmation** states. Sign in with Google and complete optional onboarding steps—including skipping income or selecting **I have no debts right now** to land directly on Home. The app also has an iOS Apple sign-in flow, with physical-device verification still pending.
 - Use household-scoped financial data. Where collaboration is enabled, users can join by invitation link or code and switch households. Owners can manage invitations and roles. Members can edit finances and Viewers have read-only access.
 - Choose **Fresh** or **Inspire**, follow system brightness or select **Light** or **Dark**, and choose among ten colors in either style. Appearance is saved per signed-in user on the device. Settings also offers haptics and applicable household preferences such as currency and time zone. Account recovery can help eligible users fix missing or invalid debt categories without restarting setup.
-- In **Settings → Data & security**, export a validated native JSON backup, **Export transactions CSV**, review a pasted backup, and inspect financial changes that are awaiting confirmation or need review. In-app account deletion depends on build configuration.
+- In **Settings → Data & security**, review automatic cloud sync status, export a validated native JSON backup, **Export transactions CSV**, review a pasted backup, and inspect financial changes that are awaiting confirmation or need review. **Help & Guides** includes zero-debt budgeting, fast expense logging, CSV rules, payoff methods, and reconciliation guidance. In-app account deletion depends on build configuration.
 
 ## Current limits for comparisons
 

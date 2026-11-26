@@ -12,12 +12,26 @@ import { Pressable, Text, View, appearanceColor, useNativeAppearance } from '../
 import { currentHouseholdDate, getPreviousMonthString } from '../finance/calendar';
 import { calculateTransactionBalanceDelta, isPaidOffAccountArchived, type LedgerTransaction } from '../finance/ledger';
 import { makeMoney, moneyToMajor } from '../finance/money';
-import { calculateAccountActivities, calculateActivitySummary, calculateCreditUtilization, calculateMilestones, calculateUtilizationAdvisor, filterTransactionsByPeriod, type ProgressPeriod } from '../finance/progress';
+import {
+  calculateAccountActivities,
+  calculateActivitySummary,
+  calculateCreditUtilization,
+  calculateMilestones,
+  calculateMonthlyCashflowTrends,
+  calculateUtilizationAdvisor,
+  calculateZeroDebtMilestones,
+  filterTransactionsByPeriod,
+  recentMonthKeys,
+  type ProgressPeriod,
+} from '../finance/progress';
+import { type RecurringBill } from '../finance/recurring-bills';
+import { type LoanBillPairingMap } from '../finance/loan-bill-pairing';
 import { formatCurrency, type DebtItem, type PayoffStrategy } from '../onboarding-domain';
 import { DEFAULT_TAB_UI_PREFERENCES, useProgressUiPreferences, useSetTabUiPreferences, type TabUiPreferences } from '../components/TabShellContext';
 
 const longMonth = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const shortMonth = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
+const monthOnlyFmt = new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: 'UTC' });
 function polarPoint(cx: number, cy: number, radius: number, angleDeg: number) {
   const rad = (angleDeg * Math.PI) / 180;
   return {
@@ -142,6 +156,11 @@ function AwardSeal({ earned, size = 68 }: { earned: boolean; size?: number }) {
 export const ProgressScreen = memo(function ProgressScreen({
   debts,
   transactions = [],
+  recurringBills = [],
+  monthlyIncome = 0,
+  loanBillPairingByDebtId = {},
+  historicalBillIdsByDebtId = {},
+  financeRecordsVerified = false,
   currencySymbol = '$',
   currencyCode = 'USD',
   plannedMonthlyPayment,
@@ -154,6 +173,11 @@ export const ProgressScreen = memo(function ProgressScreen({
 }: {
   debts: DebtItem[];
   transactions?: LedgerTransaction[];
+  recurringBills?: RecurringBill[];
+  monthlyIncome?: number;
+  loanBillPairingByDebtId?: LoanBillPairingMap;
+  historicalBillIdsByDebtId?: Readonly<Record<string, readonly string[]>>;
+  financeRecordsVerified?: boolean;
   currencySymbol?: string;
   currencyCode?: string;
   plannedMonthlyPayment?: number;
@@ -335,11 +359,57 @@ export const ProgressScreen = memo(function ProgressScreen({
 
   const currentGoal = milestones.find(item => item.id === 'credit_util_30');
   const recorded = milestones.filter(item => item.id !== 'credit_util_30' && item.status !== 'locked');
-  const earnedCount = recorded.filter(item => item.status === 'completed').length;
-  const inProgressCount = milestones.filter(item => item.status === 'in_progress').length;
+  const isZeroDebtMode = useMemo(
+    () => Boolean(financeRecordsVerified) && debts.every(debt => debt.balance <= 0 || isPaidOffAccountArchived(debt, archivedPaidOffDebtIds)),
+    [financeRecordsVerified, debts, archivedPaidOffDebtIds],
+  );
+  const trendMonths = useMemo(() => recentMonthKeys(currentMonth, 4), [currentMonth]);
+  const cashflowTrends = useMemo(
+    () =>
+      calculateMonthlyCashflowTrends({
+        months: trendMonths,
+        monthlyIncome,
+        transactions,
+        debts,
+        recurringBills,
+        loanBillPairingByDebtId,
+        archivedPaidOffDebtIds,
+        historicalBillIdsByDebtId,
+        currencyCode,
+      }),
+    [trendMonths, monthlyIncome, transactions, debts, recurringBills, loanBillPairingByDebtId, archivedPaidOffDebtIds, historicalBillIdsByDebtId, currencyCode],
+  );
+  const zeroDebtMilestones = useMemo(
+    () =>
+      calculateZeroDebtMilestones({
+        trends: cashflowTrends,
+        transactions,
+        recurringBills,
+        monthlyIncome,
+        currentMonth,
+      }),
+    [cashflowTrends, transactions, recurringBills, monthlyIncome, currentMonth],
+  );
+  const activeMonthTrend = cashflowTrends.find(point => point.month === (selectedDate ? selectedPeriod : currentMonth))
+    ?? cashflowTrends[cashflowTrends.length - 1];
+  const trendMaxAmount = useMemo(
+    () => Math.max(1, ...cashflowTrends.flatMap(point => [point.income, point.spending])),
+    [cashflowTrends],
+  );
+  const displayedPathMilestones = useMemo(() => {
+    if (!isZeroDebtMode) return recorded;
+    const completedDebtMilestones = recorded.filter(item => item.status === 'completed');
+    return [...zeroDebtMilestones, ...completedDebtMilestones];
+  }, [isZeroDebtMode, recorded, zeroDebtMilestones]);
+  const earnedCount = displayedPathMilestones.filter(item => item.status === 'completed').length;
+  const inProgressCount = isZeroDebtMode
+    ? displayedPathMilestones.filter(item => item.status === 'in_progress').length
+    : milestones.filter(item => item.status === 'in_progress').length;
   const lockedHistory = milestones.filter(item => item.id !== 'credit_util_30' && item.status === 'locked');
-  const lockedCount = milestones.filter(item => item.status === 'locked').length;
-  const nextUnlock = milestones.find(item => item.status === 'in_progress');
+  const lockedCount = isZeroDebtMode
+    ? displayedPathMilestones.filter(item => item.status === 'locked').length
+    : milestones.filter(item => item.status === 'locked').length;
+  const nextUnlock = displayedPathMilestones.find(item => item.status === 'in_progress');
   const titleFor = (item: typeof milestones[number]) =>
     item.id === 'first_1000' ? 'First ' + formatCurrency(item.targetValue, currencySymbol) + ' paydown' : item.title;
 
@@ -385,6 +455,51 @@ export const ProgressScreen = memo(function ProgressScreen({
           {pendingNotice}
           {segment === 'Overview' ? (
         <View style={{ gap: 12 }}>
+          {isZeroDebtMode ? (
+            <>
+              <Card style={{ padding: 14, borderRadius: 20, gap: 10 }}>
+                <InspireCornerArt kind="hero-overview" borderRadius={20} />
+                <View style={[ui.row, { justifyContent: 'space-between', gap: 8 }]}>
+                  <Text accessibilityRole="header" style={{ color: palette.text, fontSize: 14, fontWeight: '800', letterSpacing: 0.5 }}>CASHFLOW & SAVINGS</Text>
+                  <View style={[ui.row, { minHeight: 30, borderRadius: 22, paddingHorizontal: 10, backgroundColor: palette.posSoft }]}>
+                    <Text style={[ui.small, { color: palette.posInk, fontWeight: '700' }]}>$0 DEBT OWED</Text>
+                  </View>
+                </View>
+                <View style={{ paddingVertical: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
+                    <Text style={[ui.title, { fontSize: 26, fontWeight: '800', letterSpacing: -0.45 }]}>
+                      {activeMonthTrend && activeMonthTrend.income > 0
+                        ? (activeMonthTrend.savingsRatePercent !== null && activeMonthTrend.savingsRatePercent >= 0
+                            ? `${activeMonthTrend.savingsRatePercent}% saved`
+                            : 'Over income')
+                        : 'Add income'}
+                    </Text>
+                    <Text style={{ color: palette.text, fontSize: 14, fontWeight: '600' }}>
+                      {activeMonthTrend && activeMonthTrend.income > 0
+                        ? `${formatCurrency(Math.abs(activeMonthTrend.netSaved), currencySymbol)} ${activeMonthTrend.netSaved >= 0 ? 'monthly surplus' : 'above income'} this month`
+                        : 'Set monthly income in Budget to track your savings rate'}
+                    </Text>
+                  </View>
+                  {activeMonthTrend && activeMonthTrend.income > 0 ? (
+                    <ProgressSpeedometer percent={Math.max(0, Math.min(100, activeMonthTrend.savingsRatePercent ?? 0))} />
+                  ) : null}
+                </View>
+              </Card>
+              <View style={[ui.row, { gap: 8, alignItems: 'stretch' }]}>
+                {[
+                  { label: 'Income', amount: activeMonthTrend?.income ?? 0, color: palette.posInk },
+                  { label: 'Spending', amount: activeMonthTrend?.spending ?? 0, color: palette.text },
+                  { label: 'Net Saved', amount: activeMonthTrend?.netSaved ?? 0, color: (activeMonthTrend?.netSaved ?? 0) >= 0 ? palette.posInk : palette.neg },
+                ].map(metric => (
+                  <Card key={metric.label} style={{ flex: 1, minWidth: 0, padding: 10, gap: 5 }}>
+                    <Text style={[ui.small, { fontWeight: '700' }]}>{metric.label}</Text>
+                    <AmountText style={[ui.heading, { color: metric.color, fontSize: 18, fontWeight: '800' }]} value={formatCurrency(metric.amount, currencySymbol)} />
+                  </Card>
+                ))}
+              </View>
+            </>
+          ) : (
+            <>
           <Card style={{ padding: 14, borderRadius: 20, gap: 10 }}>
             <InspireCornerArt kind="hero-overview" borderRadius={20} />
             <View style={[ui.row, { justifyContent: 'space-between', gap: 8 }]}>
@@ -452,6 +567,45 @@ export const ProgressScreen = memo(function ProgressScreen({
              <AmountText style={[ui.heading, { fontSize: 23, fontWeight: '800', color: movementTotal < 0 ? palette.posInk : movementTotal > 0 ? palette.neg : palette.text }]}
               value={`${movementTotal < 0 ? '↓ ' : movementTotal > 0 ? '↑ ' : ''}${formatCurrency(Math.abs(movementTotal), currencySymbol)}`} />
           </Card>
+            </>
+          )}
+
+          {(isZeroDebtMode || monthlyIncome > 0) ? (
+            <Card style={{ padding: 14, gap: 10 }}>
+              <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
+                <Text accessibilityRole="header" style={[ui.heading, { fontSize: 17 }]}>Income vs. Spending</Text>
+                <Text style={ui.small}>Last 4 months · Savings rate</Text>
+              </View>
+              <View style={{ gap: 10 }}>
+                {cashflowTrends.map(point => {
+                  const monthDate = new Date(`${point.month}-01T12:00:00Z`);
+                  const label = Number.isNaN(monthDate.getTime()) ? point.month : monthOnlyFmt.format(monthDate);
+                  const incomePct = point.income > 0 ? Math.round((point.income / trendMaxAmount) * 100) : 0;
+                  const spendingPct = point.spending > 0 ? Math.round((point.spending / trendMaxAmount) * 100) : 0;
+                  const positiveRate = (point.savingsRatePercent ?? 0) >= 0;
+                  return (
+                    <View key={point.month} style={{ gap: 4 }}>
+                      <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 8 }]}>
+                        <Text style={[ui.small, { fontWeight: '700', color: palette.text }]}>{label}</Text>
+                        <Text style={ui.small}>
+                          {`In ${formatCurrency(point.income, currencySymbol)} · Out ${formatCurrency(point.spending, currencySymbol)}`}
+                        </Text>
+                        <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: point.savingsRatePercent === null ? palette.raised : positiveRate ? palette.posSoft : (isLight ? 'rgba(217, 68, 54, 0.12)' : 'rgba(240, 139, 120, 0.18)') }}>
+                          <Text style={{ fontSize: 11.5, fontWeight: '700', color: point.savingsRatePercent === null ? palette.muted : positiveRate ? palette.posInk : palette.neg }}>
+                            {point.savingsRatePercent === null ? '—' : `${point.savingsRatePercent}%`}
+                          </Text>
+                        </View>
+                      </View>
+                      <Bar percent={incomePct} color={palette.posInk} />
+                      <Bar percent={spendingPct} color={point.spending > point.income && point.income > 0 ? palette.neg : palette.brand} />
+                    </View>
+                  );
+                })}
+              </View>
+            </Card>
+          ) : null}
+
+          {(!isZeroDebtMode || accountActivities.length > 0) ? (
           <View style={{ gap: 8 }}>
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'baseline', paddingHorizontal: 2 }]}>
                 <Text style={[ui.heading, { fontSize: 17 }]}>Balance activity</Text>
@@ -514,6 +668,7 @@ export const ProgressScreen = memo(function ProgressScreen({
               )}
             </Card>
           </View>
+          ) : null}
         </View>
       ) : segment === 'Utilization' ? (
         <View style={{ gap: 12 }}>
@@ -865,8 +1020,8 @@ export const ProgressScreen = memo(function ProgressScreen({
               </View>
             </View>
             <View>
-              {recorded.map((item, index) => {
-                const isLast = index === recorded.length - 1;
+              {displayedPathMilestones.map((item, index) => {
+                const isLast = index === displayedPathMilestones.length - 1;
                 return (
                   <View key={item.id} style={{ flexDirection: 'row', gap: 12 }}>
                     <View style={{ width: 34, alignItems: 'center' }}>
@@ -913,7 +1068,7 @@ export const ProgressScreen = memo(function ProgressScreen({
                       </View>
                       <Text style={ui.small}>
                         {item.status === 'completed'
-                          ? 'Recorded' + (item.earnedDate ? ' - ' + item.earnedDate : '')
+                          ? (isZeroDebtMode ? item.description : 'Recorded' + (item.earnedDate ? ' - ' + item.earnedDate : ''))
                           : item.id === 'first_1000'
                           ? formatCurrency(item.currentValue, currencySymbol) +
                             ' of ' +
@@ -921,9 +1076,11 @@ export const ProgressScreen = memo(function ProgressScreen({
                             ' - ' +
                             Math.max(0, item.percent) +
                             '%'
-                          : 'Record your first payment'}
+                          : isZeroDebtMode
+                            ? item.description
+                            : 'Record your first payment'}
                       </Text>
-                      {item.status === 'in_progress' && item.id === 'first_1000' ? (
+                      {item.status === 'in_progress' && (item.id === 'first_1000' || item.id === 'positive_cashflow_streak' || item.id === 'savings_rate_20') ? (
                         <>
                           <Bar percent={item.percent} />
                           <View

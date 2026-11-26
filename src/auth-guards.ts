@@ -1,6 +1,7 @@
 const DEFAULT_APP_SCHEME = 'com.debtfree.native.test';
 export const APP_SCHEME = process.env.EXPO_PUBLIC_APP_SCHEME ?? DEFAULT_APP_SCHEME;
 export const CALLBACK = `${APP_SCHEME}://auth/callback`;
+export const RECOVERY_CALLBACK = `${CALLBACK}?flow=recovery`;
 /** Project reference of the DebtFree web production project. It must never be used by this client. */
 export const PRODUCTION_PROJECT_REF = 'acpderotiyoecmwwyfsu';
 
@@ -82,12 +83,27 @@ export function callbackCode(value: string): string | null {
   return result.kind === 'code' ? result.code : null;
 }
 
+export function parseRecoveryCallback(value: string): CallbackResult {
+  let url: URL;
+  try { url = new URL(value); } catch { return { kind: 'invalid' }; }
+  const flow = url.searchParams.get('flow');
+  const type = url.searchParams.get('type');
+  if (flow !== 'recovery' && type !== 'recovery') return { kind: 'invalid' };
+  return parseCallback(value);
+}
+
 export function isEmailPasswordAuthEnabled(appEnv = process.env.EXPO_PUBLIC_APP_ENV, flag = process.env.EXPO_PUBLIC_EMAIL_AUTH_ENABLED): boolean {
   return appEnv === 'production' ? flag === 'true' : flag !== 'false';
 }
 
-export function validateEmailPasswordInput(email: string, password: string): string | null {
+export function validateEmailInput(email: string): string | null {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return 'Enter a valid email address.';
+  return null;
+}
+
+export function validateEmailPasswordInput(email: string, password: string): string | null {
+  const emailProblem = validateEmailInput(email);
+  if (emailProblem) return emailProblem;
   if (password.length < 6) return 'Password must be at least 6 characters.';
   return null;
 }

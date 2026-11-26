@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isAllowedSandbox, callbackCode, parseCallback, sandboxConfigProblem, classifyAuthError, isEmailPasswordAuthEnabled, validateEmailPasswordInput, CALLBACK, PRODUCTION_PROJECT_REF } from '../src/auth-guards.ts';
+import { isAllowedSandbox, callbackCode, parseCallback, parseRecoveryCallback, sandboxConfigProblem, classifyAuthError, isEmailPasswordAuthEnabled, validateEmailInput, validateEmailPasswordInput, CALLBACK, RECOVERY_CALLBACK, PRODUCTION_PROJECT_REF } from '../src/auth-guards.ts';
 
 test('only matching test project URL and publishable key are accepted', () => {
   assert.equal(isAllowedSandbox('https://sandbox123.supabase.co', 'sandbox123', 'sb_publishable_123'), true);
@@ -45,6 +45,8 @@ test('callback errors are classified so cancellation/denial is distinguishable f
   assert.deepEqual(parseCallback(`${CALLBACK}?code=abc#access_token=leaked`), { kind: 'invalid' });
   assert.deepEqual(parseCallback(`${CALLBACK}/extra?code=abc`), { kind: 'invalid' });
   assert.deepEqual(parseCallback(`${CALLBACK}`), { kind: 'invalid' });
+  assert.deepEqual(parseRecoveryCallback(`${RECOVERY_CALLBACK}&code=rec123`), { kind: 'code', code: 'rec123' });
+  assert.deepEqual(parseRecoveryCallback(`${CALLBACK}?code=rec123`), { kind: 'invalid' });
 });
 
 test('auth errors separate temporary failures from definitive rejections', () => {
@@ -71,6 +73,8 @@ test('email authentication is enabled by default outside production and explicit
 });
 
 test('email and password validation trims email and requires six password characters', () => {
+  assert.equal(validateEmailInput(' user@example.com '), null);
+  for (const email of ['', 'bad', 'a@b', 'a b@example.com']) assert.match(validateEmailInput(email), /email/i);
   assert.equal(validateEmailPasswordInput(' user@example.com ', '123456'), null);
   for (const email of ['', 'bad', 'a@b', 'a b@example.com']) assert.match(validateEmailPasswordInput(email, '123456'), /email/i);
   assert.match(validateEmailPasswordInput('a@example.com', '12345'), /6 characters/);

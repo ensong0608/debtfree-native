@@ -3,9 +3,11 @@ import { parseDateOnly, calendarDaysBetween } from './calendar.ts';
 // @ts-ignore TS5097
 import { makeMoney, moneyFromMajor, moneyToMajor, type Money } from './money.ts';
 // @ts-ignore TS5097
-import { type LedgerTransaction } from './ledger.ts';
+import { type LedgerTransaction, type TransactionCategory } from './ledger.ts';
 // @ts-ignore TS5097
 import { type RecurringBill } from './recurring-bills.ts';
+// @ts-ignore TS5097
+import { matchCsvPayeeRule, type CsvColumnMapping, type CsvPayeeRule } from './payee-memory.ts';
 
 const escapeCell = (value: unknown) => { const text = String(value ?? ''); return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; };
 export function buildTransactionsCsv(transactions: readonly LedgerTransaction[], debts: readonly { id: string; name: string }[], bills: readonly RecurringBill[], currencyCode: string): string {
@@ -28,12 +30,70 @@ function readRows(text: string): string[][] {
   if (cell || row.length) { row.push(cell); rows.push(row); }
   return rows;
 }
-export function parseBankCsv(csvText: string, existingTransactions: readonly LedgerTransaction[], defaultCurrency: string): { date: string; payee: string; amount: Money; likelyDuplicate: boolean }[] {
+export type ParsedBankCsvRow = {
+  date: string;
+  payee: string;
+  amount: Money;
+  likelyDuplicate: boolean;
+  suggestedCategory?: TransactionCategory;
+  suggestedAccountId?: string | null;
+};
+
+export type ParseBankCsvOptions = {
+  mapping?: CsvColumnMapping;
+  rules?: readonly CsvPayeeRule[];
+};
+
+const CHARGE_CATEGORIES = new Set<TransactionCategory>(['purchase', 'subscription', 'utilities', 'fee', 'interest']);
+const CREDIT_CATEGORIES = new Set<TransactionCategory>(['payment', 'refund']);
+
+/**
+ * Resolve the transaction category for a CSV row without reversing its sign-based financial meaning:
+ * charge rules only apply to charge-direction rows, and credit/payment rules only apply to credit-direction rows.
+ */
+export function resolveCsvRowCategory(params: {
+  amount: Money;
+  hasDebtAccount: boolean;
+  chargesPositive: boolean;
+  suggestedCategory?: TransactionCategory;
+}): TransactionCategory {
+  const { amount, hasDebtAccount, chargesPositive, suggestedCategory } = params;
+  if (!hasDebtAccount) {
+    return 'debit_spending';
+  }
+  const isCharge = (amount.minorUnits > 0) === chargesPositive;
+  if (suggestedCategory) {
+    if (isCharge && CHARGE_CATEGORIES.has(suggestedCategory)) return suggestedCategory;
+    if (!isCharge && CREDIT_CATEGORIES.has(suggestedCategory)) return suggestedCategory;
+  }
+  return isCharge ? 'purchase' : 'payment';
+}
+
+export function parseBankCsv(
+  csvText: string,
+  existingTransactions: readonly LedgerTransaction[],
+  defaultCurrency: string,
+  options?: ParseBankCsvOptions,
+): ParsedBankCsvRow[] {
   const [header, ...rows] = readRows(csvText); if (!header) return [];
   const columns = header.map(x => x.trim().toLowerCase().replace(/^\ufeff/, ''));
-  const date = columns.indexOf('date'), payee = columns.findIndex(x => ['description', 'payee', 'merchant'].includes(x)), amount = columns.indexOf('amount'), debit = columns.indexOf('debit'), credit = columns.indexOf('credit');
+  const findMapped = (customName: string | undefined, fallbacks: readonly string[]) => {
+    const cleanCustom = customName?.trim().toLowerCase();
+    if (cleanCustom) {
+      const idx = columns.indexOf(cleanCustom);
+      if (idx >= 0) return idx;
+    }
+    return columns.findIndex(col => fallbacks.includes(col));
+  };
+  const mapping = options?.mapping;
+  const date = findMapped(mapping?.dateColumn, ['date', 'posted date', 'transaction date']);
+  const payee = findMapped(mapping?.payeeColumn, ['description', 'payee', 'merchant']);
+  const amount = findMapped(mapping?.amountColumn, ['amount']);
+  const debit = findMapped(mapping?.debitColumn, ['debit']);
+  const credit = findMapped(mapping?.creditColumn, ['credit']);
   if (date < 0 || payee < 0 || (amount < 0 && debit < 0 && credit < 0)) throw new TypeError('Required bank CSV columns missing');
   const normalizePayee = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+  const rules = options?.rules ?? [];
   return rows.filter(row => row.some(x => x.trim())).map(row => {
     const raw = (row[date] ?? '').trim(), match = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(raw);
     const day = match ? `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}` : raw; parseDateOnly(day);
@@ -47,7 +107,14 @@ export function parseBankCsv(csvText: string, existingTransactions: readonly Led
       const existingPayee = normalizePayee(tx.payee ?? '');
       return !rowPayee || !existingPayee || existingPayee === rowPayee || existingPayee.includes(rowPayee) || rowPayee.includes(existingPayee);
     });
-    return { date: day, payee: rawPayee, amount: money, likelyDuplicate };
+    const matchedRule = matchCsvPayeeRule(rules, rawPayee);
+    return {
+      date: day,
+      payee: rawPayee,
+      amount: money,
+      likelyDuplicate,
+      ...(matchedRule ? { suggestedCategory: matchedRule.category, suggestedAccountId: matchedRule.accountId ?? null } : {}),
+    };
   });
 }
 export function buildSplitTransactionPayloads<T extends { amount: Money }>(total: Money, parts: readonly T[]): T[] {

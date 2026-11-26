@@ -73,6 +73,7 @@ import { type LedgerTransaction, type ReconciliationAnchor, classifyCategoryDire
 import { transactionHasBillId } from '../finance/bill-identity';
 import { type RecurringBill } from '../finance/recurring-bills';
 import { calculateBillMonthlyReserve, calculateMonthlyCashflow, calculateSafeExtraToday, summarizeMonthlyExpenses, summarizeSinglePurchases } from '../finance/budget';
+import { calculateMonthlyCashflowTrends } from '../finance/progress';
 import {
   unifiedLoanRuntime,
   selectUnifiedBudgetLoans,
@@ -582,6 +583,34 @@ export function HomeScreen({
     });
     return calculateSafeExtraToday({ remainingMonthlyCashflow: cashflow.remainingFreeCashflow, unsettled14dObligations: safeExtraUpcomingItems.reduce((sum, item) => sum + item.amount, 0), variableCapOverage, currencyCode });
   }, [financeRecordsVerified, pairingAudit, onboardingData, recurringBills, archivedPaidOffIds, todayKey, currencyCode, transactions, historicalLoanBillIds, plan.monthlyTotalPayment, safeExtraUpcomingItems]);
+  const monthlyIncomeTotal = useMemo(
+    () => calculateTotalMonthlyIncome(onboardingData.primaryIncomeAmount, onboardingData.primaryPayFrequency, onboardingData.additionalIncomes, currencyCode),
+    [onboardingData.primaryIncomeAmount, onboardingData.primaryPayFrequency, onboardingData.additionalIncomes, currencyCode],
+  );
+  const currentMonthCashflowTrend = useMemo(
+    () => calculateMonthlyCashflowTrends({
+      months: [todayKey.slice(0, 7)],
+      monthlyIncome: monthlyIncomeTotal,
+      transactions,
+      debts: onboardingData.debts,
+      recurringBills,
+      loanBillPairingByDebtId: onboardingData.loanBillPairingByDebtId,
+      archivedPaidOffDebtIds: archivedPaidOffIds,
+      historicalBillIdsByDebtId: historicalLoanBillIds,
+      currencyCode,
+    })[0],
+    [todayKey, monthlyIncomeTotal, transactions, onboardingData.debts, recurringBills, onboardingData.loanBillPairingByDebtId, archivedPaidOffIds, historicalLoanBillIds, currencyCode],
+  );
+  const isZeroDebtVerified = useMemo(
+    () =>
+      Boolean(financeRecordsVerified) &&
+      onboardingData.debts.every(d => d.balance <= 0 || isPaidOffAccountArchived(d, archivedPaidOffIds)),
+    [financeRecordsVerified, onboardingData.debts, archivedPaidOffIds],
+  );
+  const zeroDebtSavingsRate = useMemo(() => {
+    if (monthlyIncomeTotal <= 0) return null;
+    return currentMonthCashflowTrend?.savingsRatePercent ?? null;
+  }, [monthlyIncomeTotal, currentMonthCashflowTrend]);
   const upcomingItems = useMemo(
     () => (showAllUpcoming ? sortedUpcomingItems : sortedUpcomingItems.slice(0, 4)),
     [showAllUpcoming, sortedUpcomingItems],
@@ -1380,6 +1409,7 @@ export function HomeScreen({
     navigate: (tab: NavigationTabIconName, section?: string) => void,
   ) => (
     <TransactionsScreen
+      userId={session?.user.id}
       initialTransactionId={targetTransactionId}
       initialSection={section}
       onEditDismiss={clearTarget}
@@ -1438,6 +1468,7 @@ export function HomeScreen({
     onUpdateTransactions,
     onDeleteTransaction,
     openSettings,
+    session?.user.id,
   ]);
 
   const renderBudget = useCallback((navigate: (tab: NavigationTabIconName, section?: string) => void) => (
@@ -1495,6 +1526,11 @@ export function HomeScreen({
       debts={onboardingData.debts}
       archivedPaidOffDebtIds={archivedPaidOffIds}
       transactions={transactions}
+      recurringBills={recurringBills}
+      monthlyIncome={monthlyIncomeTotal}
+      loanBillPairingByDebtId={onboardingData.loanBillPairingByDebtId}
+      historicalBillIdsByDebtId={historicalLoanBillIds}
+      financeRecordsVerified={Boolean(financeRecordsVerified)}
       currencySymbol={currencySymbol}
       currencyCode={currencyCode}
       strategy={plan.strategy}
@@ -1509,6 +1545,11 @@ export function HomeScreen({
     onboardingData.debts,
     archivedPaidOffIds,
     transactions,
+    recurringBills,
+    monthlyIncomeTotal,
+    onboardingData.loanBillPairingByDebtId,
+    historicalLoanBillIds,
+    financeRecordsVerified,
     currencySymbol,
     currencyCode,
     plan.strategy,
@@ -1625,11 +1666,22 @@ export function HomeScreen({
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'flex-start' }]}>
                 <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
                   <View style={[ui.row, { gap: 4, alignItems: 'center' }]}>
-                    <Text accessibilityRole="header" style={[ui.heading, { fontSize: 18, color: palette.homeInk }]}>Debt-Free Date</Text>
-                    <InformationButton color={palette.homeInk} onVisibilityChange={setHomeInformationOpen} label="Debt-Free Estimate" detail="Your estimated debt-free date based on your current balances, APRs, and repayment strategy." />
+                    <Text accessibilityRole="header" style={[ui.heading, { fontSize: 18, color: palette.homeInk }]}>
+                      {isZeroDebtVerified ? 'Debt-Free ($0 owed)' : 'Debt-Free Date'}
+                    </Text>
+                    <InformationButton
+                      color={palette.homeInk}
+                      onVisibilityChange={setHomeInformationOpen}
+                      label={isZeroDebtVerified ? 'Safe to Spend & Savings Rate' : 'Debt-Free Estimate'}
+                      detail={
+                        isZeroDebtVerified
+                          ? 'Your verified accounts currently have $0 debt owed. Safe to Spend reflects monthly income minus recurring bills, cap overages, and unsettled 14-day obligations.'
+                          : 'Your estimated debt-free date based on your current balances, APRs, and repayment strategy.'
+                      }
+                    />
                   </View>
                   <Text style={[ui.small, { color: palette.homeSecondary, fontWeight: '600' }]}>
-                    {hasAutoDebt ? 'Cards / Loans & Auto' : 'Cards & Loans'}
+                    {isZeroDebtVerified ? 'Safe to Spend · Monthly surplus' : hasAutoDebt ? 'Cards / Loans & Auto' : 'Cards & Loans'}
                   </Text>
                 </View>
                 <View style={{ alignItems: 'flex-end', gap: 6 }}>
@@ -1641,7 +1693,9 @@ export function HomeScreen({
                     borderWidth: isInspire ? 1.5 : 1,
                     borderColor: isInspire ? palette.brand : palette.homeBorder,
                   }}>
-                    <Text style={{ color: palette.homeInk, fontSize: 11, fontWeight: '700', letterSpacing: 0.6 }}>ESTIMATE</Text>
+                    <Text style={{ color: palette.homeInk, fontSize: 11, fontWeight: '700', letterSpacing: 0.6 }}>
+                      {isZeroDebtVerified ? '$0 OWED' : 'ESTIMATE'}
+                    </Text>
                   </View>
                   <InspireQuote slot="heroCorner" tiltDeg={-2.2} color={palette.homeQuote} style={{ textAlign: 'right', fontSize: 11.5, lineHeight: 14 }} />
                 </View>
@@ -1650,7 +1704,9 @@ export function HomeScreen({
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center', gap: 12 }]}>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={{ color: palette.homeInk, fontSize: 31, fontWeight: '800', letterSpacing: -0.7 }} numberOfLines={2}>
-                    {displayEstimateDate}
+                    {isZeroDebtVerified
+                      ? (monthlyIncomeTotal > 0 && safeExtra ? formatCurrency(safeExtra.safeExtraAmount, currencySymbol) : 'Add income')
+                      : displayEstimateDate}
                   </Text>
                 </View>
                 <View style={{
@@ -1666,15 +1722,15 @@ export function HomeScreen({
                   alignItems: 'flex-start',
                 }}>
                   <Text style={{ color: palette.homeInk, fontSize: 23, fontWeight: '800', lineHeight: 25 }}>
-                    {plan.monthsToPayoff ?? '—'}
+                    {isZeroDebtVerified ? (zeroDebtSavingsRate !== null ? `${zeroDebtSavingsRate}%` : '—') : (plan.monthsToPayoff ?? '—')}
                   </Text>
                   <Text style={{ color: palette.homeSecondary, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.5, lineHeight: 13, marginTop: 2 }}>
-                    {'MONTHS\nTO GO'}
+                    {isZeroDebtVerified ? 'SAVINGS\nRATE' : 'MONTHS\nTO GO'}
                   </Text>
                 </View>
               </View>
 
-              {safeExtra?.status === 'surplus' && safeExtra.safeExtraAmount > 0 && plan.firstTarget ? (
+              {!isZeroDebtVerified && safeExtra?.status === 'surplus' && safeExtra.safeExtraAmount > 0 && plan.firstTarget ? (
                 <View style={[ui.row, { gap: 8, flexWrap: 'wrap', alignItems: 'center' }]}>
                   <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#D5F5DC' }}>
                     <Text style={{ color: '#185A2B', fontSize: 12, fontWeight: '700' }}>{`Safe Extra: ${formatCurrency(safeExtra.safeExtraAmount, currencySymbol)}`}</Text>
@@ -1686,7 +1742,8 @@ export function HomeScreen({
               ) : null}
               <View style={{ flexDirection: 'row', gap: 6 }}>
                 {[0, 1, 2, 3, 4, 5, 6].map(segmentIdx => {
-                  const segFill = Math.max(0, Math.min(1, (freedomPercent / 100) * 7 - segmentIdx));
+                  const barPercent = isZeroDebtVerified ? Math.max(0, Math.min(100, zeroDebtSavingsRate ?? 0)) : freedomPercent;
+                  const segFill = Math.max(0, Math.min(1, (barPercent / 100) * 7 - segmentIdx));
                   const segColor = isInspire ? INSPIRE_BAR_COLORS[segmentIdx % INSPIRE_BAR_COLORS.length] : palette.homeFill;
                   return (
                     <View
@@ -1712,20 +1769,28 @@ export function HomeScreen({
               <View style={[ui.row, { justifyContent: 'space-between', alignItems: 'center' }]}>
                 {isInspire ? (
                   <InspireQuote slot="heroFooter" color={palette.homeQuote} style={{ flex: 1, fontSize: 12 }} />
-                ) : <Text style={[ui.small, { flex: 1, color: palette.homeSecondary, fontSize: 11.5 }]}>Keep building your freedom.</Text>}
+                ) : (
+                  <Text style={[ui.small, { flex: 1, color: palette.homeSecondary, fontSize: 11.5 }]}>
+                    {isZeroDebtVerified ? 'Keep your monthly surplus growing.' : 'Keep building your freedom.'}
+                  </Text>
+                )}
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={`Change payoff strategy. Currently ${onboardingData.strategy === 'avalanche' ? 'Avalanche' : onboardingData.strategy === 'custom' ? 'Custom' : 'Snowball'}`}
+                  accessibilityLabel={isZeroDebtVerified
+                    ? (monthlyIncomeTotal > 0 ? 'Open Budget' : 'Add monthly income in Budget')
+                    : `Change payoff strategy. Currently ${onboardingData.strategy === 'avalanche' ? 'Avalanche' : onboardingData.strategy === 'custom' ? 'Custom' : 'Snowball'}`}
                   style={[
                     ui.row,
                     isInspire
                       ? { gap: 4, alignItems: 'center', paddingHorizontal: 11, paddingVertical: 5, borderRadius: 999, backgroundColor: palette.homePillBg, borderWidth: 1.5, borderColor: palette.brand }
                       : { gap: 4, alignItems: 'center', paddingVertical: 4 },
                   ]}
-                  onPress={() => navigate('debt', 'Strategy')}
+                  onPress={() => navigate(isZeroDebtVerified ? 'budget' : 'debt', isZeroDebtVerified ? undefined : 'Strategy')}
                 >
                   <Text style={{ color: isInspire ? palette.homeCta : palette.homeInk, fontSize: 13, fontWeight: '700' }}>
-                    {onboardingData.strategy === 'avalanche' ? 'Avalanche' : onboardingData.strategy === 'custom' ? 'Custom' : 'Snowball'}
+                    {isZeroDebtVerified
+                      ? (monthlyIncomeTotal > 0 ? 'Budget' : 'Add income')
+                      : (onboardingData.strategy === 'avalanche' ? 'Avalanche' : onboardingData.strategy === 'custom' ? 'Custom' : 'Snowball')}
                   </Text>
                   <AppIcon name="chevronRight" size={14} color={isInspire ? palette.homeCta : palette.homeInk} />
                 </Pressable>
@@ -2096,6 +2161,9 @@ export function HomeScreen({
     recentTxs,
     debtById,
     todayKey,
+    isZeroDebtVerified,
+    monthlyIncomeTotal,
+    zeroDebtSavingsRate,
   ]);
 
   return (
