@@ -53,3 +53,9 @@ references/prototype-repo/
 *.p12
 *.mobileprovision
 /scratch/*-preview-output-*/
+
+# Private local design mockups, scratch previews, and local temp artifacts (not synced to public repo)
+/design/
+/scratch/
+/supabase/.temp/
+/debtfree-native-updated.zip

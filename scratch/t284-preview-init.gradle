@@ -1,1 +1,0 @@
-gradle.beforeProject { p -> if (p.path == ":app") { p.layout.buildDirectory.set(p.rootProject.layout.projectDirectory.dir("../scratch/t284-preview-output-20261115")) } }
