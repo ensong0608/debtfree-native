@@ -1,0 +1,6 @@
+# Exclude static HTML design mockups, references, and scratch files from GitHub language stats
+scratch/** linguist-documentation
+design/** linguist-documentation
+references/** linguist-documentation
+support-site/** linguist-documentation
+*.zip linguist-vendored
